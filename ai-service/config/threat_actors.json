@@ -1,0 +1,323 @@
+{
+    "_metadata": {
+        "description": "Known threat actors for IOC classification. Update this file to add new groups without code changes.",
+        "last_updated": "2026-01-29",
+        "categories": [
+            "APT",
+            "Ransomware Gang",
+            "Malware Family",
+            "Hacktivist"
+        ]
+    },
+    "threat_actors": [
+        {
+            "name": "Lazarus",
+            "aliases": [
+                "Lazarus Group",
+                "HIDDEN COBRA",
+                "Zinc"
+            ],
+            "origin": "North Korea",
+            "category": "APT",
+            "targets": [
+                "Financial",
+                "Cryptocurrency",
+                "Defense"
+            ]
+        },
+        {
+            "name": "APT28",
+            "aliases": [
+                "Fancy Bear",
+                "Sofacy",
+                "Pawn Storm",
+                "Sednit"
+            ],
+            "origin": "Russia",
+            "category": "APT",
+            "targets": [
+                "Government",
+                "Military",
+                "Media"
+            ]
+        },
+        {
+            "name": "APT29",
+            "aliases": [
+                "Cozy Bear",
+                "The Dukes",
+                "Nobelium"
+            ],
+            "origin": "Russia",
+            "category": "APT",
+            "targets": [
+                "Government",
+                "Think Tanks",
+                "Healthcare"
+            ]
+        },
+        {
+            "name": "APT38",
+            "aliases": [
+                "Bluenoroff"
+            ],
+            "origin": "North Korea",
+            "category": "APT",
+            "targets": [
+                "Financial",
+                "Banking"
+            ]
+        },
+        {
+            "name": "Turla",
+            "aliases": [
+                "Snake",
+                "Venomous Bear",
+                "Waterbug"
+            ],
+            "origin": "Russia",
+            "category": "APT",
+            "targets": [
+                "Government",
+                "Military",
+                "Embassy"
+            ]
+        },
+        {
+            "name": "Sandworm",
+            "aliases": [
+                "Voodoo Bear",
+                "BlackEnergy"
+            ],
+            "origin": "Russia",
+            "category": "APT",
+            "targets": [
+                "Energy",
+                "Critical Infrastructure"
+            ]
+        },
+        {
+            "name": "Equation Group",
+            "aliases": [],
+            "origin": "USA",
+            "category": "APT",
+            "targets": [
+                "Government",
+                "Telecom",
+                "Defense"
+            ]
+        },
+        {
+            "name": "Kimsuky",
+            "aliases": [
+                "Velvet Chollima",
+                "Thallium"
+            ],
+            "origin": "North Korea",
+            "category": "APT",
+            "targets": [
+                "Think Tanks",
+                "Academia",
+                "Government"
+            ]
+        },
+        {
+            "name": "Charming Kitten",
+            "aliases": [
+                "APT35",
+                "Phosphorus",
+                "TA453"
+            ],
+            "origin": "Iran",
+            "category": "APT",
+            "targets": [
+                "Academia",
+                "Journalists",
+                "Human Rights"
+            ]
+        },
+        {
+            "name": "LockBit",
+            "aliases": [
+                "LockBit 2.0",
+                "LockBit 3.0"
+            ],
+            "origin": "Russia",
+            "category": "Ransomware Gang",
+            "targets": [
+                "Enterprise",
+                "Healthcare",
+                "Manufacturing"
+            ]
+        },
+        {
+            "name": "Conti",
+            "aliases": [
+                "Wizard Spider"
+            ],
+            "origin": "Russia",
+            "category": "Ransomware Gang",
+            "targets": [
+                "Healthcare",
+                "Enterprise",
+                "Government"
+            ]
+        },
+        {
+            "name": "REvil",
+            "aliases": [
+                "Sodinokibi"
+            ],
+            "origin": "Russia",
+            "category": "Ransomware Gang",
+            "targets": [
+                "Enterprise",
+                "MSP",
+                "Legal"
+            ]
+        },
+        {
+            "name": "BlackCat",
+            "aliases": [
+                "ALPHV"
+            ],
+            "origin": "Russia",
+            "category": "Ransomware Gang",
+            "targets": [
+                "Enterprise",
+                "Critical Infrastructure"
+            ]
+        },
+        {
+            "name": "Clop",
+            "aliases": [
+                "TA505",
+                "FIN11"
+            ],
+            "origin": "Russia",
+            "category": "Ransomware Gang",
+            "targets": [
+                "Enterprise",
+                "Retail",
+                "Finance"
+            ]
+        },
+        {
+            "name": "Emotet",
+            "aliases": [
+                "Heodo",
+                "Geodo"
+            ],
+            "origin": "Eastern Europe",
+            "category": "Malware Family",
+            "targets": [
+                "Enterprise",
+                "Government",
+                "Banking"
+            ]
+        },
+        {
+            "name": "TrickBot",
+            "aliases": [],
+            "origin": "Russia",
+            "category": "Malware Family",
+            "targets": [
+                "Banking",
+                "Enterprise"
+            ]
+        },
+        {
+            "name": "Qakbot",
+            "aliases": [
+                "QBot",
+                "Pinkslipbot"
+            ],
+            "origin": "Unknown",
+            "category": "Malware Family",
+            "targets": [
+                "Enterprise",
+                "Banking"
+            ]
+        },
+        {
+            "name": "IcedID",
+            "aliases": [
+                "BokBot"
+            ],
+            "origin": "Unknown",
+            "category": "Malware Family",
+            "targets": [
+                "Banking",
+                "Enterprise"
+            ]
+        },
+        {
+            "name": "BazarLoader",
+            "aliases": [
+                "BazarBackdoor"
+            ],
+            "origin": "Russia",
+            "category": "Malware Family",
+            "targets": [
+                "Enterprise"
+            ]
+        },
+        {
+            "name": "Mustang Panda",
+            "aliases": [
+                "Bronze President",
+                "TA416"
+            ],
+            "origin": "China",
+            "category": "APT",
+            "targets": [
+                "Government",
+                "NGO",
+                "Religious"
+            ]
+        },
+        {
+            "name": "Stone Panda",
+            "aliases": [
+                "APT10",
+                "MenuPass"
+            ],
+            "origin": "China",
+            "category": "APT",
+            "targets": [
+                "Healthcare",
+                "Technology",
+                "Aerospace"
+            ]
+        },
+        {
+            "name": "Ocean Lotus",
+            "aliases": [
+                "APT32",
+                "OceanLotus"
+            ],
+            "origin": "Vietnam",
+            "category": "APT",
+            "targets": [
+                "Foreign Government",
+                "Media",
+                "Private Sector"
+            ]
+        },
+        {
+            "name": "Winnti",
+            "aliases": [
+                "APT41",
+                "Barium",
+                "Wicked Panda"
+            ],
+            "origin": "China",
+            "category": "APT",
+            "targets": [
+                "Gaming",
+                "Technology",
+                "Healthcare"
+            ]
+        }
+    ]
+}
