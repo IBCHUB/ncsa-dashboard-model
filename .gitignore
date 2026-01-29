@@ -1,0 +1,28 @@
+# System
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Data
+data_lake/
+ai-service/data/
+*.log
+
+# Docker
+.docker/
+
+# Agent
+.agent/
+brain/

@@ -1,0 +1,137 @@
+.threatLevelRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-xl);
+}
+
+@media (max-width: 1024px) {
+  .threatLevelRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chartRow {
+  margin-bottom: var(--spacing-xl);
+}
+
+.sectorRow {
+  margin-bottom: var(--spacing-xl);
+}
+
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-xl);
+}
+
+@media (max-width: 1200px) {
+  .statsGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .statsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chartsRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-xl);
+}
+
+@media (max-width: 1024px) {
+  .chartsRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+.topLists {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-lg);
+}
+
+.topList {
+  background-color: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+}
+
+.topList h4 {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0 0 var(--spacing-md) 0;
+}
+
+.topList ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.topList li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-sm) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.topList li:last-child {
+  border-bottom: none;
+}
+
+.listLabel {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.listValue {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.alertsSection {
+  margin-bottom: var(--spacing-xl);
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--color-border);
+}
+
+.lastUpdated {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 400px;
+  gap: var(--spacing-md);
+  color: var(--color-text-muted);
+}
+
+.error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 400px;
+  gap: var(--spacing-md);
+  color: var(--color-severity-medium);
+}

@@ -1,0 +1,205 @@
+.statsGrid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--spacing-lg);
+    margin-bottom: var(--spacing-xl);
+}
+
+@media (max-width: 1024px) {
+    .statsGrid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+.statCard {
+    background-color: var(--color-bg-card);
+    border: 1px solid var(--color-border);
+    border-left: 4px solid var(--color-accent-primary);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+    text-align: center;
+}
+
+.statValue {
+    display: block;
+    font-size: var(--text-2xl);
+    font-weight: 700;
+    color: var(--color-text-primary);
+    margin-bottom: var(--spacing-xs);
+}
+
+.statLabel {
+    font-size: var(--text-sm);
+    color: var(--color-text-secondary);
+}
+
+.filterSection {
+    display: flex;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-lg);
+}
+
+.searchInput {
+    flex: 1;
+    max-width: 400px;
+    padding: 0.625rem 1rem;
+    font-size: var(--text-sm);
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-card);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    outline: none;
+}
+
+.searchInput:focus {
+    border-color: var(--color-accent-primary);
+}
+
+.filterSelect {
+    padding: 0.625rem 1rem;
+    font-size: var(--text-sm);
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-card);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    min-width: 180px;
+}
+
+.resultsInfo {
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+    margin-bottom: var(--spacing-lg);
+}
+
+.newsGrid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--spacing-lg);
+}
+
+@media (max-width: 1200px) {
+    .newsGrid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .newsGrid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.newsCard {
+    background-color: var(--color-bg-card);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+    display: flex;
+    flex-direction: column;
+    transition: all var(--transition-fast);
+}
+
+.newsCard:hover {
+    border-color: var(--color-accent-primary);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.cardHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-md);
+}
+
+.sourceBadge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: 0.25rem 0.75rem;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: white;
+    border-radius: var(--radius-full);
+}
+
+.date {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+}
+
+.title {
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--color-text-primary);
+    margin: 0 0 var(--spacing-md) 0;
+    line-height: 1.4;
+    flex-grow: 1;
+}
+
+.iocsSection {
+    margin-bottom: var(--spacing-md);
+    padding-top: var(--spacing-sm);
+    border-top: 1px solid var(--color-border);
+}
+
+.iocsLabel {
+    display: block;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    margin-bottom: var(--spacing-sm);
+}
+
+.iocsList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-xs);
+}
+
+.moreIOCs {
+    padding: 0.125rem 0.5rem;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    background-color: var(--color-bg-tertiary);
+    border-radius: var(--radius-sm);
+}
+
+.cardFooter {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: var(--spacing-md);
+    border-top: 1px solid var(--color-border);
+}
+
+.iocCount {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+}
+
+.readMore {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--color-accent-primary);
+    text-decoration: none;
+    transition: all var(--transition-fast);
+}
+
+.readMore:hover {
+    color: var(--color-accent-secondary);
+    text-decoration: underline;
+}
+
+.loading,
+.empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 300px;
+    color: var(--color-text-muted);
+    background-color: var(--color-bg-card);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+}

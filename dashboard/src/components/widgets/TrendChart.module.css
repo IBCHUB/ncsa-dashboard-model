@@ -1,0 +1,77 @@
+.container {
+    background: linear-gradient(135deg, rgba(30, 30, 46, 0.95), rgba(24, 24, 37, 0.98));
+    border-radius: 16px;
+    padding: 20px;
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #fff;
+    margin: 0;
+}
+
+.icon {
+    font-size: 1.2rem;
+}
+
+.legend {
+    display: flex;
+    gap: 16px;
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.legendItem {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.solidLine {
+    width: 20px;
+    height: 2px;
+    background: #8b5cf6;
+}
+
+.dashedLine {
+    width: 20px;
+    height: 2px;
+    background: repeating-linear-gradient(90deg,
+            #8b5cf6 0px,
+            #8b5cf6 4px,
+            transparent 4px,
+            transparent 8px);
+}
+
+.loading {
+    text-align: center;
+    padding: 60px;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.chartWrapper {
+    margin: 0 -10px;
+}
+
+.footer {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.4);
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}

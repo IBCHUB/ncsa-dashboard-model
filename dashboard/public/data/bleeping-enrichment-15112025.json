@@ -1,0 +1,426 @@
+{
+    "took": 0,
+    "timed_out": false,
+    "_shards": {
+        "total": 1,
+        "successful": 1,
+        "skipped": 0,
+        "failed": 0
+    },
+    "hits": {
+        "total": {
+            "value": 5,
+            "relation": "eq"
+        },
+        "max_score": 1.0,
+        "hits": [
+            {
+                "_index": "bleeping-enrichment-15112025",
+                "_id": "YX0Sh5oB-p2Jyb54zkvY",
+                "_score": 1.0,
+                "_source": {
+                    "source_type": "news",
+                    "source_name": "BleepingComputer",
+                    "source_url": "https://www.bleepingcomputer.com/news/security/checkoutcom-snubs-shinyhunters-hackers-to-donate-ransom-instead/",
+                    "collect_time": "2025-11-15T10:32:28Z",
+                    "event_time": "2025-11-14T11:25:42Z",
+                    "threat_type": [],
+                    "severity": "clean",
+                    "confidence": 0,
+                    "ioc": {
+                        "type": "domain",
+                        "value": "checkout.com",
+                        "related_hash": "",
+                        "related_domain": ""
+                    },
+                    "geo_info": {},
+                    "description": "",
+                    "reference": "https://www.bleepingcomputer.com/news/security/checkoutcom-snubs-shinyhunters-hackers-to-donate-ransom-instead/",
+                    "tags": [],
+                    "status": "new",
+                    "misp_event_id": null,
+                    "insert_datetime": "2025-11-15T10:32:28Z",
+                    "source_index": "bleeping-filter-15112025",
+                    "source_id": "-l8Rh5oBbtwrSazScr2h",
+                    "enrichment": {
+                        "events": {
+                            "registration": "2002-10-25T13:17:34Z",
+                            "last changed": "2025-07-22T15:15:38.669Z",
+                            "expiration": "2027-10-25T13:17:34Z",
+                            "registrar expiration": "2027-10-25T13:17:34Z"
+                        },
+                        "status": [
+                            "client transfer prohibited"
+                        ],
+                        "whois": {
+                            "admin_city": "DATA REDACTED",
+                            "admin_country": "DATA REDACTED",
+                            "admin_organization": "DATA REDACTED",
+                            "admin_postal_code": "DATA REDACTED",
+                            "admin_state/province": "DATA REDACTED",
+                            "billing_city": "DATA REDACTED",
+                            "billing_country": "DATA REDACTED",
+                            "billing_organization": "DATA REDACTED",
+                            "billing_postal_code": "DATA REDACTED",
+                            "billing_state/province": "DATA REDACTED",
+                            "creation_date": "2002-10-25T13:17:34Z",
+                            "dnssec": "unsigned",
+                            "domain_name": "CHECKOUT.COM",
+                            "domain_status": "clienttransferprohibited https://icann.org/epp#clienttransferprohibited",
+                            "name_server": "kristina.ns.cloudflare.com",
+                            "registrant_city": "acfd0ee3752cd95d",
+                            "registrant_country": "GB",
+                            "registrant_email": "96d3316692bb02ffs@",
+                            "registrant_fax_ext": "acfd0ee3752cd95d",
+                            "registrant_fax": "acfd0ee3752cd95d",
+                            "registrant_name": "acfd0ee3752cd95d",
+                            "registrant_organization": "acfd0ee3752cd95d",
+                            "registrant_phone_ext": "acfd0ee3752cd95d",
+                            "registrant_phone": "acfd0ee3752cd95d",
+                            "registrant_postal_code": "acfd0ee3752cd95d",
+                            "registrant_state/province": "4035e4865cb95ee8",
+                            "registrant_street": "acfd0ee3752cd95d",
+                            "registrar_abuse_contact_email": "registrar-abuse@cloudflare.com",
+                            "registrar_abuse_contact_phone": "+1.6503198930",
+                            "registrar_iana_id": "1910",
+                            "registrar_registration_expiration_date": "2027-10-25T13:17:34Z",
+                            "registrar_url": "https://www.cloudflare.com",
+                            "registrar_whois_server": "whois.cloudflare.com",
+                            "registrar": "Cloudflare, Inc.",
+                            "registry_domain_id": "91562808_DOMAIN_COM-VRSN",
+                            "registry_expiry_date": "2027-10-25T13:17:34Z",
+                            "tech_city": "DATA REDACTED",
+                            "tech_country": "DATA REDACTED",
+                            "tech_organization": "DATA REDACTED",
+                            "tech_postal_code": "DATA REDACTED",
+                            "tech_state/province": "DATA REDACTED",
+                            "updated_date": "2025-07-22T15:15:38Z"
+                        },
+                        "categories": [],
+                        "souce": "Virustotal"
+                    }
+                }
+            },
+            {
+                "_index": "bleeping-enrichment-15112025",
+                "_id": "Yn0Sh5oB-p2Jyb54zkvY",
+                "_score": 1.0,
+                "_source": {
+                    "source_type": "news",
+                    "source_name": "BleepingComputer",
+                    "source_url": "https://www.bleepingcomputer.com/news/security/fortiweb-flaw-with-public-poc-actively-exploited-to-create-admin-users/",
+                    "collect_time": "2025-11-15T10:32:28Z",
+                    "event_time": "2025-11-13T21:41:28Z",
+                    "threat_type": [],
+                    "severity": "low",
+                    "confidence": 1,
+                    "ioc": {
+                        "type": "ip",
+                        "value": "107.152.41.19",
+                        "related_hash": "",
+                        "related_domain": ""
+                    },
+                    "geo_info": {},
+                    "description": "",
+                    "reference": "https://www.bleepingcomputer.com/news/security/fortiweb-flaw-with-public-poc-actively-exploited-to-create-admin-users/",
+                    "tags": [],
+                    "status": "new",
+                    "misp_event_id": null,
+                    "insert_datetime": "2025-11-15T10:32:28Z",
+                    "source_index": "bleeping-filter-15112025",
+                    "source_id": "_l8Rh5oBbtwrSazScr2h",
+                    "enrichment": {
+                        "events": {
+                            "last changed": "2017-04-17T08:13:31-04:00",
+                            "registration": "2013-12-03T15:30:24-05:00"
+                        },
+                        "status": [
+                            "active"
+                        ],
+                        "whois": {
+                            "netrange": "107.152.32.0 - 107.152.47.255",
+                            "cidr": "107.152.32.0/20",
+                            "netname": "SERVE-120",
+                            "nethandle": "NET-107-152-32-0-1",
+                            "parent": "NET107 (NET-107-0-0-0-0)",
+                            "nettype": "Direct Allocation",
+                            "originas": "",
+                            "organization": "Cloudfanatic.NET (SERVE-120)",
+                            "regdate": "2017-04-03",
+                            "updated": "2024-11-25",
+                            "ref": "https://rdap.arin.net/registry/entity/SERVE-120",
+                            "orgname": "Cloudfanatic.NET",
+                            "orgid": "SERVE-120",
+                            "address": "39 Lincoln st",
+                            "city": "Glenview",
+                            "stateprov": "IL",
+                            "postalcode": "60025",
+                            "country": "US",
+                            "comment": "****************************",
+                            "referralserver": "rwhois://rwhois.cloudfanatic.net:4321",
+                            "orgabusehandle": "ABUSE6030-ARIN",
+                            "orgabusename": "Abuse POC",
+                            "orgabusephone": "+1-847-208-2589",
+                            "orgabuseemail": "abuse@cloudfanatic.net",
+                            "orgabuseref": "https://rdap.arin.net/registry/entity/ABUSE6030-ARIN",
+                            "orgnochandle": "NOC32655-ARIN",
+                            "orgnocname": "Network Operations Center",
+                            "orgnocphone": "+1-847-208-2589",
+                            "orgnocemail": "support@cloudfanatic.net",
+                            "orgnocref": "https://rdap.arin.net/registry/entity/NOC32655-ARIN",
+                            "orgtechhandle": "NOC32655-ARIN",
+                            "orgtechname": "Network Operations Center",
+                            "orgtechphone": "+1-847-208-2589",
+                            "orgtechemail": "support@cloudfanatic.net",
+                            "orgtechref": "https://rdap.arin.net/registry/entity/NOC32655-ARIN"
+                        },
+                        "ip_info": {
+                            "ip": "107.152.41.19",
+                            "asn_data": {
+                                "ip": "107.152.41.19",
+                                "city": "Chicago",
+                                "region": "Illinois",
+                                "country": "US",
+                                "loc": "41.8500,-87.6500",
+                                "org": "AS11878 tzulo, inc.",
+                                "postal": "60602",
+                                "timezone": "America/Chicago",
+                                "readme": "https://ipinfo.io/missingauth"
+                            },
+                            "status": "active"
+                        },
+                        "souce": "Virustotal"
+                    }
+                }
+            },
+            {
+                "_index": "bleeping-enrichment-15112025",
+                "_id": "Y30Sh5oB-p2Jyb54zkvY",
+                "_score": 1.0,
+                "_source": {
+                    "source_type": "news",
+                    "source_name": "BleepingComputer",
+                    "source_url": "https://www.bleepingcomputer.com/news/security/fortiweb-flaw-with-public-poc-actively-exploited-to-create-admin-users/",
+                    "collect_time": "2025-11-15T10:32:28Z",
+                    "event_time": "2025-11-13T21:41:28Z",
+                    "threat_type": [],
+                    "severity": "low",
+                    "confidence": 2,
+                    "ioc": {
+                        "type": "ip",
+                        "value": "64.95.13.8",
+                        "related_hash": "",
+                        "related_domain": ""
+                    },
+                    "geo_info": {},
+                    "description": "",
+                    "reference": "https://www.bleepingcomputer.com/news/security/fortiweb-flaw-with-public-poc-actively-exploited-to-create-admin-users/",
+                    "tags": [],
+                    "status": "new",
+                    "misp_event_id": null,
+                    "insert_datetime": "2025-11-15T10:32:28Z",
+                    "source_index": "bleeping-filter-15112025",
+                    "source_id": "_l8Rh5oBbtwrSazScr2h",
+                    "enrichment": {
+                        "events": {
+                            "last changed": "2024-02-18T14:07:08-05:00",
+                            "registration": "2024-02-05T09:51:23-05:00"
+                        },
+                        "status": [
+                            "active"
+                        ],
+                        "whois": {
+                            "netrange": "64.95.10.0 - 64.95.13.255",
+                            "cidr": "64.95.10.0/23, 64.95.12.0/23",
+                            "netname": "BNL-77",
+                            "nethandle": "NET-64-95-10-0-1",
+                            "parent": "NET64 (NET-64-0-0-0-0)",
+                            "nettype": "Direct Allocation",
+                            "originas": "",
+                            "organization": "BL Networks (BNL-77)",
+                            "regdate": "2019-11-01",
+                            "updated": "2024-11-25",
+                            "comment": "Geofeed https://geoip.blnwx.com/csv",
+                            "ref": "https://rdap.arin.net/registry/entity/BNL-77",
+                            "orgname": "BL Networks",
+                            "orgid": "BNL-77",
+                            "address": "Ste R",
+                            "city": "Sheridan",
+                            "stateprov": "WY",
+                            "postalcode": "82801",
+                            "country": "US",
+                            "orgtechhandle": "ADMIN7234-ARIN",
+                            "orgtechname": "Admin",
+                            "orgtechphone": "+1-307-317-1097",
+                            "orgtechemail": "admin@blnwx.com",
+                            "orgtechref": "https://rdap.arin.net/registry/entity/ADMIN7234-ARIN",
+                            "orgabusehandle": "ADMIN7234-ARIN",
+                            "orgabusename": "Admin",
+                            "orgabusephone": "+1-307-317-1097",
+                            "orgabuseemail": "admin@blnwx.com",
+                            "orgabuseref": "https://rdap.arin.net/registry/entity/ADMIN7234-ARIN"
+                        },
+                        "ip_info": {
+                            "ip": "64.95.13.8",
+                            "asn_data": {
+                                "ip": "64.95.13.8",
+                                "city": "Dallas",
+                                "region": "Texas",
+                                "country": "US",
+                                "loc": "32.7831,-96.8067",
+                                "org": "AS399629 BL Networks",
+                                "postal": "75201",
+                                "timezone": "America/Chicago",
+                                "readme": "https://ipinfo.io/missingauth"
+                            },
+                            "status": "active"
+                        },
+                        "souce": "Virustotal"
+                    }
+                }
+            },
+            {
+                "_index": "bleeping-enrichment-15112025",
+                "_id": "ZH0Sh5oB-p2Jyb54zkvY",
+                "_score": 1.0,
+                "_source": {
+                    "source_type": "news",
+                    "source_name": "BleepingComputer",
+                    "source_url": "https://www.bleepingcomputer.com/news/security/fortiweb-flaw-with-public-poc-actively-exploited-to-create-admin-users/",
+                    "collect_time": "2025-11-15T10:32:28Z",
+                    "event_time": "2025-11-13T21:41:28Z",
+                    "threat_type": [],
+                    "severity": "clean",
+                    "confidence": 0,
+                    "ioc": {
+                        "type": "ip",
+                        "value": "185.192.70.0",
+                        "related_hash": "",
+                        "related_domain": ""
+                    },
+                    "geo_info": {},
+                    "description": "",
+                    "reference": "https://www.bleepingcomputer.com/news/security/fortiweb-flaw-with-public-poc-actively-exploited-to-create-admin-users/",
+                    "tags": [],
+                    "status": "new",
+                    "misp_event_id": null,
+                    "insert_datetime": "2025-11-15T10:32:28Z",
+                    "source_index": "bleeping-filter-15112025",
+                    "source_id": "_l8Rh5oBbtwrSazScr2h",
+                    "enrichment": {
+                        "events": {
+                            "registration": "2024-06-18T08:39:15Z",
+                            "last changed": "2024-06-18T08:39:15Z"
+                        },
+                        "status": [
+                            "active"
+                        ],
+                        "whois": {
+                            "inetnum": "185.192.70.0 - 185.192.70.255",
+                            "netname": "LONDON-GB-185-192-70-0",
+                            "country": "GB",
+                            "geoloc": "51.5071588 -0.1111552",
+                            "geofeed": "https://www.prefixbroker.com/prefixbroker-geofeed.csv",
+                            "org": "ORG-VCLU1-RIPE",
+                            "admin-c": "VCAR3-RIPE",
+                            "tech-c": "VCAR3-RIPE",
+                            "status": "ASSIGNED PA",
+                            "mnt-by": "PREFIXBROKER-MNT",
+                            "created": "2024-06-18T08:39:15Z",
+                            "last-modified": "2024-06-18T08:39:15Z",
+                            "source": "RIPE",
+                            "organisation": "ORG-VCLU1-RIPE",
+                            "org-name": "VPN Consumer London, United Kingdom",
+                            "org-type": "OTHER",
+                            "address": "Republica de Panama",
+                            "abuse-c": "VCAR3-RIPE",
+                            "mnt-ref": "PREFIXBROKER-MNT",
+                            "role": "VPN Consumer Abuse Role",
+                            "nic-hdl": "VCAR3-RIPE",
+                            "abuse-mailbox": "abuse-reports@vpnconsumer.com",
+                            "route": "185.192.70.0/24",
+                            "origin": "AS42831"
+                        },
+                        "ip_info": {
+                            "ip": "185.192.70.0",
+                            "asn_data": {
+                                "ip": "185.192.70.0",
+                                "city": "London",
+                                "region": "England",
+                                "country": "GB",
+                                "loc": "51.5125,-0.1225",
+                                "org": "AS42831 UK Dedicated Servers Limited",
+                                "postal": "EC4",
+                                "timezone": "Europe/London",
+                                "readme": "https://ipinfo.io/missingauth"
+                            },
+                            "status": "active"
+                        },
+                        "souce": "Virustotal"
+                    }
+                }
+            },
+            {
+                "_index": "bleeping-enrichment-15112025",
+                "_id": "Zn0Sh5oB-p2Jyb54zkvY",
+                "_score": 1.0,
+                "_source": {
+                    "source_type": "news",
+                    "source_name": "BleepingComputer",
+                    "source_url": "https://www.bleepingcomputer.com/news/security/cisa-warns-of-akira-ransomware-linux-encryptor-targeting-nutanix-vms/",
+                    "collect_time": "2025-11-15T10:32:28Z",
+                    "event_time": "2025-11-13T17:32:42Z",
+                    "threat_type": [
+                        "cnc_server"
+                    ],
+                    "severity": "high",
+                    "confidence": 20,
+                    "ioc": {
+                        "type": "domain",
+                        "value": "wmiexec.py",
+                        "related_hash": "",
+                        "related_domain": ""
+                    },
+                    "geo_info": {},
+                    "description": "Detected activity linked to: Lazarus Group (Threat-Actor-Group)",
+                    "reference": "https://www.bleepingcomputer.com/news/security/cisa-warns-of-akira-ransomware-linux-encryptor-targeting-nutanix-vms/",
+                    "tags": [],
+                    "status": "new",
+                    "misp_event_id": null,
+                    "insert_datetime": "2025-11-15T10:32:28Z",
+                    "source_index": "bleeping-filter-15112025",
+                    "source_id": "AF8Rh5oBbtwrSazScr6h",
+                    "enrichment": {
+                        "related_entities": [
+                            {
+                                "entity_id": "4528ce83-4351-49b3-a14b-493284502e54",
+                                "entity_type": "Threat-Actor-Group",
+                                "entity_name": "Lazarus Group"
+                            }
+                        ],
+                        "ips": [],
+                        "whois": {
+                            "registrant_name": null,
+                            "registrant_email": null,
+                            "registrant_organization": null,
+                            "registrant_country": null,
+                            "registrant_telephone": null,
+                            "technical_contact_email": null,
+                            "technical_contact_name": null,
+                            "technical_contact_organization": null,
+                            "registrar_name": null,
+                            "admin_contact_name": null,
+                            "admin_contact_organization": null,
+                            "admin_contact_email": null,
+                            "created_date": null,
+                            "updated_date": null,
+                            "expiration_date": null
+                        },
+                        "souce": "Cyberint"
+                    },
+                    "last_seen": "2025-09-29T14:31:47.768000Z"
+                }
+            }
+        ]
+    }
+}

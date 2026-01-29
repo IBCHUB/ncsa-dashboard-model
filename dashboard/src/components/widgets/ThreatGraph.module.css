@@ -1,0 +1,58 @@
+.graphContainer {
+    position: relative;
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.8) 0%, rgba(30, 41, 59, 0.9) 100%);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+
+.loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 400px;
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+}
+
+.empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 200px;
+    background-color: var(--color-bg-tertiary);
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-lg);
+}
+
+.empty p {
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+}
+
+/* Legend */
+.legend {
+    position: absolute;
+    bottom: var(--spacing-md);
+    left: var(--spacing-md);
+    display: flex;
+    gap: var(--spacing-md);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    border-radius: var(--radius-md);
+    font-size: var(--text-xs);
+}
+
+.legendItem {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    color: var(--color-text-secondary);
+}
+
+.legendDot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+}

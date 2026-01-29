@@ -1,0 +1,168 @@
+.container {
+    background: linear-gradient(145deg, #0f172a, #1e293b);
+    border-radius: 16px;
+    padding: 1.5rem;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.header {
+    margin-bottom: 1.25rem;
+}
+
+.header h3 {
+    color: #fff;
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0;
+}
+
+.subtitle {
+    color: #64748b;
+    font-size: 0.75rem;
+}
+
+.loading,
+.empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    color: #64748b;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+}
+
+.sectorCard {
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 12px;
+    padding: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.sectorCard:hover {
+    border-color: rgba(96, 165, 250, 0.3);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.sectorCard.expanded {
+    border-color: rgba(96, 165, 250, 0.5);
+}
+
+.cardHeader {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.sectorIcon {
+    font-size: 1.75rem;
+}
+
+.sectorInfo {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.sectorName {
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+.sectorNameEn {
+    color: #64748b;
+    font-size: 0.75rem;
+}
+
+.threatLevel {
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #fff;
+}
+
+.statsRow {
+    display: flex;
+    gap: 1rem;
+}
+
+.stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.statValue {
+    color: #fff;
+    font-size: 1.25rem;
+    font-weight: 700;
+}
+
+.statLabel {
+    color: #64748b;
+    font-size: 0.7rem;
+}
+
+/* Expanded Content */
+.expandedContent {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.severityBar {
+    display: flex;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 0.75rem;
+}
+
+.severitySegment {
+    height: 100%;
+    transition: width 0.3s ease;
+}
+
+.threatTypes,
+.threatActors {
+    margin-bottom: 0.5rem;
+}
+
+.label {
+    display: block;
+    color: #94a3b8;
+    font-size: 0.7rem;
+    margin-bottom: 0.35rem;
+}
+
+.tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.tag {
+    background: rgba(96, 165, 250, 0.15);
+    color: #60a5fa;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+}
+
+.actorTag {
+    background: rgba(248, 113, 113, 0.15);
+    color: #f87171;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+}
