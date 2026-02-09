@@ -250,16 +250,31 @@ The Reports page supports multiple export formats:
 
 ---
 
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [AI-SCORING.md](docs/AI-SCORING.md) | Risk scoring logic, weights, policy gates |
+| [TREND-PREDICTION.md](docs/TREND-PREDICTION.md) | Prophet trend forecasting |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture & component details |
+| [API.md](docs/API.md) | AI Service API reference |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment guide |
+| [USER_GUIDE.md](docs/USER_GUIDE.md) | Dashboard user guide |
+| [AI_PIPELINE_EXPLAINED_TH.md](docs/AI_PIPELINE_EXPLAINED_TH.md) | AI Pipeline อธิบายภาษาไทย |
+
+---
+
 ## Project Structure
 
 ```
 Cyber/
 ├── ai-service/           # Python AI Service
 │   ├── main.py          # FastAPI application
-│   ├── models/          # AI/ML models
-│   ├── utils/           # Utilities (translator, etc.)
+│   ├── models/          # AI/ML models (classifier, scorer, trend)
+│   ├── utils/           # Utilities (translator, scraper)
 │   ├── scripts/         # Pipeline scripts
-│   └── elastic_client.py # Elasticsearch client
+│   ├── integrations/    # HelpDesk integration
+│   └── tests/           # Unit tests
 │
 ├── dashboard/            # Next.js Dashboard
 │   ├── src/
@@ -268,6 +283,7 @@ Cyber/
 │   │   └── lib/         # Utilities & types
 │   └── public/data/     # Static data files
 │
+├── docs/                 # All documentation
 ├── data_lake/           # Raw IOC data (JSON)
 ├── docker-compose.yml   # Docker orchestration
 └── README.md            # This file
