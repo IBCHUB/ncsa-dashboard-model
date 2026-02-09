@@ -34,17 +34,17 @@ export default function CVEIntelligencePage() {
     const matchesSearch = !search || 
       cve.ioc.value.toLowerCase().includes(search.toLowerCase()) ||
       cve.description?.toLowerCase().includes(search.toLowerCase());
-    const matchesSeverity = !severityFilter || cve.severity === severityFilter;
+    const matchesSeverity = !severityFilter || (cve.aiSeverity || cve.severity) === severityFilter;
     return matchesSearch && matchesSeverity;
   });
 
   // Group CVEs by severity for stats
   const stats = {
     total: cves.length,
-    critical: cves.filter(c => c.severity === 'critical').length,
-    high: cves.filter(c => c.severity === 'high').length,
-    medium: cves.filter(c => c.severity === 'medium').length,
-    low: cves.filter(c => c.severity === 'low').length,
+    critical: cves.filter(c => (c.aiSeverity || c.severity) === 'critical').length,
+    high: cves.filter(c => (c.aiSeverity || c.severity) === 'high').length,
+    medium: cves.filter(c => (c.aiSeverity || c.severity) === 'medium').length,
+    low: cves.filter(c => (c.aiSeverity || c.severity) === 'low').length,
   };
 
   const formatDate = (dateStr: string) => {
@@ -136,8 +136,8 @@ export default function CVEIntelligencePage() {
                       <span className={styles.cveId}>{cve.ioc.value}</span>
                     </td>
                     <td>
-                      <span className={getSeverityBadgeClass(cve.severity || 'low')}>
-                        {cve.severity || 'low'}
+                      <span className={getSeverityBadgeClass(cve.aiSeverity || cve.severity || 'low')}>
+                        {cve.aiSeverity || cve.severity || 'low'}
                       </span>
                     </td>
                     <td className={styles.source}>{cve.source_name}</td>

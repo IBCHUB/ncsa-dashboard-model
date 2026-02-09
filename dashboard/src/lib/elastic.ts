@@ -69,14 +69,18 @@ export async function checkElasticsearchHealth(): Promise<{ status: string; avai
 
 export async function searchWarehouse(params: {
     query?: string;
-    iocType?: string;
-    severity?: string;
+    iocTypes?: string[];
+    severityLevels?: string[];
+    dateFrom?: string;
+    dateTo?: string;
+    sortBy?: 'risk' | 'time';
     limit?: number;
     offset?: number;
 }): Promise<{ total: number; data: WarehouseIOC[] }> {
-    const { query = '*', iocType, severity, limit = 100, offset = 0 } = params;
+    const { query = '*', iocTypes, severityLevels, dateFrom, dateTo, sortBy = 'risk', limit = 100, offset = 0 } = params;
 
     const mustClauses: any[] = [];
+    const filterClauses: any[] = [];
 
     if (query && query !== '*') {
         mustClauses.push({
@@ -87,24 +91,47 @@ export async function searchWarehouse(params: {
         });
     }
 
-    if (iocType) {
-        mustClauses.push({ term: { ioc_type: iocType } });
+    if (iocTypes && iocTypes.length > 0) {
+        filterClauses.push({ terms: { ioc_type: iocTypes } });
     }
 
-    if (severity) {
-        mustClauses.push({ term: { ai_severity: severity } });
+    if (severityLevels && severityLevels.length > 0) {
+        filterClauses.push({ terms: { ai_severity: severityLevels } });
+    }
+
+    if (dateFrom || dateTo) {
+        const range: Record<string, string> = {};
+        if (dateFrom) range.gte = `${dateFrom}T00:00:00Z`;
+        if (dateTo) range.lte = `${dateTo}T23:59:59Z`;
+
+        filterClauses.push({
+            bool: {
+                should: [
+                    { range: { event_time: range } },
+                    { range: { first_seen: range } },
+                    { range: { collect_time: range } }
+                ],
+                minimum_should_match: 1
+            }
+        });
     }
 
     const searchBody = {
         query: {
             bool: {
-                must: mustClauses.length > 0 ? mustClauses : [{ match_all: {} }]
+                must: mustClauses.length > 0 ? mustClauses : [{ match_all: {} }],
+                filter: filterClauses
             }
         },
-        sort: [
-            { ai_risk_score: 'desc' },
-            { processed_at: 'desc' }
-        ],
+        sort: sortBy === 'time'
+            ? [
+                { event_time: { order: 'desc', missing: '_last' } },
+                { processed_at: { order: 'desc', missing: '_last' } }
+            ]
+            : [
+                { ai_risk_score: { order: 'desc', missing: '_last' } },
+                { processed_at: { order: 'desc', missing: '_last' } }
+            ],
         from: offset,
         size: limit
     };

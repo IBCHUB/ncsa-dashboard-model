@@ -10,13 +10,29 @@ interface SectorData {
   icon: string;
   criticalLevel: number;  // 1-5 scale
   attackCount: number;
-  lastAttack: string;
   topThreat: string;
 }
 
+interface SectorApiData {
+  name: string;
+  name_th: string;
+  icon: string;
+  count: number;
+  threat_level: 'clean' | 'low' | 'medium' | 'high' | 'critical';
+  threat_level_th: string;
+  by_severity: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
+  top_threat_types: Record<string, number>;
+  threat_actors: string[];
+}
+
 interface SectorsResponse {
-  lastUpdated: string;
-  sectors: SectorData[];
+  success: boolean;
+  data: Record<string, SectorApiData>;
 }
 
 interface ThreatLevelData {
@@ -45,20 +61,44 @@ export default function ThreatLevel() {
 
   const fetchThreatLevel = async () => {
     try {
-      // Fetch sector-based threat data
-      const response = await fetch('/data/sectors.json');
+      const response = await fetch('/api/sectors');
       const sectorsData: SectorsResponse = await response.json();
-      
-      if (!sectorsData?.sectors?.length) {
+
+      const sectorEntries = Object.entries(sectorsData?.data || {})
+        .filter(([key]) => key !== 'general');
+
+      if (sectorEntries.length === 0) {
         setLoading(false);
         return;
       }
 
-      const sectors = sectorsData.sectors;
+      const severityLevelMap: Record<string, number> = {
+        clean: 1,
+        low: 2,
+        medium: 3,
+        high: 4,
+        critical: 5,
+      };
+
+      const sectors: SectorData[] = sectorEntries.map(([key, sector]) => {
+        const topThreat = Object.entries(sector.top_threat_types || {})
+          .sort((a, b) => b[1] - a[1])[0]?.[0] || '-';
+        return {
+          id: key,
+          name: sector.name_th,
+          nameEn: sector.name,
+          icon: sector.icon,
+          criticalLevel: severityLevelMap[sector.threat_level] || 1,
+          attackCount: sector.count || 0,
+          topThreat
+        };
+      });
 
       // Find highest impacted sector
-      const topSector = sectors.reduce((prev, curr) => 
-        (curr.criticalLevel > prev.criticalLevel) ? curr : prev
+      const topSector = sectors.reduce((prev, curr) =>
+        (curr.criticalLevel > prev.criticalLevel)
+          ? curr
+          : (curr.criticalLevel === prev.criticalLevel && curr.attackCount > prev.attackCount ? curr : prev)
       );
 
       // Count sectors with significant attacks (criticalLevel >= 3)
@@ -67,12 +107,12 @@ export default function ThreatLevel() {
 
       // Calculate score based on SECTOR IMPACT (as per MOM requirements)
       // Weight: criticalLevel of each sector, with higher weight for critical infrastructure
-      const CRITICAL_INFRASTRUCTURE = ['finance', 'government', 'energy', 'healthcare'];
+      const CRITICAL_INFRASTRUCTURE = ['financial', 'government', 'critical_infrastructure', 'healthcare'];
       
       let score = 0;
       for (const sector of sectors) {
         const multiplier = CRITICAL_INFRASTRUCTURE.includes(sector.id) ? 2 : 1;
-        score += sector.criticalLevel * multiplier * 10;
+        score += sector.criticalLevel * multiplier * 10 + Math.min(sector.attackCount, 20);
       }
 
       // Determine level based on SECTOR IMPACT
@@ -87,13 +127,13 @@ export default function ThreatLevel() {
 
       if (hasHighCriticalInfra || score >= 200) {
         level = 'critical';
-        description = `ระดับภัยคุกคามวิกฤต - ${topSector.name}ถูกโจมตีอย่างหนัก`;
+        description = `ระดับภัยคุกคามวิกฤต - ${topSector.name} ถูกโจมตีอย่างหนัก`;
       } else if (multipleSectorsAffected || score >= 120) {
         level = 'high';
         description = `ระดับภัยคุกคามสูง - ${affectedSectors} ภาคส่วนได้รับผลกระทบ`;
       } else if (affectedSectors >= 2 || score >= 60) {
         level = 'medium';
-        description = `ระดับภัยคุกคามปานกลาง - ${topSector.name}มีความเสี่ยง`;
+        description = `ระดับภัยคุกคามปานกลาง - ${topSector.name} มีความเสี่ยง`;
       } else {
         level = 'low';
         description = 'ระดับภัยคุกคามต่ำ - สถานการณ์ปลอดภัย';

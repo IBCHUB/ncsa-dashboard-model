@@ -12,7 +12,10 @@ type AlertStatus = 'open' | 'acknowledged' | 'resolved';
 interface Alert extends ThreatEvent {
   id: string;
   status: AlertStatus;
+  assignee?: string;
   acknowledgedAt?: string;
+  resolvedAt?: string;
+  updatedAt?: string;
 }
 
 export default function AlertsCenterPage() {
@@ -21,6 +24,7 @@ export default function AlertsCenterPage() {
   const [statusFilter, setStatusFilter] = useState<AlertStatus | ''>('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
+  const [updatingAlertId, setUpdatingAlertId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAlerts();
@@ -29,20 +33,14 @@ export default function AlertsCenterPage() {
   const fetchAlerts = async () => {
     setLoading(true);
     try {
-      // Fetch high severity threats as alerts
-      const response = await fetch('/api/iocs?limit=500');
+      const response = await fetch('/api/alerts');
       const data = await response.json();
-      
-      // Convert to alerts (high/critical AI severity threats)
-      const alertEvents = (data.data || [])
-        .filter((e: ThreatEvent) => (e.aiSeverity || e.severity) === 'high' || (e.aiSeverity || e.severity) === 'critical' || (e.aiSeverity || e.severity) === 'medium')
-        .map((e: ThreatEvent, idx: number) => ({
-          ...e,
-          id: `ALERT-${String(idx + 1).padStart(5, '0')}`,
-          status: 'open' as AlertStatus,
-        }));
-      
-      setAlerts(alertEvents);
+
+      if (data.success) {
+        setAlerts(data.data || []);
+      } else {
+        setAlerts([]);
+      }
     } catch (error) {
       console.error('Error fetching alerts:', error);
     } finally {
@@ -50,12 +48,41 @@ export default function AlertsCenterPage() {
     }
   };
 
-  const handleStatusChange = (alertId: string, newStatus: AlertStatus) => {
-    setAlerts(alerts.map(a => 
-      a.id === alertId 
-        ? { ...a, status: newStatus, acknowledgedAt: newStatus === 'acknowledged' ? new Date().toISOString() : undefined }
-        : a
-    ));
+  const handleStatusChange = async (alertId: string, newStatus: AlertStatus) => {
+    setUpdatingAlertId(alertId);
+    try {
+      const response = await fetch('/api/alerts', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          alertId,
+          status: newStatus,
+          actor: 'dashboard-analyst'
+        })
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Failed to update alert');
+      }
+
+      setAlerts(prev => prev.map(a =>
+        a.id === alertId
+          ? {
+              ...a,
+              status: result.data.status,
+              acknowledgedAt: result.data.acknowledgedAt,
+              resolvedAt: result.data.resolvedAt,
+              updatedAt: result.data.updatedAt,
+              assignee: result.data.assignee
+            }
+          : a
+      ));
+    } catch (error) {
+      console.error('Error updating alert status:', error);
+      alert('Failed to update alert status.');
+    } finally {
+      setUpdatingAlertId(null);
+    }
   };
 
   const filteredAlerts = alerts.filter(alert => {
@@ -224,16 +251,18 @@ export default function AlertsCenterPage() {
                         <button
                           onClick={() => handleStatusChange(alert.id, 'acknowledged')}
                           className={styles.ackBtn}
+                          disabled={updatingAlertId === alert.id}
                         >
-                          Acknowledge
+                          {updatingAlertId === alert.id ? 'Updating...' : 'Acknowledge'}
                         </button>
                       )}
                       {alert.status === 'acknowledged' && (
                         <button
                           onClick={() => handleStatusChange(alert.id, 'resolved')}
                           className={styles.resolveBtn}
+                          disabled={updatingAlertId === alert.id}
                         >
-                          Resolve
+                          {updatingAlertId === alert.id ? 'Updating...' : 'Resolve'}
                         </button>
                       )}
                       {alert.status === 'resolved' && (

@@ -14,6 +14,7 @@ Calculate risk scores for IOCs based on multiple factors:
 from typing import List, Dict, Any, Optional
 import math
 import re
+import os
 import logging
 
 from config import (
@@ -31,6 +32,34 @@ from config import (
 from models.sector_classifier import classify_sector
 
 logger = logging.getLogger(__name__)
+
+SCORE_MODEL_VERSION = os.getenv("SCORE_MODEL_VERSION", "scoring-v2.0.0")
+SCORE_CONFIG_VERSION = os.getenv("SCORE_CONFIG_VERSION", "weights-v1")
+
+# Mapping between breakdown factors and configurable scoring weights.
+WEIGHT_KEY_BY_FACTOR = {
+    "cross_source": "cross_source",
+    "source_quality": "threat_intel_source",
+    "keywords": "high_risk_keywords",
+    "domain_age": "domain_age",
+    "entropy": "entropy",
+    "threat_type_severity": "threat_type_severity",
+    "threat_actor": "threat_actor",
+    "mitre_techniques": "mitre_techniques",
+    "ai_confidence": "ai_confidence"
+}
+
+
+def _weighted_points(factor: str, raw_score: float, max_score: float) -> float:
+    """
+    Convert raw factor score into weighted contribution using SCORING_WEIGHTS.
+    """
+    if max_score <= 0:
+        return 0.0
+    normalized = min(max(raw_score, 0.0), max_score) / max_score
+    weight_key = WEIGHT_KEY_BY_FACTOR.get(factor)
+    weight = SCORING_WEIGHTS.get(weight_key, 0.0) if weight_key else 0.0
+    return round(normalized * weight * 100, 3)
 
 
 def calculate_entropy(text: str) -> float:
@@ -79,11 +108,16 @@ def calculate_keyword_score(text: str) -> Dict[str, Any]:
     
     text_lower = text.lower()
     matched = []
-    
+
+    # Use boundary-aware regex to reduce substring false positives.
     for keyword in HIGH_RISK_KEYWORDS:
-        if keyword.lower() in text_lower:
+        keyword_lower = keyword.lower().strip()
+        if not keyword_lower:
+            continue
+        pattern = r"(?<![a-z0-9])" + re.escape(keyword_lower) + r"(?![a-z0-9])"
+        if re.search(pattern, text_lower):
             matched.append(keyword)
-    
+
     # Score: max 25 points (5 keywords = max)
     score = min(len(matched) * 5, 25)
     
@@ -129,20 +163,26 @@ def calculate_source_score(sources: List[str]) -> Dict[str, Any]:
     }
 
 
-def calculate_cross_source_score(source_count: int) -> int:
+def calculate_cross_source_score(source_count: int, source_diversity: int = 1) -> int:
     """
-    Calculate score based on how many sources reported this IOC.
+    Calculate score based on source corroboration + diversity.
+    Designed to avoid double-counting with source quality scoring.
     """
     if source_count <= 0:
         return 0
     elif source_count == 1:
         return 5
     elif source_count == 2:
-        return 15
+        base = 10
     elif source_count == 3:
-        return 25
+        base = 15
     else:
-        return min(30 + (source_count - 3) * 5, 40)
+        # Diminishing returns for additional sources
+        base = min(20 + (source_count - 4) * 3, 28)
+
+    # Diversity bonus encourages corroboration across different source classes.
+    diversity_bonus = max(0, source_diversity - 1) * 2
+    return min(base + diversity_bonus, 30)
 
 
 def calculate_geo_risk(country_code: Optional[str]) -> Dict[str, Any]:
@@ -466,13 +506,13 @@ def calculate_confidence_bonus(confidence: float) -> Dict[str, Any]:
         Dict with bonus score and confidence level
     """
     if confidence >= CONFIDENCE_THRESHOLDS["very_high"]:
-        bonus = 10
+        bonus = 8
         level = "very_high"
     elif confidence >= CONFIDENCE_THRESHOLDS["high"]:
-        bonus = 7
+        bonus = 5
         level = "high"
     elif confidence >= CONFIDENCE_THRESHOLDS["medium"]:
-        bonus = 3
+        bonus = 2
         level = "medium"
     else:
         bonus = 0
@@ -527,25 +567,32 @@ def calculate_risk_score(
     # TRADITIONAL FACTORS
     # ==========================================
     
-    # 1. Cross-source validation score
+    # 1. Source quality score (used for source diversity in cross-source factor)
+    source_quality = calculate_source_score(sources)
+    source_diversity = sum(
+        1 for n in [source_quality["trusted"], source_quality["news"], source_quality["other"]] if n > 0
+    )
+
+    # 2. Cross-source validation score
     unique_sources = list(set(sources))
     source_count = len(unique_sources)
-    cross_source = calculate_cross_source_score(source_count)
+    cross_source = calculate_cross_source_score(source_count, source_diversity)
     breakdown["cross_source"] = {
         "score": cross_source,
-        "maxScore": 40,
+        "maxScore": 30,
+        "weighted_score": _weighted_points("cross_source", cross_source, 30),
         "count": source_count,
+        "source_diversity": source_diversity,
         "sources_found": unique_sources,
         "description": f"พบจาก {source_count} แหล่งข้อมูล",
         "reason": f"พบใน {source_count} แหล่ง: {', '.join(unique_sources)}" if unique_sources else "ไม่พบในแหล่งใด",
         "reasonEn": f"Found in {source_count} source(s): {', '.join(unique_sources)}" if unique_sources else "Not found in any source",
-        "methodology": "นับจำนวนแหล่งข่าวกรองที่รายงาน IOC นี้ ยิ่งพบหลายแหล่งยิ่งน่าเชื่อถือ",
-        "methodologyEn": "Count unique threat intelligence sources reporting this IOC. More sources = higher confidence.",
-        "scoringRules": "1 แหล่ง = 5 คะแนน, 2 แหล่ง = 15 คะแนน, 3 แหล่ง = 25 คะแนน, 4+ แหล่ง = สูงสุด 40 คะแนน"
+        "methodology": "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ พร้อม bonus จากความหลากหลายของประเภทแหล่งข้อมูล",
+        "methodologyEn": "Count unique sources with diversity bonus across source classes.",
+        "scoringRules": "1=5, 2=10, 3=15, 4+=20..30 (diminishing) + diversity bonus สูงสุด 30"
     }
-    
-    # 2. Source reliability score
-    source_quality = calculate_source_score(sources)
+
+    # 3. Source reliability score
     trusted_list = [s for s in sources if any(t.upper() in s.upper() for t in TRUSTED_SOURCES)]
     news_list = [s for s in sources if any(n.upper() in s.upper() for n in NEWS_SOURCES) and s not in trusted_list]
     other_list = [s for s in sources if s not in trusted_list and s not in news_list]
@@ -569,6 +616,7 @@ def calculate_risk_score(
     breakdown["source_quality"] = {
         **source_quality,
         "maxScore": 40,
+        "weighted_score": _weighted_points("source_quality", source_quality["score"], 40),
         "trusted_sources": trusted_list,
         "news_sources": news_list,
         "other_sources": other_list,
@@ -579,13 +627,14 @@ def calculate_risk_score(
         "methodologyEn": "Check if sources are in trusted list (e.g., VirusTotal, AbuseIPDB, MISP)",
         "scoringRules": "แหล่งเชื่อถือ = 15 คะแนน, แหล่งข่าว = 8 คะแนน, อื่นๆ = 5 คะแนน (สูงสุด 40)"
     }
-    
-    # 3. Keyword analysis
+
+    # 4. Keyword analysis
     keyword_result = calculate_keyword_score(description)
     matched_keywords = keyword_result.get('keywords', [])
     breakdown["keywords"] = {
         **keyword_result,
         "maxScore": 25,
+        "weighted_score": _weighted_points("keywords", keyword_result["score"], 25),
         "description": f"พบ {len(matched_keywords)} คำสำคัญ",
         "reason": f"พบคำสำคัญ: {', '.join(matched_keywords)}" if matched_keywords else "ไม่พบคำสำคัญที่น่าสงสัย",
         "reasonEn": f"Keywords found: {', '.join(matched_keywords)}" if matched_keywords else "No high-risk keywords found",
@@ -622,6 +671,7 @@ def calculate_risk_score(
         "value": entropy,
         "score": entropy_score,
         "maxScore": 15,
+        "weighted_score": _weighted_points("entropy", entropy_score, 15),
         "description": entropy_description,
         "reason": entropy_reason,
         "reasonEn": f"Entropy value = {entropy:.2f}" if ioc_type in ["domain", "url", "hostname"] else "Not analyzed (not a domain/URL)",
@@ -657,6 +707,7 @@ def calculate_risk_score(
     breakdown["domain_age"] = {
         **age_result,
         "maxScore": 20,
+        "weighted_score": _weighted_points("domain_age", age_result["score"], 20),
         "reason": age_reason,
         "reasonEn": f"Domain age: {domain_age_days} days" if domain_age_days else "Domain age unknown",
         "methodology": "วิเคราะห์อายุโดเมนจาก WHOIS โดเมนใหม่มากมีความเสี่ยงสูงกว่า",
@@ -674,12 +725,13 @@ def calculate_risk_score(
     breakdown["threat_type_severity"] = {
         **threat_type_result,
         "maxScore": 35,
+        "weighted_score": _weighted_points("threat_type_severity", threat_type_result["score"], 35),
         "description": f"ตรวจพบ {len(threat_types)} ประเภทภัยคุกคาม",
         "reason": f"ประเภทที่พบ: {', '.join(threat_types)}" if threat_types else "ไม่พบประเภทภัยคุกคามที่รู้จัก",
         "reasonEn": f"Types detected: {', '.join(threat_types)}" if threat_types else "No known threat types detected",
         "methodology": "วิเคราะห์ด้วย AI (NLP) เพื่อจัดประเภทภัยคุกคาม เช่น Ransomware, APT, Phishing, Malware",
         "methodologyEn": "AI (NLP) analysis to classify threat types like Ransomware, APT, Phishing, Malware",
-        "scoringRules": "Ransomware/APT = 15 คะแนน, Botnet/C2 = 12 คะแนน, Phishing/Malware = 10 คะแนน ฯลฯ"
+        "scoringRules": "คะแนนตาม THREAT_TYPE_SEVERITY และนับสูงสุด 2 ประเภท (+bonus เมื่อพบ >=3 ประเภท)"
     }
     
     # 8. Threat Actor Attribution
@@ -689,6 +741,7 @@ def calculate_risk_score(
     breakdown["threat_actor"] = {
         **threat_actor_result,
         "maxScore": 30,
+        "weighted_score": _weighted_points("threat_actor", threat_actor_result["score"], 30),
         "actors_found": actor_names,
         "description": f"กลุ่มผู้โจมตี: {', '.join(actor_names) if actor_names else 'ไม่ระบุ'}",
         "reason": f"ตรวจพบกลุ่มผู้โจมตี: {', '.join(actor_names)}" if actor_names else "ไม่พบการระบุกลุ่มผู้โจมตี",
@@ -704,6 +757,7 @@ def calculate_risk_score(
     breakdown["mitre_techniques"] = {
         **mitre_result,
         "maxScore": 20,
+        "weighted_score": _weighted_points("mitre_techniques", mitre_result["score"], 20),
         "techniques_found": mitre_techniques,
         "description": f"MITRE tactics: {mitre_result['sophistication']}",
         "reason": f"พบ {len(mitre_techniques)} tactics: {', '.join(mitre_techniques[:3])}{'...' if len(mitre_techniques) > 3 else ''}" if mitre_techniques else "ไม่พบ MITRE ATT&CK tactics",
@@ -720,45 +774,61 @@ def calculate_risk_score(
     breakdown["ai_confidence"] = {
         **confidence_result,
         "maxScore": 10,
+        "weighted_score": _weighted_points("ai_confidence", confidence_result["score"], 10),
         "confidence_value": confidence,
         "description": f"ความมั่นใจ AI: {confidence_pct}%",
         "reason": f"AI classification confidence = {confidence_pct}%",
         "reasonEn": f"AI classification confidence = {confidence_pct}%",
         "methodology": "คะแนนโบนัสตามระดับความมั่นใจของการจัดประเภท AI",
         "methodologyEn": "Bonus score based on AI classification confidence level",
-        "scoringRules": "≥90% = 10 คะแนน, ≥80% = 8 คะแนน, ≥70% = 5 คะแนน, ≥60% = 3 คะแนน"
+        "scoringRules": (
+            f"≥{int(CONFIDENCE_THRESHOLDS['very_high']*100)}% = 8 คะแนน, "
+            f"≥{int(CONFIDENCE_THRESHOLDS['high']*100)}% = 5 คะแนน, "
+            f"≥{int(CONFIDENCE_THRESHOLDS['medium']*100)}% = 2 คะแนน"
+        )
     }
     
     # ==========================================
     # CALCULATE TOTAL SCORE
     # ==========================================
-    
-    total = (
-        cross_source +                              # Max 40
-        source_quality["score"] +                   # Max 40
-        keyword_result["score"] +                   # Max 25
-        entropy_score +                             # Max 15
-        geo_result["score"] +                       # Max 15
-        age_result["score"] +                       # Max 20
-        threat_type_result["score"] +               # Max 35
-        threat_actor_result["score"] +              # Max 30
-        mitre_result["score"] +                     # Max 20
-        confidence_result["score"]                  # Max 10
-    )
-    
-    # Normalize to 0-100
-    # Max possible = 250, but typical max is ~150
-    # Use logarithmic scaling for better distribution
-    if total > 100:
-        total = min(100, 70 + (total - 100) * 0.3)
-    
-    total = min(max(int(total), 0), 100)
-    
+
+    weighted_components = {
+        "cross_source": breakdown["cross_source"]["weighted_score"],
+        "source_quality": breakdown["source_quality"]["weighted_score"],
+        "keywords": breakdown["keywords"]["weighted_score"],
+        "entropy": breakdown["entropy"]["weighted_score"],
+        "domain_age": breakdown["domain_age"]["weighted_score"],
+        "threat_type_severity": breakdown["threat_type_severity"]["weighted_score"],
+        "threat_actor": breakdown["threat_actor"]["weighted_score"],
+        "mitre_techniques": breakdown["mitre_techniques"]["weighted_score"],
+        "ai_confidence": breakdown["ai_confidence"]["weighted_score"]
+    }
+
+    weighted_total = round(sum(weighted_components.values()), 3)
+    weighted_total = min(max(weighted_total, 0.0), 100.0)
+    total = int(round(weighted_total))
+
+    credibility_score = int(round(
+        weighted_components["cross_source"] +
+        weighted_components["source_quality"] +
+        weighted_components["ai_confidence"]
+    ))
+    impact_score = int(round(max(weighted_total - credibility_score, 0)))
+
+    breakdown["score_governance"] = {
+        "model_version": SCORE_MODEL_VERSION,
+        "config_version": SCORE_CONFIG_VERSION,
+        "weights": SCORING_WEIGHTS,
+        "weighted_total_before_decay": weighted_total,
+        "credibility_score": credibility_score,
+        "impact_score": impact_score
+    }
+
     # Apply decay factor for older IOCs
     decay_result = calculate_decay_factor(ioc_age_days)
     original_score = total
     total = int(total * decay_result["multiplier"])
-    
+
     # Add decay factor to breakdown
     breakdown["decay_factor"] = {
         **decay_result,
@@ -771,43 +841,6 @@ def calculate_risk_score(
         "methodologyEn": "Reduce score for older IOCs as relevance decreases over time",
         "scoringRules": "<=7 วัน = 100%, 8-30 วัน = 90%, 31-90 วัน = 75%, 91-180 วัน = 60%, >180 วัน = 50%"
     }
-    
-    # Determine severity
-    if total >= 75:
-        severity = "critical"
-        severity_th = "วิกฤต"
-    elif total >= 50:
-        severity = "high"
-        severity_th = "สูง"
-    elif total >= 25:
-        severity = "medium"
-        severity_th = "ปานกลาง"
-    elif total > 0:
-        severity = "low"
-        severity_th = "ต่ำ"
-    else:
-        severity = "clean"
-        severity_th = "ปลอดภัย"
-    
-    # Get top contributing factors
-    factor_scores = [
-        ("cross_source", cross_source, "การยืนยันข้ามแหล่ง"),
-        ("source_quality", source_quality["score"], "คุณภาพแหล่งข้อมูล"),
-        ("keywords", keyword_result["score"], "คำสำคัญอันตราย"),
-        ("entropy", entropy_score, "การวิเคราะห์ Entropy"),
-        ("geo_risk", geo_result["score"], "ความเสี่ยงตามภูมิศาสตร์"),
-        ("domain_age", age_result["score"], "อายุโดเมน"),
-        ("threat_type_severity", threat_type_result["score"], "ประเภทภัยคุกคาม (AI)"),
-        ("threat_actor", threat_actor_result["score"], "กลุ่มผู้โจมตี (AI)"),
-        ("mitre_techniques", mitre_result["score"], "MITRE ATT&CK (AI)"),
-        ("ai_confidence", confidence_result["score"], "ความมั่นใจ AI")
-    ]
-    
-    top_factors = sorted(factor_scores, key=lambda x: x[1], reverse=True)[:5]
-    top_factors = [
-        {"factor": f, "score": s, "label": label} 
-        for f, s, label in top_factors if s > 0
-    ]
     
     # ==========================================
     # SECTOR CLASSIFICATION (NEW)
@@ -840,11 +873,36 @@ def calculate_risk_score(
         "methodologyEn": "Analyzed from keywords, domain patterns, and associated threat actors"
     }
     
-    # Apply sector bonus to final score
+    # Apply sector bonus with policy guardrails
     sector_bonus = sector_result["risk_bonus"]
+    if sector_result["confidence"] < 0.45:
+        sector_bonus = min(sector_bonus, 5)
+    if source_quality["trusted"] == 0 and source_quality["news"] > 0 and source_quality["other"] == 0:
+        sector_bonus = min(sector_bonus, 3)
+
     total = min(total + sector_bonus, 100)
-    
-    # Recalculate severity after sector bonus
+
+    policy_adjustments = []
+    # Prevent Critical escalation without strong trusted corroboration.
+    if total >= 80 and source_quality["trusted"] < 2:
+        total = min(total, 74)
+        policy_adjustments.append(
+            "Critical requires at least 2 trusted corroborating sources; capped to High."
+        )
+
+    # News-only evidence cannot reach High until non-news corroboration exists.
+    if source_quality["trusted"] == 0 and source_quality["news"] > 0 and source_quality["other"] == 0 and total >= 50:
+        total = min(total, 49)
+        policy_adjustments.append(
+            "News-only IOC capped below High until trusted/non-news corroboration exists."
+        )
+
+    breakdown["policy_gate"] = {
+        "triggered": len(policy_adjustments) > 0,
+        "adjustments": policy_adjustments
+    }
+
+    # Recalculate severity after sector bonus and policy gates
     if total >= 75:
         severity = "critical"
         severity_th = "วิกฤต"
@@ -860,17 +918,42 @@ def calculate_risk_score(
     else:
         severity = "clean"
         severity_th = "ปลอดภัย"
+
+    factor_scores = [
+        ("cross_source", weighted_components["cross_source"], "การยืนยันข้ามแหล่ง"),
+        ("source_quality", weighted_components["source_quality"], "คุณภาพแหล่งข้อมูล"),
+        ("keywords", weighted_components["keywords"], "คำสำคัญอันตราย"),
+        ("entropy", weighted_components["entropy"], "การวิเคราะห์ Entropy"),
+        ("domain_age", weighted_components["domain_age"], "อายุโดเมน"),
+        ("threat_type_severity", weighted_components["threat_type_severity"], "ประเภทภัยคุกคาม (AI)"),
+        ("threat_actor", weighted_components["threat_actor"], "กลุ่มผู้โจมตี (AI)"),
+        ("mitre_techniques", weighted_components["mitre_techniques"], "MITRE ATT&CK (AI)"),
+        ("ai_confidence", weighted_components["ai_confidence"], "ความมั่นใจ AI"),
+        ("target_sector", float(sector_bonus), "ความเสี่ยงตามเซกเตอร์")
+    ]
+
+    top_factors = sorted(factor_scores, key=lambda x: x[1], reverse=True)[:5]
+    top_factors = [
+        {"factor": f, "score": round(float(s), 2), "label": label}
+        for f, s, label in top_factors if s > 0
+    ]
     
     return {
         "risk_score": total,
+        "operational_risk_score": total,
+        "credibility_score": credibility_score,
+        "impact_score": impact_score,
         "severity": severity,
         "severity_th": severity_th,
+        "score_model_version": SCORE_MODEL_VERSION,
+        "score_config_version": SCORE_CONFIG_VERSION,
         "breakdown": breakdown,
         "top_factors": top_factors,
         "target_sector": sector_result,  # NEW: Include full sector info
         "summary": {
             "traditional_score": cross_source + source_quality["score"] + keyword_result["score"] + entropy_score + geo_result["score"] + age_result["score"],
             "ai_score": threat_type_result["score"] + threat_actor_result["score"] + mitre_result["score"] + confidence_result["score"],
+            "weighted_total_before_decay": weighted_total,
             "has_threat_actor": len(threat_actors) > 0,
             "has_mitre": len(mitre_techniques) > 0,
             "primary_threat": threat_types[0] if threat_types else None,

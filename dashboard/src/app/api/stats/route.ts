@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { DashboardStats, ThreatEvent, IOCType, SeverityLevel } from '@/lib/types';
+import { checkElasticsearchHealth, searchWarehouse } from '@/lib/elastic';
 
 const DATA_LAKE_FILES = [
     'bleeping-enrichment-15112025.json',
@@ -40,10 +41,50 @@ function normalizeSeverity(severity: string | undefined): SeverityLevel {
 }
 
 /**
- * Try to load pre-computed normalized data first
- * Falls back to raw data files if normalized data doesn't exist
+ * Convert Warehouse document shape to ThreatEvent.
+ */
+function warehouseToThreatEvent(doc: any): ThreatEvent {
+    return {
+        source_type: doc.source_type || 'unknown',
+        source_name: doc.source_name || 'unknown',
+        collect_time: doc.last_seen || doc.processed_at || new Date().toISOString(),
+        event_time: doc.first_seen || doc.event_time || doc.collect_time || new Date().toISOString(),
+        threat_type: doc.threat_type || doc.ai_threat_types || [],
+        severity: normalizeSeverity(doc.ai_severity || doc.severity || 'low'),
+        confidence: doc.ai_classification_confidence || 0,
+        ioc: {
+            type: doc.ioc_type || 'ip',
+            value: doc.ioc_value || ''
+        },
+        description: doc.description || '',
+        tags: doc.tags || [],
+        status: 'open' as any,
+        aiRiskScore: doc.ai_risk_score,
+        aiSeverity: doc.ai_severity,
+        aiSeverityTH: doc.ai_severity_th,
+        aiThreatTypes: doc.ai_threat_types || [],
+        aiThreatActors: doc.ai_threat_actors || [],
+        aiMitreTechniques: doc.ai_mitre_techniques || [],
+        aiClassificationConfidence: doc.ai_classification_confidence,
+        aiScoreBreakdown: doc.ai_score_breakdown,
+        aiTopFactors: doc.ai_top_factors
+    } as unknown as ThreatEvent;
+}
+
+/**
+ * Load events from Data Warehouse first, then fallback to static files.
  */
 async function loadAllEvents(baseUrl: string): Promise<ThreatEvent[]> {
+    try {
+        const health = await checkElasticsearchHealth();
+        if (health.available) {
+            const result = await searchWarehouse({ limit: 5000, sortBy: 'time' });
+            return result.data.map(warehouseToThreatEvent);
+        }
+    } catch (error) {
+        console.error('[Stats API] Elasticsearch unavailable, fallback to files', error);
+    }
+
     // Try normalized data first
     try {
         const normalizedResponse = await fetch(`${baseUrl}/data/normalized_iocs.json`, { cache: 'no-store' });
@@ -132,9 +173,10 @@ export async function GET(request: Request) {
             const source = event.source_name || 'unknown';
             bySource[source] = (bySource[source] || 0) + 1;
 
-            // By threat type
-            if (Array.isArray(event.threat_type)) {
-                for (const threatType of event.threat_type) {
+            // By threat type (prefer AI threat types)
+            const threatTypes = (event as any).aiThreatTypes || event.threat_type || [];
+            if (Array.isArray(threatTypes)) {
+                for (const threatType of threatTypes) {
                     if (threatType) {
                         byThreatType[threatType] = (byThreatType[threatType] || 0) + 1;
                     }

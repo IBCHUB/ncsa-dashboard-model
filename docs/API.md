@@ -209,17 +209,17 @@ POST /pipeline/run
 **Request:**
 ```json
 {
-  "batch_size": 50
+  "limit": 50
 }
 ```
 
 **Response:**
 ```json
 {
-  "status": "completed",
   "processed": 50,
   "failed": 0,
-  "duration_seconds": 12.5
+  "processing_time_ms": 12500,
+  "message": "Pipeline completed: 50 aggregated IOCs processed, 130 observations updated, 0 failed"
 }
 ```
 
@@ -236,10 +236,13 @@ GET /pipeline/status
 **Response:**
 ```json
 {
-  "elasticsearch": "green",
+  "status": "green",
+  "datalake_index": "tcti-datalake",
+  "processed_index": "tcti-processed",
+  "warehouse_index": "tcti-warehouse",
   "datalake_count": 353,
-  "warehouse_count": 353,
-  "unprocessed": 0
+  "processed_count": 340,
+  "warehouse_count": 353
 }
 ```
 

@@ -15,8 +15,8 @@ DEBUG = os.getenv("AI_SERVICE_DEBUG", "false").lower() == "true"
 # Authentication Configuration
 # API Keys for authentication (comma-separated in env var)
 # In production, set AI_SERVICE_API_KEYS env var with secure keys
-_default_keys = "tcti-dev-key-2024,tcti-dashboard-key"
-API_KEYS = set(os.getenv("AI_SERVICE_API_KEYS", _default_keys).split(","))
+_raw_keys = os.getenv("AI_SERVICE_API_KEYS", "")
+API_KEYS = {k.strip() for k in _raw_keys.split(",") if k.strip()}
 REQUIRE_AUTH = os.getenv("AI_SERVICE_REQUIRE_AUTH", "true").lower() == "true"
 
 # Model Configuration
@@ -185,9 +185,9 @@ NEWS_SOURCES = [
 
 # Confidence Thresholds
 CONFIDENCE_THRESHOLDS = {
-    "very_high": 0.90,  # +10 bonus
-    "high": 0.80,       # +7 bonus
-    "medium": 0.60,     # +3 bonus
+    "very_high": 0.93,  # +8 bonus
+    "high": 0.85,       # +5 bonus
+    "medium": 0.70,     # +2 bonus
     "low": 0.40         # no bonus
 }
 
@@ -302,4 +302,3 @@ SECTOR_RISK_BONUS = {
     "education": 3,
     "general": 0
 }
-

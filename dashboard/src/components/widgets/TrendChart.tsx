@@ -50,7 +50,7 @@ export default function TrendChart() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/data/predictions.json')
+    fetch('/api/trends')
       .then(res => res.json())
       .then(data => {
         setPredictions(data);
@@ -69,6 +69,7 @@ export default function TrendChart() {
 
   const { forecast_chart } = predictions;
   const { labels, datasets, forecast_start_index } = forecast_chart;
+  const historyCount = forecast_start_index;
 
   // Transform data for Recharts - dual line approach (solid historical + dashed forecast)
   const chartData = labels.map((label, idx) => {
@@ -78,18 +79,18 @@ export default function TrendChart() {
     };
 
     Object.entries(datasets).forEach(([type, values]) => {
-      if (idx < forecast_start_index) {
+      if (idx < historyCount) {
         // Historical data - solid line
         dataPoint[type] = values.historical[idx] ?? null;
         dataPoint[`${type}_forecast`] = null;
-      } else if (idx === forecast_start_index) {
-        // Transition point - include in both to connect them
+      } else if (idx === historyCount) {
+        // Transition point - connect last historical to first forecast
         const lastHistorical = values.historical[values.historical.length - 1] ?? 0;
         dataPoint[type] = lastHistorical;
-        dataPoint[`${type}_forecast`] = lastHistorical;
+        dataPoint[`${type}_forecast`] = values.forecast[0] ?? lastHistorical;
       } else {
         // Forecast data - dashed line
-        const forecastIdx = idx - forecast_start_index;
+        const forecastIdx = idx - historyCount;
         dataPoint[type] = null;
         dataPoint[`${type}_forecast`] = values.forecast[forecastIdx] ?? null;
       }
@@ -140,7 +141,7 @@ export default function TrendChart() {
               labelStyle={{ color: '#fff' }}
             />
             <ReferenceLine
-              x={labels[forecast_start_index]?.slice(5)}
+              x={labels[historyCount]?.slice(5)}
               stroke="#fbbf24"
               strokeDasharray="5 5"
               label={{ value: 'พยากรณ์ →', fill: '#fbbf24', fontSize: 10 }}

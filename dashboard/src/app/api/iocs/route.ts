@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ThreatEvent, SeverityLevel } from '@/lib/types';
-import { checkElasticsearchHealth, searchWarehouse, getWarehouseStats } from '@/lib/elastic';
+import { checkElasticsearchHealth, searchWarehouse } from '@/lib/elastic';
 
 const DATA_LAKE_FILES = [
     'bleeping-enrichment-15112025.json',
@@ -23,6 +23,52 @@ const CACHE_TTL = 60000;
 let esAvailable: boolean | null = null;
 let esCheckTime = 0;
 const ES_CHECK_TTL = 30000; // Re-check ES availability every 30 seconds
+
+function parseMultiParam(value: string | null): string[] {
+    if (!value) return [];
+    return value
+        .split(',')
+        .map(v => v.trim())
+        .filter(Boolean);
+}
+
+function parseEventDate(event: ThreatEvent): Date | null {
+    const value = event.event_time || event.collect_time;
+    if (!value) return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeDateBound(input: string, endOfDay = false): Date | null {
+    if (!input) return null;
+    const parsed = new Date(`${input}T${endOfDay ? '23:59:59' : '00:00:00'}Z`);
+    if (Number.isNaN(parsed.getTime())) {
+        return null;
+    }
+    return parsed;
+}
+
+function resolveReportTypeWindow(reportType: string | null): { dateFrom?: string; dateTo?: string } {
+    if (!reportType || reportType === 'custom') {
+        return {};
+    }
+    const now = new Date();
+    const to = now.toISOString().split('T')[0];
+    const from = new Date(now);
+    if (reportType === 'daily') {
+        from.setDate(from.getDate() - 1);
+    } else if (reportType === 'weekly') {
+        from.setDate(from.getDate() - 7);
+    } else if (reportType === 'monthly') {
+        from.setDate(from.getDate() - 30);
+    } else {
+        return {};
+    }
+    return {
+        dateFrom: from.toISOString().split('T')[0],
+        dateTo: to
+    };
+}
 
 function normalizeSeverity(severity: string | undefined): SeverityLevel {
     if (!severity) return 'low';
@@ -104,8 +150,10 @@ function warehouseToThreatEvent(doc: any): ThreatEvent {
  */
 async function loadAllEvents(baseUrl: string, params?: {
     query?: string;
-    type?: string;
-    severity?: string;
+    types?: string[];
+    severities?: string[];
+    dateFrom?: string;
+    dateTo?: string;
     limit?: number;
 }): Promise<{ events: ThreatEvent[]; fromElasticsearch: boolean }> {
     // Try Elasticsearch first
@@ -113,18 +161,18 @@ async function loadAllEvents(baseUrl: string, params?: {
         try {
             const result = await searchWarehouse({
                 query: params?.query,
-                iocType: params?.type,
-                severity: params?.severity,
+                iocTypes: params?.types,
+                severityLevels: params?.severities,
+                dateFrom: params?.dateFrom,
+                dateTo: params?.dateTo,
                 limit: params?.limit || 500
             });
 
-            if (result.data.length > 0) {
-                console.log(`[API] Loaded ${result.data.length} events from Elasticsearch`);
-                return {
-                    events: result.data.map(warehouseToThreatEvent),
-                    fromElasticsearch: true
-                };
-            }
+            console.log(`[API] Loaded ${result.data.length} events from Elasticsearch`);
+            return {
+                events: result.data.map(warehouseToThreatEvent),
+                fromElasticsearch: true
+            };
         } catch (error) {
             console.error('[API] Elasticsearch query failed:', error);
         }
@@ -186,11 +234,15 @@ export async function GET(request: NextRequest) {
     try {
         const { searchParams } = new URL(request.url);
         const query = searchParams.get('q') || '';
-        const type = searchParams.get('type') || '';
-        const severity = searchParams.get('severity') || '';
+        const types = parseMultiParam(searchParams.get('type'));
+        const severities = parseMultiParam(searchParams.get('severity'));
         const source = searchParams.get('source') || '';
         const threatType = searchParams.get('threatType') || '';
         const threatActor = searchParams.get('threatActor') || '';
+        const reportType = searchParams.get('reportType');
+        const reportWindow = resolveReportTypeWindow(reportType);
+        const dateFrom = searchParams.get('dateFrom') || reportWindow.dateFrom || '';
+        const dateTo = searchParams.get('dateTo') || reportWindow.dateTo || '';
         const limit = parseInt(searchParams.get('limit') || '100');
 
         // Get base URL from request
@@ -198,7 +250,14 @@ export async function GET(request: NextRequest) {
         const baseUrl = `${url.protocol}//${url.host}`;
 
         // Load events (tries Elasticsearch first, falls back to JSON)
-        const result = await loadAllEvents(baseUrl, { query, type, severity, limit });
+        const result = await loadAllEvents(baseUrl, {
+            query,
+            types,
+            severities,
+            dateFrom: dateFrom || undefined,
+            dateTo: dateTo || undefined,
+            limit
+        });
         let events = result.events;
 
         // If we have Elasticsearch and filtered there, less filtering needed here
@@ -214,15 +273,30 @@ export async function GET(request: NextRequest) {
                 );
             }
 
-            // Filter by type
-            if (type) {
-                events = events.filter((e: ThreatEvent) => e.ioc.type === type);
+            // Filter by type (multi-select)
+            if (types.length > 0) {
+                const typeSet = new Set(types);
+                events = events.filter((e: ThreatEvent) => typeSet.has(e.ioc.type));
             }
 
-            // Filter by severity (use aiSeverity from normalized data)
-            if (severity) {
-                events = events.filter((e: ThreatEvent) => (e.aiSeverity || e.severity) === severity);
+            // Filter by severity (multi-select)
+            if (severities.length > 0) {
+                const severitySet = new Set(severities);
+                events = events.filter((e: ThreatEvent) => severitySet.has(e.aiSeverity || e.severity || 'low'));
             }
+        }
+
+        // Date range filter always applied
+        if (dateFrom || dateTo) {
+            const fromDate = dateFrom ? normalizeDateBound(dateFrom, false) : null;
+            const toDate = dateTo ? normalizeDateBound(dateTo, true) : null;
+            events = events.filter((e: ThreatEvent) => {
+                const eventDate = parseEventDate(e);
+                if (!eventDate) return false;
+                if (fromDate && eventDate < fromDate) return false;
+                if (toDate && eventDate > toDate) return false;
+                return true;
+            });
         }
 
         // Additional filters always applied
@@ -247,7 +321,7 @@ export async function GET(request: NextRequest) {
         }
 
         // Get unique sources for filter dropdown
-        const allEventsResult = await loadAllEvents(baseUrl);
+        const allEventsResult = await loadAllEvents(baseUrl, { limit: 5000 });
         const allEvents = allEventsResult.events;
         const sources = [...new Set(allEvents.map((e: ThreatEvent) => e.source_name).filter(Boolean))].sort();
 
@@ -275,7 +349,18 @@ export async function GET(request: NextRequest) {
             sources,
             threatTypes,
             threatActors,
-            fromElasticsearch: result.fromElasticsearch
+            fromElasticsearch: result.fromElasticsearch,
+            filters: {
+                query,
+                types,
+                severities,
+                source,
+                threatType,
+                threatActor,
+                reportType: reportType || '',
+                dateFrom: dateFrom || '',
+                dateTo: dateTo || ''
+            }
         });
     } catch (error) {
         console.error('Error fetching IOCs:', error);
@@ -285,4 +370,3 @@ export async function GET(request: NextRequest) {
         );
     }
 }
-

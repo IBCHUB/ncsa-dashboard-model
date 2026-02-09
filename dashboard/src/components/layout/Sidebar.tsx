@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import styles from './Sidebar.module.css';
 
 interface NavItem {
@@ -11,6 +12,7 @@ interface NavItem {
   icon: string;
   badge?: number;
   comingSoon?: boolean;
+  internalOnly?: boolean;
   children?: NavItem[];
 }
 
@@ -30,12 +32,14 @@ const navigation: NavItem[] = [
     href: '/alerts',
     icon: '🔔',
     badge: 12,
+    internalOnly: true,
   },
   {
     id: 'ioc',
     label: 'IOC Explorer',
     href: '/ioc',
     icon: '🔍',
+    internalOnly: true,
   },
   {
     id: 'threats',
@@ -54,6 +58,7 @@ const navigation: NavItem[] = [
     label: 'Reports & Export',
     href: '/reports',
     icon: '📄',
+    internalOnly: true,
   },
   {
     id: 'news',
@@ -71,6 +76,26 @@ const navigation: NavItem[] = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const [isInternal, setIsInternal] = useState(false);
+  const [user, setUser] = useState('Public User');
+
+  useEffect(() => {
+    fetch('/api/auth/session')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.authenticated && data.role === 'internal') {
+          setIsInternal(true);
+          setUser(data.user || 'Internal User');
+        } else {
+          setIsInternal(false);
+          setUser('Public User');
+        }
+      })
+      .catch(() => {
+        setIsInternal(false);
+        setUser('Public User');
+      });
+  }, []);
 
   const isActive = (href: string) => {
     if (href === '/') return pathname === '/';
@@ -88,7 +113,7 @@ export default function Sidebar() {
       </div>
 
       <nav className={styles.nav}>
-        {navigation.map((item) => (
+        {navigation.filter((item) => isInternal || !item.internalOnly).map((item) => (
           <div key={item.id} className={styles.navGroup}>
             {item.children ? (
               <>
@@ -146,10 +171,29 @@ export default function Sidebar() {
         <div className={styles.userSection}>
           <div className={styles.avatar}>👤</div>
           <div className={styles.userInfo}>
-            <span className={styles.userName}>Demo User</span>
-            <span className={styles.userRole}>Internal</span>
+            <span className={styles.userName}>{user}</span>
+            <span className={styles.userRole}>{isInternal ? 'Internal' : 'Public'}</span>
           </div>
         </div>
+        {isInternal ? (
+          <button
+            type="button"
+            className={styles.navItem}
+            onClick={async () => {
+              await fetch('/api/auth/logout', { method: 'POST' });
+              window.location.href = '/';
+            }}
+            style={{ background: 'none', border: 'none', width: '100%', textAlign: 'left' }}
+          >
+            <span className={styles.navIcon}>↩</span>
+            <span>Logout</span>
+          </button>
+        ) : (
+          <Link href="/login" className={styles.navItem}>
+            <span className={styles.navIcon}>🔐</span>
+            <span>Internal Login</span>
+          </Link>
+        )}
       </div>
     </aside>
   );

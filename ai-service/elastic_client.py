@@ -10,12 +10,15 @@ import os
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+import hashlib
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
 # Configuration
 ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
 DATALAKE_INDEX = os.getenv("DATALAKE_INDEX", "tcti-datalake")
+PROCESSED_INDEX = os.getenv("PROCESSED_INDEX", "tcti-processed")
 WAREHOUSE_INDEX = os.getenv("WAREHOUSE_INDEX", "tcti-warehouse")
 
 # Try to import elasticsearch, fallback to httpx if not available
@@ -39,6 +42,7 @@ class ElasticClient:
     def __init__(self, url: str = ELASTICSEARCH_URL):
         self.url = url
         self.datalake_index = DATALAKE_INDEX
+        self.processed_index = PROCESSED_INDEX
         self.warehouse_index = WAREHOUSE_INDEX
         
         if ES_CLIENT_AVAILABLE:
@@ -58,6 +62,53 @@ class ElasticClient:
         except Exception as e:
             logger.error(f"Elasticsearch health check failed: {e}")
             return {"status": "unavailable", "error": str(e)}
+
+    @staticmethod
+    def _build_warehouse_doc_id(ioc_data: Dict[str, Any]) -> str:
+        """
+        Build stable warehouse doc ID by IOC type + value.
+        Using hash avoids URL path issues for raw IOC values.
+        """
+        ioc_type = str(ioc_data.get("ioc_type", "unknown")).strip().lower()
+        ioc_value = str(ioc_data.get("ioc_value", "")).strip().lower()
+        payload = f"{ioc_type}:{ioc_value}".encode("utf-8")
+        digest = hashlib.sha1(payload).hexdigest()[:24]
+        return f"{ioc_type}:{digest}"
+
+    @staticmethod
+    def _build_processed_doc_id(ioc_data: Dict[str, Any]) -> str:
+        """
+        Build stable processed doc ID for validation/backup stage.
+        Includes time window and source set to preserve changes over runs.
+        """
+        ioc_type = str(ioc_data.get("ioc_type", "unknown")).strip().lower()
+        ioc_value = str(ioc_data.get("ioc_value", "")).strip().lower()
+        first_seen = str(ioc_data.get("first_seen", "")).strip()
+        last_seen = str(ioc_data.get("last_seen", "")).strip()
+        sources = ",".join(sorted(ioc_data.get("sources", []) or []))
+        payload = f"{ioc_type}:{ioc_value}|{first_seen}|{last_seen}|{sources}".encode("utf-8")
+        digest = hashlib.sha1(payload).hexdigest()[:24]
+        return f"{ioc_type}:{digest}"
+
+    @staticmethod
+    def _build_datalake_doc_id(doc: Dict[str, Any]) -> str:
+        """
+        Build unique Data Lake doc ID per IOC observation (not per IOC value).
+        This preserves cross-source evidence required for enrichment/scoring.
+        """
+        ioc_type = str(doc.get("ioc_type", "unknown")).strip().lower()
+        ioc_value = str(doc.get("ioc_value", "")).strip().lower()
+        source = str(doc.get("source_name", "unknown")).strip().lower()
+        source_type = str(doc.get("source_type", "unknown")).strip().lower()
+        event_time = str(doc.get("event_time", "")).strip()
+        collect_time = str(doc.get("collect_time", "")).strip()
+        reference = str(doc.get("reference", "")).strip()
+        fingerprint_src = (
+            f"{source}|{source_type}|{event_time}|{collect_time}|"
+            f"{reference}|{str(doc.get('description', ''))[:256]}"
+        )
+        digest = hashlib.sha1(fingerprint_src.encode("utf-8")).hexdigest()[:24]
+        return f"{ioc_type}:{ioc_value}:{digest}"
     
     def create_indexes(self) -> Dict[str, bool]:
         """Create Data Lake and Data Warehouse indexes if they don't exist."""
@@ -85,15 +136,17 @@ class ElasticClient:
             }
         }
         
-        # Data Warehouse index mapping (includes AI fields)
-        warehouse_mapping = {
+        # Processed layer mapping (validation and backup before warehouse)
+        processed_mapping = {
             "mappings": {
                 "properties": {
                     "ioc_value": {"type": "keyword"},
                     "ioc_type": {"type": "keyword"},
                     "source_name": {"type": "keyword"},
                     "source_type": {"type": "keyword"},
-                    "sources": {"type": "keyword"},  # Array of source names
+                    "sources": {"type": "keyword"},
+                    "source_types": {"type": "keyword"},
+                    "source_count": {"type": "integer"},
                     "description": {"type": "text"},
                     "threat_type": {"type": "keyword"},
                     "severity": {"type": "keyword"},
@@ -103,11 +156,57 @@ class ElasticClient:
                     "event_time": {"type": "date"},
                     "first_seen": {"type": "date"},
                     "last_seen": {"type": "date"},
+                    "ioc_age_days": {"type": "integer"},
+                    "geo_country": {"type": "keyword"},
+                    "ai_risk_score": {"type": "integer"},
+                    "ai_severity": {"type": "keyword"},
+                    "ai_threat_types": {"type": "keyword"},
+                    "ai_threat_actors": {"type": "keyword"},
+                    "ai_mitre_techniques": {"type": "keyword"},
+                    "ai_classification_confidence": {"type": "float"},
+                    "ai_score_breakdown": {"type": "object", "enabled": False},
+                    "ai_top_factors": {"type": "object", "enabled": False},
+                    "score_model_version": {"type": "keyword"},
+                    "score_config_version": {"type": "keyword"},
+                    "credibility_score": {"type": "integer"},
+                    "impact_score": {"type": "integer"},
+                    "validation_status": {"type": "keyword"},
+                    "processed_at": {"type": "date"},
+                    "created_at": {"type": "date"}
+                }
+            }
+        }
+
+        # Data Warehouse index mapping (includes AI fields)
+        warehouse_mapping = {
+            "mappings": {
+                "properties": {
+                    "ioc_value": {"type": "keyword"},
+                    "ioc_type": {"type": "keyword"},
+                    "source_name": {"type": "keyword"},
+                    "source_type": {"type": "keyword"},
+                    "sources": {"type": "keyword"},  # Array of source names
+                    "source_types": {"type": "keyword"},
+                    "source_count": {"type": "integer"},
+                    "description": {"type": "text"},
+                    "threat_type": {"type": "keyword"},
+                    "severity": {"type": "keyword"},
+                    "tags": {"type": "keyword"},
+                    "reference": {"type": "text"},
+                    "collect_time": {"type": "date"},
+                    "event_time": {"type": "date"},
+                    "first_seen": {"type": "date"},
+                    "last_seen": {"type": "date"},
+                    "ioc_age_days": {"type": "integer"},
                     "geo_country": {"type": "keyword"},
                     # AI Enrichment fields
                     "ai_risk_score": {"type": "integer"},
                     "ai_severity": {"type": "keyword"},
                     "ai_severity_th": {"type": "keyword"},
+                    "score_model_version": {"type": "keyword"},
+                    "score_config_version": {"type": "keyword"},
+                    "credibility_score": {"type": "integer"},
+                    "impact_score": {"type": "integer"},
                     "ai_threat_types": {"type": "keyword"},
                     "ai_threat_actors": {"type": "keyword"},
                     "ai_mitre_techniques": {"type": "keyword"},
@@ -122,6 +221,7 @@ class ElasticClient:
         
         for index, mapping in [
             (self.datalake_index, datalake_mapping),
+            (self.processed_index, processed_mapping),
             (self.warehouse_index, warehouse_mapping)
         ]:
             try:
@@ -209,16 +309,17 @@ class ElasticClient:
             ioc_data["created_at"] = ioc_data["processed_at"]
         
         try:
+            doc_id = self._build_warehouse_doc_id(ioc_data)
             if ES_CLIENT_AVAILABLE and self.client:
                 result = self.client.index(
                     index=self.warehouse_index,
                     body=ioc_data,
-                    id=ioc_data.get("ioc_value")  # Use IOC value as ID for deduplication
+                    id=doc_id
                 )
                 return result.get("_id")
             else:
                 resp = httpx.put(
-                    f"{self.url}/{self.warehouse_index}/_doc/{ioc_data.get('ioc_value')}",
+                    f"{self.url}/{self.warehouse_index}/_doc/{quote(doc_id, safe='')}",
                     json=ioc_data,
                     timeout=10
                 )
@@ -227,6 +328,35 @@ class ElasticClient:
                 return None
         except Exception as e:
             logger.error(f"Failed to save to warehouse: {e}")
+            return None
+
+    def save_to_processed(self, ioc_data: Dict[str, Any]) -> Optional[str]:
+        """Save AI-processed IOC to Processed layer (validation/backup stage)."""
+        ioc_data["processed_at"] = datetime.utcnow().isoformat() + "Z"
+        if "created_at" not in ioc_data:
+            ioc_data["created_at"] = ioc_data["processed_at"]
+        ioc_data["validation_status"] = ioc_data.get("validation_status", "validated")
+
+        try:
+            doc_id = self._build_processed_doc_id(ioc_data)
+            if ES_CLIENT_AVAILABLE and self.client:
+                result = self.client.index(
+                    index=self.processed_index,
+                    body=ioc_data,
+                    id=doc_id
+                )
+                return result.get("_id")
+            else:
+                resp = httpx.put(
+                    f"{self.url}/{self.processed_index}/_doc/{quote(doc_id, safe='')}",
+                    json=ioc_data,
+                    timeout=10
+                )
+                if resp.status_code in (200, 201):
+                    return resp.json().get("_id")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to save to processed layer: {e}")
             return None
     
     def bulk_index_datalake(self, documents: List[Dict]) -> Dict[str, int]:
@@ -239,7 +369,7 @@ class ElasticClient:
             doc["created_at"] = datetime.utcnow().isoformat() + "Z"
             
             try:
-                ioc_id = doc.get("ioc_value", "")
+                ioc_id = self._build_datalake_doc_id(doc)
                 if ES_CLIENT_AVAILABLE and self.client:
                     self.client.index(
                         index=self.datalake_index,
@@ -249,7 +379,7 @@ class ElasticClient:
                     success += 1
                 else:
                     resp = httpx.put(
-                        f"{self.url}/{self.datalake_index}/_doc/{ioc_id}",
+                        f"{self.url}/{self.datalake_index}/_doc/{quote(ioc_id, safe='')}",
                         json=doc,
                         timeout=10
                     )

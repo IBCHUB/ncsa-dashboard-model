@@ -11,7 +11,7 @@ import logging
 from transformers import pipeline
 import torch
 
-from config import THREAT_CATEGORIES, DEVICE, CLASSIFIER_MODEL
+from config import THREAT_CATEGORIES, DEVICE, CLASSIFIER_MODEL, MITRE_TACTICS
 
 logger = logging.getLogger(__name__)
 
@@ -262,15 +262,35 @@ def extract_threat_actors(text: str) -> List[str]:
 
 def extract_mitre_techniques(text: str) -> List[str]:
     """
-    Extract MITRE ATT&CK technique IDs from text.
+    Extract MITRE ATT&CK references from text.
+    Supports both technique IDs (Txxxx / Txxxx.xxx) and tactic names.
     """
     import re
-    
+
+    if not text:
+        return []
+
+    found: List[str] = []
+    text_lower = text.lower()
+
     # Match patterns like T1059, T1059.001
     pattern = r'\bT\d{4}(?:\.\d{3})?\b'
     matches = re.findall(pattern, text, re.IGNORECASE)
-    
-    return [m.upper() for m in matches]
+    for match in matches:
+        upper = match.upper()
+        if upper not in found:
+            found.append(upper)
+
+    # Match tactic names from config (e.g., "Lateral Movement")
+    for tactic_name, tactic_info in MITRE_TACTICS.items():
+        tactic_lower = tactic_name.lower()
+        tactic_id = tactic_info.get("id", "")
+        if tactic_lower in text_lower or tactic_id.lower() in text_lower:
+            label = f"{tactic_id} ({tactic_name})" if tactic_id else tactic_name
+            if label not in found:
+                found.append(label)
+
+    return found
 
 
 # For testing

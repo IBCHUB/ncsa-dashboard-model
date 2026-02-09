@@ -27,6 +27,17 @@ export default function ReportsPage() {
     fetchStats();
   }, []);
 
+  useEffect(() => {
+    if (reportType === 'custom') return;
+    const to = new Date();
+    const from = new Date();
+    if (reportType === 'daily') from.setDate(from.getDate() - 1);
+    if (reportType === 'weekly') from.setDate(from.getDate() - 7);
+    if (reportType === 'monthly') from.setDate(from.getDate() - 30);
+    setDateFrom(from.toISOString().split('T')[0]);
+    setDateTo(to.toISOString().split('T')[0]);
+  }, [reportType]);
+
   const fetchStats = async () => {
     try {
       const response = await fetch('/api/stats');
@@ -41,6 +52,9 @@ export default function ReportsPage() {
     setLoading(true);
     try {
       const params = new URLSearchParams({ limit: '1000' });
+      params.set('reportType', reportType);
+      if (dateFrom) params.set('dateFrom', dateFrom);
+      if (dateTo) params.set('dateTo', dateTo);
       if (selectedTypes.length > 0) {
         params.set('type', selectedTypes.join(','));
       }
@@ -128,7 +142,7 @@ export default function ReportsPage() {
         severity: e.aiSeverity || e.severity,
         confidence: e.confidence,
         source: e.source_name,
-        threat_type: e.threat_type,
+        threat_type: (e as any).aiThreatTypes || e.threat_type,
         event_time: e.event_time,
         description: e.description,
         enrichment: e.enrichment,

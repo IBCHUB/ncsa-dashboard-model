@@ -39,7 +39,7 @@ export default function TrendPrediction() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/data/predictions.json')
+    fetch('/api/trends')
       .then(res => {
         if (!res.ok) throw new Error('Failed to load predictions');
         return res.json();

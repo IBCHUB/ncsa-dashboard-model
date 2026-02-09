@@ -17,7 +17,9 @@ import sys
 import json
 import glob
 import logging
+import hashlib
 from datetime import datetime
+from urllib.parse import quote
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,6 +36,23 @@ DATA_LAKE_DIR = os.getenv("DATA_LAKE_DIR", os.path.join(
     "..", "data_lake"
 ))
 ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
+
+
+def build_datalake_doc_id(doc: dict) -> str:
+    """
+    Build unique doc id per IOC observation to preserve cross-source evidence.
+    """
+    ioc_type = str(doc.get("ioc_type", "unknown")).strip().lower()
+    ioc_value = str(doc.get("ioc_value", "")).strip().lower()
+    source = str(doc.get("source_name", "unknown")).strip().lower()
+    source_type = str(doc.get("source_type", "unknown")).strip().lower()
+    event_time = str(doc.get("event_time", "")).strip()
+    collect_time = str(doc.get("collect_time", "")).strip()
+    reference = str(doc.get("reference", "")).strip()
+    desc = str(doc.get("description", ""))[:256]
+    fingerprint = f"{source}|{source_type}|{event_time}|{collect_time}|{reference}|{desc}"
+    digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:24]
+    return f"{ioc_type}:{ioc_value}:{digest}"
 
 
 def parse_date(date_str: str) -> str:
@@ -169,11 +188,11 @@ def import_to_elasticsearch(documents: list) -> dict:
         
         for doc in documents:
             try:
-                ioc_id = doc.get("ioc_value", "")
+                ioc_id = build_datalake_doc_id(doc)
                 doc["created_at"] = datetime.utcnow().isoformat() + "Z"
                 
                 resp = httpx.put(
-                    f"{ELASTICSEARCH_URL}/tcti-datalake/_doc/{ioc_id}",
+                    f"{ELASTICSEARCH_URL}/tcti-datalake/_doc/{quote(ioc_id, safe='')}",
                     json=doc,
                     timeout=10
                 )

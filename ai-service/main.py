@@ -4,9 +4,11 @@ AI Service API
 FastAPI server for threat classification and risk scoring.
 """
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import logging
 import time
+from datetime import datetime, timezone
+import os
 
 from fastapi import FastAPI, HTTPException, Depends, Security
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,10 +38,19 @@ app = FastAPI(
 )
 
 # CORS middleware (allow Next.js dashboard)
+cors_origins = [
+    origin.strip() for origin in os.getenv(
+        "AI_SERVICE_CORS_ORIGINS",
+        "http://localhost:3000,http://localhost:3001"
+    ).split(",")
+    if origin.strip()
+]
+allow_credentials = "*" not in cors_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "*"],
-    allow_credentials=True,
+    allow_origins=cors_origins or ["http://localhost:3000"],
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -57,6 +68,13 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
     """
     if not REQUIRE_AUTH:
         return None  # Auth disabled
+
+    if not API_KEYS:
+        logger.error("Authentication is enabled but AI_SERVICE_API_KEYS is empty")
+        raise HTTPException(
+            status_code=500,
+            detail="Server authentication misconfigured."
+        )
     
     if api_key is None:
         raise HTTPException(
@@ -98,11 +116,17 @@ class ScoreRequest(BaseModel):
     sources: List[str] = Field(default_factory=list, description="Data sources")
     country_code: Optional[str] = Field(None, description="Country code")
     domain_age_days: Optional[int] = Field(None, description="Domain age in days")
+    ioc_age_days: Optional[int] = Field(None, description="IOC age in days")
 
 
 class ScoreResponse(BaseModel):
     risk_score: int
+    operational_risk_score: Optional[int] = None
+    credibility_score: Optional[int] = None
+    impact_score: Optional[int] = None
     severity: str
+    score_model_version: Optional[str] = None
+    score_config_version: Optional[str] = None
     breakdown: dict
     top_factors: List[dict]
 
@@ -115,6 +139,7 @@ class EnrichRequest(BaseModel):
     sources: List[str] = Field(default_factory=list)
     country_code: Optional[str] = None
     domain_age_days: Optional[int] = None
+    ioc_age_days: Optional[int] = None
 
 
 class EnrichResponse(BaseModel):
@@ -127,7 +152,12 @@ class EnrichResponse(BaseModel):
     ai_classification_confidence: float
     # Scoring results
     ai_risk_score: int
+    ai_operational_risk_score: Optional[int] = None
+    ai_credibility_score: Optional[int] = None
+    ai_impact_score: Optional[int] = None
     ai_severity: str
+    ai_score_model_version: Optional[str] = None
+    ai_score_config_version: Optional[str] = None
     ai_score_breakdown: dict
     ai_top_factors: List[dict]
     # Metadata
@@ -215,7 +245,8 @@ async def score_endpoint(request: ScoreRequest, api_key: str = Depends(verify_ap
             description=request.description,
             sources=request.sources,
             country_code=request.country_code,
-            domain_age_days=request.domain_age_days
+            domain_age_days=request.domain_age_days,
+            ioc_age_days=request.ioc_age_days
         )
         
         elapsed = int((time.time() - start) * 1000)
@@ -262,6 +293,7 @@ async def enrich_endpoint(request: EnrichRequest, api_key: str = Depends(verify_
             sources=request.sources,
             country_code=request.country_code,
             domain_age_days=request.domain_age_days,
+            ioc_age_days=request.ioc_age_days,
             threat_classification=full_classification
         )
         
@@ -282,7 +314,12 @@ async def enrich_endpoint(request: EnrichRequest, api_key: str = Depends(verify_
             "ai_classification_confidence": classification["confidence"],
             # Scoring
             "ai_risk_score": score_result["risk_score"],
+            "ai_operational_risk_score": score_result.get("operational_risk_score"),
+            "ai_credibility_score": score_result.get("credibility_score"),
+            "ai_impact_score": score_result.get("impact_score"),
             "ai_severity": score_result["severity"],
+            "ai_score_model_version": score_result.get("score_model_version"),
+            "ai_score_config_version": score_result.get("score_config_version"),
             "ai_score_breakdown": score_result["breakdown"],
             "ai_top_factors": score_result["top_factors"],
             # Metadata
@@ -317,7 +354,12 @@ async def batch_enrich_endpoint(request: BatchEnrichRequest, api_key: str = Depe
                 "ai_mitre_techniques": [],
                 "ai_classification_confidence": 0,
                 "ai_risk_score": 0,
+                "ai_operational_risk_score": 0,
+                "ai_credibility_score": 0,
+                "ai_impact_score": 0,
                 "ai_severity": "unknown",
+                "ai_score_model_version": None,
+                "ai_score_config_version": None,
                 "ai_score_breakdown": {},
                 "ai_top_factors": [],
                 "processing_time_ms": 0,
@@ -448,8 +490,10 @@ class PipelineRunResponse(BaseModel):
 class ElasticsearchStatusResponse(BaseModel):
     status: str
     datalake_index: str
+    processed_index: str
     warehouse_index: str
     datalake_count: int
+    processed_count: int
     warehouse_count: int
 
 
@@ -483,27 +527,143 @@ async def run_pipeline(
             "message": "No unprocessed IOCs found in Data Lake"
         }
     
+    def parse_dt(value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        try:
+            text = str(value).strip()
+            if not text:
+                return None
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(text)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+    def to_iso_z(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def pick_highest_severity(values: List[str]) -> str:
+        severity_rank = {
+            "critical": 4,
+            "high": 3,
+            "medium": 2,
+            "low": 1,
+            "clean": 0
+        }
+        best = "low"
+        best_rank = -1
+        for raw in values:
+            sev = str(raw or "").strip().lower()
+            rank = severity_rank.get(sev, -1)
+            if rank > best_rank:
+                best = sev
+                best_rank = rank
+        return best if best_rank >= 0 else "low"
+
+    # Group by IOC key to preserve all source-level observations (MOM requirement)
+    grouped_iocs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for ioc in unprocessed:
+        ioc_type = str(ioc.get("ioc_type", "unknown")).strip().lower()
+        ioc_value = str(ioc.get("ioc_value", "")).strip()
+        if not ioc_value:
+            continue
+        key = (ioc_type, ioc_value.lower())
+        grouped_iocs.setdefault(key, []).append(ioc)
+
     processed = 0
     failed = 0
-    
-    for ioc in unprocessed:
+    processed_observations = 0
+
+    for (_, _), ioc_docs in grouped_iocs.items():
         try:
-            ioc_value = ioc.get("ioc_value", "")
-            ioc_type = ioc.get("ioc_type", "unknown")
-            description = ioc.get("description", "")
-            sources = [ioc.get("source_name", "unknown")]
+            primary = ioc_docs[0]
+            ioc_value = primary.get("ioc_value", "")
+            ioc_type = primary.get("ioc_type", "unknown")
+
+            source_names = []
+            source_types = []
+            descriptions = []
+            tags = set()
+            references = []
+            threat_types_raw = []
+            severity_values = []
+            geo_countries = []
+            first_seen_candidates: List[datetime] = []
+            last_seen_candidates: List[datetime] = []
+
+            for doc in ioc_docs:
+                source_name = str(doc.get("source_name", "")).strip()
+                if source_name and source_name not in source_names:
+                    source_names.append(source_name)
+
+                source_type = str(doc.get("source_type", "")).strip()
+                if source_type and source_type not in source_types:
+                    source_types.append(source_type)
+
+                description = str(doc.get("description", "")).strip()
+                if description and description not in descriptions:
+                    descriptions.append(description)
+
+                for tag in doc.get("tags", []) or []:
+                    if tag:
+                        tags.add(str(tag))
+
+                reference = str(doc.get("reference", "")).strip()
+                if reference and reference not in references:
+                    references.append(reference)
+
+                for threat in doc.get("threat_type", []) or []:
+                    if threat:
+                        threat_types_raw.append(str(threat))
+
+                severity_values.append(str(doc.get("severity", "")).strip().lower())
+
+                geo_country = str(doc.get("geo_country", "")).strip()
+                if geo_country:
+                    geo_countries.append(geo_country)
+
+                event_dt = parse_dt(doc.get("event_time"))
+                collect_dt = parse_dt(doc.get("collect_time"))
+                if event_dt:
+                    first_seen_candidates.append(event_dt)
+                    last_seen_candidates.append(event_dt)
+                if collect_dt:
+                    first_seen_candidates.append(collect_dt)
+                    last_seen_candidates.append(collect_dt)
+
+            merged_description = "\n".join(descriptions) if descriptions else ""
+            sources = source_names or ["unknown"]
+
+            first_seen_dt = min(first_seen_candidates) if first_seen_candidates else None
+            last_seen_dt = max(last_seen_candidates) if last_seen_candidates else None
+            first_seen = to_iso_z(first_seen_dt) or primary.get("event_time")
+            last_seen = to_iso_z(last_seen_dt) or primary.get("collect_time")
+
+            ioc_age_days = None
+            if first_seen_dt:
+                ioc_age_days = max(
+                    0,
+                    (datetime.now(timezone.utc) - first_seen_dt.astimezone(timezone.utc)).days
+                )
             
             # Run classification
-            classification = classify_threat(description)
-            threat_actors = extract_threat_actors(description)
-            mitre_techniques = extract_mitre_techniques(description)
+            classification = classify_threat(merged_description)
+            threat_actors = extract_threat_actors(merged_description)
+            mitre_techniques = extract_mitre_techniques(merged_description)
             
             # Run scoring
             score_result = calculate_risk_score(
                 ioc_value=ioc_value,
                 ioc_type=ioc_type,
-                description=description,
+                description=merged_description,
                 sources=sources,
+                ioc_age_days=ioc_age_days,
                 threat_classification={
                     "threat_types": classification["threat_types"],
                     "threat_actors": threat_actors,
@@ -516,21 +676,24 @@ async def run_pipeline(
             warehouse_doc = {
                 "ioc_value": ioc_value,
                 "ioc_type": ioc_type,
-                "source_name": ioc.get("source_name"),
-                "source_type": ioc.get("source_type"),
+                "source_name": ", ".join(sources),
+                "source_type": "multi" if len(source_types) > 1 else (source_types[0] if source_types else "unknown"),
                 "sources": sources,
-                "description": description,
-                "threat_type": ioc.get("threat_type", []),
-                "severity": ioc.get("severity"),
-                "tags": ioc.get("tags", []),
-                "reference": ioc.get("reference"),
-                "collect_time": ioc.get("collect_time"),
-                "event_time": ioc.get("event_time"),
-                "first_seen": ioc.get("event_time"),
-                "last_seen": ioc.get("collect_time"),
-                "geo_country": ioc.get("geo_country"),
+                "source_types": source_types,
+                "source_count": len(sources),
+                "description": merged_description,
+                "threat_type": sorted(set(threat_types_raw)),
+                "severity": pick_highest_severity(severity_values),
+                "tags": sorted(tags),
+                "reference": "\n".join(references),
+                "collect_time": last_seen,
+                "event_time": first_seen,
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "ioc_age_days": ioc_age_days,
+                "geo_country": geo_countries[0] if geo_countries else primary.get("geo_country"),
                 # AI Enrichment
-                "ai_risk_score": score_result.get("total_score", 0),
+                "ai_risk_score": score_result.get("risk_score", 0),
                 "ai_severity": score_result.get("severity", "low"),
                 "ai_severity_th": score_result.get("severity_th", "ต่ำ"),
                 "ai_threat_types": classification["threat_types"],
@@ -538,21 +701,47 @@ async def run_pipeline(
                 "ai_mitre_techniques": mitre_techniques,
                 "ai_classification_confidence": classification["confidence"],
                 "ai_score_breakdown": score_result.get("breakdown", {}),
-                "ai_top_factors": score_result.get("top_factors", [])
+                "ai_top_factors": score_result.get("top_factors", []),
+                "score_model_version": score_result.get("score_model_version"),
+                "score_config_version": score_result.get("score_config_version"),
+                "credibility_score": score_result.get("credibility_score", 0),
+                "impact_score": score_result.get("impact_score", 0)
             }
             
+            processed_doc = dict(warehouse_doc)
+            processed_doc["validation_status"] = "validated"
+
+            # Save to processed layer first (for validation/backup)
+            processed_id = es_client.save_to_processed(processed_doc)
+            if not processed_id:
+                failed += 1
+                continue
+
             # Save to warehouse
             saved_id = es_client.save_to_warehouse(warehouse_doc)
             
             if saved_id:
-                # Mark as processed in Data Lake
-                es_client.mark_as_processed(ioc.get("_id"))
+                # Mark all contributing observations as processed
+                mark_failed = False
+                for doc in ioc_docs:
+                    doc_id = doc.get("_id")
+                    if doc_id and not es_client.mark_as_processed(doc_id):
+                        mark_failed = True
+                        logger.warning(
+                            "Failed marking datalake doc as processed: %s (%s)",
+                            doc_id,
+                            ioc_value
+                        )
+                if mark_failed:
+                    failed += 1
+                    continue
                 processed += 1
+                processed_observations += len(ioc_docs)
             else:
                 failed += 1
                 
         except Exception as e:
-            logger.error(f"Pipeline error for {ioc.get('ioc_value')}: {e}")
+            logger.error(f"Pipeline error for {ioc_docs[0].get('ioc_value')}: {e}")
             failed += 1
     
     elapsed = int((time.time() - start) * 1000)
@@ -561,20 +750,24 @@ async def run_pipeline(
         "processed": processed,
         "failed": failed,
         "processing_time_ms": elapsed,
-        "message": f"Pipeline completed: {processed} processed, {failed} failed"
+        "message": (
+            f"Pipeline completed: {processed} aggregated IOCs processed, "
+            f"{processed_observations} observations updated, {failed} failed"
+        )
     }
 
 
 @app.get("/pipeline/status", response_model=ElasticsearchStatusResponse)
 async def pipeline_status(api_key: str = Depends(verify_api_key)):
     """Get Elasticsearch and pipeline status."""
-    from elastic_client import get_elastic_client, DATALAKE_INDEX, WAREHOUSE_INDEX
+    from elastic_client import get_elastic_client, DATALAKE_INDEX, PROCESSED_INDEX, WAREHOUSE_INDEX
     
     es_client = get_elastic_client()
     health = es_client.health_check()
     
     # Get document counts
     datalake_count = 0
+    processed_count = 0
     warehouse_count = 0
     
     try:
@@ -582,6 +775,10 @@ async def pipeline_status(api_key: str = Depends(verify_api_key)):
         resp = httpx.get(f"{es_client.url}/{DATALAKE_INDEX}/_count", timeout=10)
         if resp.status_code == 200:
             datalake_count = resp.json().get("count", 0)
+
+        resp = httpx.get(f"{es_client.url}/{PROCESSED_INDEX}/_count", timeout=10)
+        if resp.status_code == 200:
+            processed_count = resp.json().get("count", 0)
         
         resp = httpx.get(f"{es_client.url}/{WAREHOUSE_INDEX}/_count", timeout=10)
         if resp.status_code == 200:
@@ -592,8 +789,10 @@ async def pipeline_status(api_key: str = Depends(verify_api_key)):
     return {
         "status": health.get("status", "unknown"),
         "datalake_index": DATALAKE_INDEX,
+        "processed_index": PROCESSED_INDEX,
         "warehouse_index": WAREHOUSE_INDEX,
         "datalake_count": datalake_count,
+        "processed_count": processed_count,
         "warehouse_count": warehouse_count
     }
 
@@ -645,5 +844,3 @@ if __name__ == "__main__":
     
     logger.info(f"Starting AI Service on {HOST}:{PORT}")
     uvicorn.run(app, host=HOST, port=PORT, reload=DEBUG)
-
-

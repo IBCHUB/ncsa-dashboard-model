@@ -219,7 +219,18 @@ python scripts/import_to_datalake.py
 ```bash
 curl -X POST http://localhost:8000/pipeline/run \
   -H "X-API-Key: tcti-dev-key-2024" \
-  -d '{"batch_size": 50}'
+  -d '{"limit": 50}'
+```
+
+### Internal Access (Dashboard + 2FA)
+
+Set these before running dashboard:
+
+```bash
+export DASHBOARD_AUTH_USER=\"internal@tcti.local\"
+export DASHBOARD_AUTH_PASSWORD=\"<strong-password>\"
+export DASHBOARD_2FA_SECRET=\"<base32-totp-secret>\"
+export DASHBOARD_SESSION_SECRET=\"<random-long-secret>\"
 ```
 
 ---

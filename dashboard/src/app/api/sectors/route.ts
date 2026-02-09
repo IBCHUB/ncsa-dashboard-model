@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import { checkElasticsearchHealth, searchWarehouse } from '@/lib/elastic';
 
 interface SectorData {
     name: string;
@@ -110,19 +111,43 @@ function determineThreatLevel(stats: { critical: number; high: number; medium: n
 
 export async function GET() {
     try {
-        // Read normalized IOCs from public data
-        const dataPath = path.join(process.cwd(), 'public', 'data', 'normalized_iocs.json');
+        let events: any[] = [];
+        let usedElasticsearch = false;
 
-        if (!fs.existsSync(dataPath)) {
-            return NextResponse.json({
-                success: true,
-                data: {}
-            });
+        // Prefer Data Warehouse (real-time)
+        try {
+            const health = await checkElasticsearchHealth();
+            if (health.available) {
+                usedElasticsearch = true;
+                const result = await searchWarehouse({ limit: 5000, sortBy: 'time' });
+                events = result.data.map((doc: any) => ({
+                    description: doc.description || '',
+                    aiThreatActors: doc.ai_threat_actors || [],
+                    aiThreatTypes: doc.ai_threat_types || [],
+                    aiSeverity: doc.ai_severity,
+                    severity: doc.severity,
+                    aiScoreBreakdown: doc.ai_score_breakdown
+                }));
+            }
+        } catch (error) {
+            console.error('[Sectors API] Elasticsearch fallback to file', error);
         }
 
-        const rawData = fs.readFileSync(dataPath, 'utf-8');
-        const data = JSON.parse(rawData);
-        const events = data.events || data || [];
+        // Fallback to normalized file
+        if (!usedElasticsearch && events.length === 0) {
+            const dataPath = path.join(process.cwd(), 'public', 'data', 'normalized_iocs.json');
+
+            if (!fs.existsSync(dataPath)) {
+                return NextResponse.json({
+                    success: true,
+                    data: {}
+                });
+            }
+
+            const rawData = fs.readFileSync(dataPath, 'utf-8');
+            const data = JSON.parse(rawData);
+            events = data.events || data || [];
+        }
 
         // Aggregate by sector
         const sectorStats: Record<string, SectorData> = {};
