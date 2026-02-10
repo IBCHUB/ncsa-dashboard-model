@@ -188,15 +188,16 @@ User Request → Dashboard API → Elasticsearch Query → Response
 
 ## AI/ML Components
 
-### Classification (BART-Large-MNLI)
+### Classification (Zero-shot MNLI)
 
-- **Model:** `facebook/bart-large-mnli` (400M parameters)
+- **Model (configurable):** `CLASSIFIER_MODEL` (default: `typeform/distilbert-base-uncased-mnli`)
 - **Task:** Zero-shot classification
-- **Why this model?**
-  - **Zero-Shot Capability:** Enables classification of new threat types without requiring labeled training data.
-  - **Semantic Understanding:** Large-scale pre-training on MNLI (Multi-Genre Natural Language Inference) provides superior understanding of complex cybersecurity context compared to smaller models like DistilBERT.
-  - **TOR Compliance:** Meets "AI/ML Analysis" and "Big Data" requirements through advanced transformer architecture.
-- **Labels:** ransomware, phishing, apt, malware, c2, data_breach
+- **Why this approach?**
+  - **Zero-shot:** เริ่มใช้งานได้ทันทีโดยไม่ต้องมี labeled dataset สำหรับเทรน
+  - **ปรับ label ง่าย:** เพิ่ม/ลด threat categories ได้โดยไม่ต้อง retrain
+  - **เหมาะกับ production CPU:** ค่าเริ่มต้นเลือกโมเดลขนาดเล็กลงเพื่อความเร็วและต้นทุน
+- **Optional (heavier):** สามารถสลับเป็น `facebook/bart-large-mnli` ได้ผ่าน env `CLASSIFIER_MODEL` หากต้องการความแม่นยำ/semantic ที่สูงขึ้นและยอมรับ latency ได้
+- **Labels:** ดู `THREAT_CATEGORIES` ใน `ai-service/config.py`
 
 ### Risk Scoring
 

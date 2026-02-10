@@ -65,53 +65,44 @@ else:
 
 ### 📊 2.2 Risk Scoring Formula (สูตรคำนวณความเสี่ยง)
 
-**Source of truth:** `docs/AI-SCORING.md`, `ai-service/models/scorer.py`, `ai-service/config.py`
+**Source of truth:** `docs/AI-SCORING_TECHNICAL.md`, `ai-service/models/scorer.py`, `ai-service/config.py`  
+**Customer one-pager:** `docs/AI-SCORING.md`
 
-ระบบนี้ใช้แนวทาง **Weighted Scoring (0-100)** เพื่อควบคุมสเกลและ audit ได้ (ไม่ใช่สูตร normalize แบบเดิม)
+ระบบนี้ใช้แนวทาง **Weighted Scoring (0-100)** แบบ “งบคะแนน” ต่อหมวด เพื่อคุมสเกลให้แน่นอนและอธิบายได้ตรงไปตรงมา
 
 ลำดับการคำนวณโดยสรุป:
-1. คำนวณ **raw score** รายปัจจัย (มี maxScore)
-2. แปลงเป็นคะแนนถ่วงน้ำหนักด้วย `SCORING_WEIGHTS` (weights รวม = 1.0)
-3. รวมเป็น `weighted_total` (0-100) แล้ว apply **decay_multiplier**
-4. บวก **sector_bonus** (มี guardrails) และผ่าน **policy gates**
+1. ให้คะแนน **แต่ละหมวดเป็น 0-100** (`factor_score`)
+2. แปลงเป็นแต้มที่มีผลต่อคะแนนรวมด้วย “งบคะแนนของหมวดนั้น” (`budget_points`)
+3. รวมเป็น **Base Score** (0-100)
+4. ปรับด้วย **Time Decay**, **Sector Bonus** (มี guardrails), และ **Policy Gates**
 
-#### ปัจจัยคะแนน (Raw Score)
-
-| ปัจจัย | คะแนนเต็ม | สรุป |
-|--------|:---:|-----------|
-| **Cross-Source Validation** | 30 | 1=5, 2=10, 3=15, 4+=20..30 (diminishing) + diversity bonus |
-| **Source Quality** | 40 | trusted=15, news=8, other=5 ต่อแหล่ง (cap 40) |
-| **High-Risk Keywords** | 25 | คำละ 5 คะแนน (cap 25) |
-| **Entropy (DGA)** | 15 | >4.0=15, >3.5=10, >3.0=5 |
-| **Domain Age** | 20 | <30 วัน=20, <90=15, <180=10, <365=5 |
-| ~~**Geo Risk**~~ | ~~15~~ | **(ปิดใช้งาน)** เนื่องจากข้อมูลไม่สามารถ audit ได้ |
-| **Threat Type Severity (AI)** | 35 | อิง `THREAT_TYPE_SEVERITY` (นับสูงสุด 2 ประเภท + bonus เมื่อพบ >=3) |
-| **Threat Actor (AI)** | 30 | อิง `KNOWN_THREAT_ACTORS` (เลือกคะแนนสูงสุดของ actor ที่พบ) |
-| **MITRE ATT&CK (AI)** | 20 | อิง `MITRE_TACTICS`/Technique IDs (cap 20) |
-| **AI Confidence Bonus** | 10 | อิง `CONFIDENCE_THRESHOLDS` (0/2/5/8) |
-
-#### น้ำหนักที่ใช้จริง (`SCORING_WEIGHTS`)
-
-| Factor key | Weight |
+#### งบคะแนนที่ใช้จริง (รวม = 100)
+| Factor key | Max points (budget) |
 |---|---:|
-| `cross_source` | 0.25 |
-| `threat_intel_source` | 0.15 |
-| `high_risk_keywords` | 0.10 |
-| `domain_age` | 0.10 |
-| `entropy` | 0.05 |
-| `threat_type_severity` | 0.15 |
-| `threat_actor` | 0.10 |
-| `mitre_techniques` | 0.05 |
-| `ai_confidence` | 0.05 |
+| `cross_source` | 25 |
+| `source_quality` | 15 |
+| `threat_type_severity` | 15 |
+| `threat_actor` | 10 |
+| `domain_age` | 10 |
+| `keywords` | 10 |
+| `entropy` | 5 |
+| `mitre_techniques` | 5 |
+| `ai_confidence` | 5 |
 
-#### สูตรรวม (Weighted)
+#### สูตรรวม (Weighted, 0-100)
 ```text
-weighted_points(factor) = (raw_score / max_score) * weight * 100
-weighted_total = Σ weighted_points(ทุก factor ที่เปิดใช้)          // 0..100
+factor_points = (factor_score / 100) * budget_points
+base_score    = Σ factor_points(ทุก factor)              // 0..100
 
-score_after_decay = round(weighted_total) * decay_multiplier
-operational_risk  = min(score_after_decay + sector_bonus, 100)      // มี guardrails + policy gates
+base_int      = round(base_score)                        // ใช้เป็นคะแนนฐานสำหรับงานปฏิบัติการ
+after_decay   = int(base_int * decay_multiplier)         // IOC เก่า: คะแนนลดลง
+after_sector  = min(after_decay + sector_bonus, 100)     // มี guardrails
+final_score   = apply_policy_gates(after_sector)         // กัน false escalation
 ```
+
+หมายเหตุ:
+- `geo_risk` ถูกปิดใช้งาน (ไม่คิดแต้ม) เพราะข้อมูลไม่สามารถ audit ได้
+- ดูรายละเอียดเชิงลูกค้า (ภาษาไทยแบบ one-pager) ที่ `docs/AI-SCORING.md`
 
 #### Modifiers / Governance ที่สำคัญ
 - **Decay Factor:** ลดคะแนนตามอายุ IOC (`ioc_age_days`) (<=7=1.00, 8-30=0.90, 31-90=0.75, 91-180=0.60, >180=0.50)

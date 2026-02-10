@@ -7,7 +7,15 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-import httpx
+from typing import Optional
+
+try:
+    import httpx  # type: ignore
+except Exception:
+    httpx = None  # type: ignore
+    import ssl
+    import urllib.request
+    import urllib.error
 
 # Configuration
 ES_URL = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
@@ -31,6 +39,24 @@ VERIFY_SSL = _parse_bool(os.getenv("ELASTICSEARCH_VERIFY_SSL", "true"), default=
 _repo_data_lake = (Path(__file__).resolve().parent / "data_lake")
 DATA_LAKE_PATH = os.getenv("DATA_LAKE_DIR") or os.getenv("DATA_LAKE_PATH") or (str(_repo_data_lake) if _repo_data_lake.exists() else "/app/data_lake")
 
+def _ssl_context() -> Optional["ssl.SSLContext"]:
+    if ES_URL.startswith("https://"):
+        if VERIFY_SSL:
+            return ssl.create_default_context()
+        return ssl._create_unverified_context()
+    return None
+
+def _stdlib_request(method: str, url: str, payload: dict, headers: dict) -> tuple[int, str]:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=_ssl_context()) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return resp.status, body
+    except urllib.error.HTTPError as e:
+        body = (e.read() or b"").decode("utf-8", errors="replace")
+        return e.code, body
+
 def index_document(doc, doc_id=None):
     """Index a single document"""
     headers = {"Content-Type": "application/json"}
@@ -44,12 +70,18 @@ def index_document(doc, doc_id=None):
         url = f"{ES_URL}/{DATALAKE_INDEX}/_doc"
     
     try:
-        if doc_id:
-            response = httpx.put(url, json=doc, headers=headers, timeout=30, verify=VERIFY_SSL)
+        if httpx is not None:
+            if doc_id:
+                response = httpx.put(url, json=doc, headers=headers, timeout=30, verify=VERIFY_SSL)
+            else:
+                response = httpx.post(url, json=doc, headers=headers, timeout=30, verify=VERIFY_SSL)
+            status = response.status_code
+            text = response.text
         else:
-            response = httpx.post(url, json=doc, headers=headers, timeout=30, verify=VERIFY_SSL)
-        if response.status_code not in [200, 201]:
-            print(f"Failed to index doc: {response.status_code} {response.text[:200]}")
+            status, text = _stdlib_request("PUT" if doc_id else "POST", url, doc, headers)
+
+        if status not in [200, 201]:
+            print(f"Failed to index doc: {status} {text[:200]}")
             return False
         return True
     except Exception as e:
@@ -79,14 +111,34 @@ def process_enrich_json(file_path):
             ioc_type = ioc_data.get('type', '')
             
             # Build flattened document
+            def _norm_date(value):
+                """
+                Best-effort date normalization for Elasticsearch date fields.
+                Return ISO-8601 string with 'Z' when possible; otherwise None (omit field).
+                """
+                if value is None:
+                    return None
+                text = str(value).strip()
+                if not text:
+                    return None
+                try:
+                    # Handle trailing Z
+                    if text.endswith("Z"):
+                        text = text[:-1] + "+00:00"
+                    dt = datetime.fromisoformat(text)
+                    return dt.astimezone().isoformat().replace("+00:00", "Z")
+                except Exception:
+                    # Keep only obviously-ISO inputs; drop the rest to avoid mapping failures.
+                    return None
+
             doc = {
                 'ioc_value': ioc_value,
                 'ioc_type': ioc_type,
                 'source_name': source.get('source_name', ''),
                 'source_type': source.get('source_type', ''),
                 'source_url': source.get('source_url', ''),
-                'collect_time': source.get('collect_time', ''),
-                'event_time': source.get('event_time', ''),
+                'collect_time': _norm_date(source.get('collect_time')),
+                'event_time': _norm_date(source.get('event_time')),
                 'threat_type': source.get('threat_type', []),
                 'severity': source.get('severity', ''),
                 'confidence': source.get('confidence', 0),
@@ -94,10 +146,15 @@ def process_enrich_json(file_path):
                 'reference': source.get('reference', ''),
                 'tags': source.get('tags', []),
                 'geo_info': source.get('geo_info', {}),
-                'enrichment': source.get('enrichment', {}),
                 'ai_processed': False,
                 'created_at': datetime.utcnow().isoformat() + 'Z'
             }
+
+            # Drop null/empty date fields to avoid Elasticsearch date parsing errors.
+            if not doc.get("collect_time"):
+                doc.pop("collect_time", None)
+            if not doc.get("event_time"):
+                doc.pop("event_time", None)
             
             # Index with original ID to prevent duplicates
             if index_document(doc, original_id):

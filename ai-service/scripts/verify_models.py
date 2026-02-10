@@ -1,6 +1,6 @@
 """
 Verify AI Model Upgrades
-Run this script inside the container to verify BART-Large and Prophet.
+Run this script inside the container to verify the configured classifier model and Prophet.
 """
 
 import sys
@@ -20,7 +20,7 @@ logger = logging.getLogger("verifier")
 
 def verify_classification():
     print("\n" + "="*50)
-    print("🤖 TESTING CLASSIFICATION (BART-Large-MNLI)")
+    print("🤖 TESTING CLASSIFICATION (Zero-shot MNLI)")
     print("="*50)
     
     # Test Case: Semantic understanding (not just keywords)

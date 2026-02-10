@@ -846,17 +846,25 @@ async function normalizeData() {
                 } else {
                     // Compute summary from breakdown
                     const bd = aiResult.ai_score_breakdown;
+                    const getRaw = (key: string) => {
+                        const v = (bd as any)?.[key];
+                        if (!v) return 0;
+                        // New format: score normalized 0-100 plus raw_score/raw_max for audit
+                        if (typeof v.raw_score === 'number') return v.raw_score;
+                        if (typeof v.score === 'number') return v.score;
+                        return 0;
+                    };
                     finalSummary = {
-                        traditional_score: (bd.cross_source?.score || 0) +
-                            (bd.source_quality?.score || 0) +
-                            (bd.keywords?.score || 0) +
-                            (bd.entropy?.score || 0) +
-                            (bd.geo_risk?.score || 0) +
-                            (bd.domain_age?.score || 0),
-                        ai_score: (bd.threat_type_severity?.score || 0) +
-                            (bd.threat_actor?.score || 0) +
-                            (bd.mitre_techniques?.score || 0) +
-                            (bd.ai_confidence?.score || 0),
+                        traditional_score: getRaw('cross_source') +
+                            getRaw('source_quality') +
+                            getRaw('keywords') +
+                            getRaw('entropy') +
+                            getRaw('geo_risk') +
+                            getRaw('domain_age'),
+                        ai_score: getRaw('threat_type_severity') +
+                            getRaw('threat_actor') +
+                            getRaw('mitre_techniques') +
+                            getRaw('ai_confidence'),
                         has_threat_actor: aiThreatActors.length > 0,
                         has_mitre: aiMitreTechniques.length > 0,
                         primary_threat: aiThreatTypes[0] || null

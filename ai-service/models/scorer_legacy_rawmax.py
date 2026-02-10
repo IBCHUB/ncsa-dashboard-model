@@ -50,19 +50,6 @@ WEIGHT_KEY_BY_FACTOR = {
 }
 
 
-def _raw_to_score100(raw_score: float, raw_max: float) -> float:
-    """
-    Normalize a factor's internal raw score (0..raw_max) to a 0..100 scale.
-
-    The final risk score is based on normalized ratios, so moving factor maxScore
-    to 100 keeps the overall score behavior identical (same ratios, same weights).
-    """
-    if raw_max <= 0:
-        return 0.0
-    clamped = min(max(float(raw_score), 0.0), float(raw_max))
-    return (clamped / float(raw_max)) * 100.0
-
-
 def _weighted_points(factor: str, raw_score: float, max_score: float) -> float:
     """
     Convert raw factor score into weighted contribution using SCORING_WEIGHTS.
@@ -589,14 +576,11 @@ def calculate_risk_score(
     # 2. Cross-source validation score
     unique_sources = list(set(sources))
     source_count = len(unique_sources)
-    cross_source_raw = calculate_cross_source_score(source_count, source_diversity)
-    cross_source_score = _raw_to_score100(cross_source_raw, 30)
+    cross_source = calculate_cross_source_score(source_count, source_diversity)
     breakdown["cross_source"] = {
-        "raw_score": cross_source_raw,
-        "raw_max": 30,
-        "score": round(cross_source_score, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("cross_source", cross_source_score, 100),
+        "score": cross_source,
+        "maxScore": 30,
+        "weighted_score": _weighted_points("cross_source", cross_source, 30),
         "count": source_count,
         "source_diversity": source_diversity,
         "sources_found": unique_sources,
@@ -605,7 +589,7 @@ def calculate_risk_score(
         "reasonEn": f"Found in {source_count} source(s): {', '.join(unique_sources)}" if unique_sources else "Not found in any source",
         "methodology": "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ พร้อม bonus จากความหลากหลายของประเภทแหล่งข้อมูล",
         "methodologyEn": "Count unique sources with diversity bonus across source classes.",
-        "scoringRules": "Raw: 1=5, 2=10, 3=15, 4+=20..30 (diminishing) + diversity bonus (cap 30) แล้ว normalize เป็น 0-100"
+        "scoringRules": "1=5, 2=10, 3=15, 4+=20..30 (diminishing) + diversity bonus สูงสุด 30"
     }
 
     # 3. Source reliability score
@@ -629,15 +613,10 @@ def calculate_risk_score(
     source_reason = " | ".join(reason_parts) if reason_parts else "ไม่มีแหล่งข้อมูล"
     source_reason_en = " | ".join(reason_parts_en) if reason_parts_en else "No sources"
     
-    source_quality_raw = source_quality["score"]
-    source_quality_score = _raw_to_score100(source_quality_raw, 40)
     breakdown["source_quality"] = {
         **source_quality,
-        "raw_score": source_quality_raw,
-        "raw_max": 40,
-        "score": round(source_quality_score, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("source_quality", source_quality_score, 100),
+        "maxScore": 40,
+        "weighted_score": _weighted_points("source_quality", source_quality["score"], 40),
         "trusted_sources": trusted_list,
         "news_sources": news_list,
         "other_sources": other_list,
@@ -646,27 +625,22 @@ def calculate_risk_score(
         "reasonEn": source_reason_en,
         "methodology": "ตรวจสอบว่าแหล่งข้อมูลอยู่ในรายการที่เชื่อถือได้หรือไม่ (เช่น VirusTotal, AbuseIPDB, MISP)",
         "methodologyEn": "Check if sources are in trusted list (e.g., VirusTotal, AbuseIPDB, MISP)",
-        "scoringRules": "Raw: trusted=15, news=8, other=5 ต่อแหล่ง (cap 40) แล้ว normalize เป็น 0-100"
+        "scoringRules": "แหล่งเชื่อถือ = 15 คะแนน, แหล่งข่าว = 8 คะแนน, อื่นๆ = 5 คะแนน (สูงสุด 40)"
     }
 
     # 4. Keyword analysis
     keyword_result = calculate_keyword_score(description)
     matched_keywords = keyword_result.get('keywords', [])
-    keyword_raw = keyword_result["score"]
-    keyword_score = _raw_to_score100(keyword_raw, 25)
     breakdown["keywords"] = {
         **keyword_result,
-        "raw_score": keyword_raw,
-        "raw_max": 25,
-        "score": round(keyword_score, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("keywords", keyword_score, 100),
+        "maxScore": 25,
+        "weighted_score": _weighted_points("keywords", keyword_result["score"], 25),
         "description": f"พบ {len(matched_keywords)} คำสำคัญ",
         "reason": f"พบคำสำคัญ: {', '.join(matched_keywords)}" if matched_keywords else "ไม่พบคำสำคัญที่น่าสงสัย",
         "reasonEn": f"Keywords found: {', '.join(matched_keywords)}" if matched_keywords else "No high-risk keywords found",
         "methodology": "ค้นหาคำสำคัญที่บ่งชี้ภัยคุกคาม เช่น ransomware, zero-day, exploit, APT, backdoor",
         "methodologyEn": "Search for keywords indicating threats like ransomware, zero-day, exploit, APT, backdoor",
-        "scoringRules": "Raw: คำสำคัญละ 5 คะแนน (cap 25) แล้ว normalize เป็น 0-100"
+        "scoringRules": "คำสำคัญละ 5 คะแนน สูงสุด 25 คะแนน"
     }
     
     # 4. Entropy (for domains/URLs)
@@ -693,20 +667,17 @@ def calculate_risk_score(
             entropy_description = "ปกติ"
             entropy_reason = f"Entropy = {entropy:.2f} (ปกติ) ดูเหมือนชื่อโดเมนปกติ"
     
-    entropy_norm = _raw_to_score100(entropy_score, 15)
     breakdown["entropy"] = {
         "value": entropy,
-        "raw_score": entropy_score,
-        "raw_max": 15,
-        "score": round(entropy_norm, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("entropy", entropy_norm, 100),
+        "score": entropy_score,
+        "maxScore": 15,
+        "weighted_score": _weighted_points("entropy", entropy_score, 15),
         "description": entropy_description,
         "reason": entropy_reason,
         "reasonEn": f"Entropy value = {entropy:.2f}" if ioc_type in ["domain", "url", "hostname"] else "Not analyzed (not a domain/URL)",
         "methodology": "คำนวณค่า Shannon Entropy ของชื่อโดเมน ค่าสูง = สุ่มมาก = อาจเป็น DGA (Domain Generation Algorithm)",
         "methodologyEn": "Calculate Shannon Entropy of domain name. High entropy = more random = likely DGA",
-        "scoringRules": "Raw: Entropy > 4.0 = 15, > 3.5 = 10, > 3.0 = 5 (cap 15) แล้ว normalize เป็น 0-100"
+        "scoringRules": "Entropy > 4.0 = 15 คะแนน, > 3.5 = 10 คะแนน, > 3.0 = 5 คะแนน"
     }
     
     # 5. Geolocation risk - DISABLED (data source not auditable)
@@ -714,10 +685,7 @@ def calculate_risk_score(
     geo_result = {"score": 0, "country": country_code, "is_high_risk": False}
     breakdown["geo_risk"] = {
         **geo_result,
-        "raw_score": 0,
-        "raw_max": 15,
-        "score": 0,
-        "maxScore": 100,
+        "maxScore": 15,
         "disabled": True,  # Flag to indicate this factor is disabled
         "description": "ปิดใช้งาน - ไม่มีแหล่งข้อมูลที่ตรวจสอบได้",
         "reason": "ปัจจัยนี้ถูกปิดใช้งานเพราะข้อมูลประเทศต้นทางไม่สามารถ audit ได้",
@@ -736,20 +704,15 @@ def calculate_risk_score(
     if domain_age_days is not None:
         age_reason = f"อายุโดเมน {domain_age_days} วัน - {age_result.get('description', '')}"
     
-    domain_age_raw = age_result["score"]
-    domain_age_score = _raw_to_score100(domain_age_raw, 20)
     breakdown["domain_age"] = {
         **age_result,
-        "raw_score": domain_age_raw,
-        "raw_max": 20,
-        "score": round(domain_age_score, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("domain_age", domain_age_score, 100),
+        "maxScore": 20,
+        "weighted_score": _weighted_points("domain_age", age_result["score"], 20),
         "reason": age_reason,
         "reasonEn": f"Domain age: {domain_age_days} days" if domain_age_days else "Domain age unknown",
         "methodology": "วิเคราะห์อายุโดเมนจาก WHOIS โดเมนใหม่มากมีความเสี่ยงสูงกว่า",
         "methodologyEn": "Analyze domain age from WHOIS. Newer domains are riskier.",
-        "scoringRules": "Raw: <30=20, <90=15, <180=10, <365=5 (cap 20) แล้ว normalize เป็น 0-100"
+        "scoringRules": "< 30 วัน = 20 คะแนน, < 90 วัน = 15 คะแนน, < 180 วัน = 10 คะแนน, < 365 วัน = 5 คะแนน"
     }
     
     # ==========================================
@@ -759,79 +722,59 @@ def calculate_risk_score(
     # 7. Threat Type Severity
     threat_types = threat_classification.get("threat_types", [])
     threat_type_result = calculate_threat_type_score(threat_types)
-    threat_type_raw = threat_type_result["score"]
-    threat_type_score = _raw_to_score100(threat_type_raw, 35)
     breakdown["threat_type_severity"] = {
         **threat_type_result,
-        "raw_score": threat_type_raw,
-        "raw_max": 35,
-        "score": round(threat_type_score, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("threat_type_severity", threat_type_score, 100),
+        "maxScore": 35,
+        "weighted_score": _weighted_points("threat_type_severity", threat_type_result["score"], 35),
         "description": f"ตรวจพบ {len(threat_types)} ประเภทภัยคุกคาม",
         "reason": f"ประเภทที่พบ: {', '.join(threat_types)}" if threat_types else "ไม่พบประเภทภัยคุกคามที่รู้จัก",
         "reasonEn": f"Types detected: {', '.join(threat_types)}" if threat_types else "No known threat types detected",
         "methodology": "วิเคราะห์ด้วย AI (NLP) เพื่อจัดประเภทภัยคุกคาม เช่น Ransomware, APT, Phishing, Malware",
         "methodologyEn": "AI (NLP) analysis to classify threat types like Ransomware, APT, Phishing, Malware",
-        "scoringRules": "Raw: คะแนนตาม THREAT_TYPE_SEVERITY, นับสูงสุด 2 ประเภท (+bonus เมื่อพบ >=3), cap 35 แล้ว normalize เป็น 0-100"
+        "scoringRules": "คะแนนตาม THREAT_TYPE_SEVERITY และนับสูงสุด 2 ประเภท (+bonus เมื่อพบ >=3 ประเภท)"
     }
     
     # 8. Threat Actor Attribution
     threat_actors = threat_classification.get("threat_actors", [])
     threat_actor_result = calculate_threat_actor_score(threat_actors)
-    threat_actor_raw = threat_actor_result["score"]
-    threat_actor_score = _raw_to_score100(threat_actor_raw, 30)
     actor_names = [a.get('name', a) if isinstance(a, dict) else a for a in threat_actors]
     breakdown["threat_actor"] = {
         **threat_actor_result,
-        "raw_score": threat_actor_raw,
-        "raw_max": 30,
-        "score": round(threat_actor_score, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("threat_actor", threat_actor_score, 100),
+        "maxScore": 30,
+        "weighted_score": _weighted_points("threat_actor", threat_actor_result["score"], 30),
         "actors_found": actor_names,
         "description": f"กลุ่มผู้โจมตี: {', '.join(actor_names) if actor_names else 'ไม่ระบุ'}",
         "reason": f"ตรวจพบกลุ่มผู้โจมตี: {', '.join(actor_names)}" if actor_names else "ไม่พบการระบุกลุ่มผู้โจมตี",
         "reasonEn": f"Threat actors detected: {', '.join(actor_names)}" if actor_names else "No threat actor attribution found",
         "methodology": "ค้นหาชื่อกลุ่มผู้โจมตีที่รู้จัก เช่น Lazarus, APT28, FIN7, Conti",
         "methodologyEn": "Search for known threat actor names like Lazarus, APT28, FIN7, Conti",
-        "scoringRules": "Raw: ใช้คะแนนจาก KNOWN_THREAT_ACTORS (cap 30) แล้ว normalize เป็น 0-100"
+        "scoringRules": "กลุ่มระดับชาติ (APT) = 28-30 คะแนน, Ransomware = 22-25 คะแนน, อาชญากรรม = 18-22 คะแนน, Hacktivist = 14-15 คะแนน, ไม่รู้จัก = 15 คะแนน (สูงสุด 30)"
     }
     
     # 9. MITRE ATT&CK Techniques
     mitre_techniques = threat_classification.get("mitre_techniques", [])
     mitre_result = calculate_mitre_score(mitre_techniques)
-    mitre_raw = mitre_result["score"]
-    mitre_score = _raw_to_score100(mitre_raw, 20)
     breakdown["mitre_techniques"] = {
         **mitre_result,
-        "raw_score": mitre_raw,
-        "raw_max": 20,
-        "score": round(mitre_score, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("mitre_techniques", mitre_score, 100),
+        "maxScore": 20,
+        "weighted_score": _weighted_points("mitre_techniques", mitre_result["score"], 20),
         "techniques_found": mitre_techniques,
         "description": f"MITRE tactics: {mitre_result['sophistication']}",
         "reason": f"พบ {len(mitre_techniques)} tactics: {', '.join(mitre_techniques[:3])}{'...' if len(mitre_techniques) > 3 else ''}" if mitre_techniques else "ไม่พบ MITRE ATT&CK tactics",
         "reasonEn": f"Found {len(mitre_techniques)} tactics: {', '.join(mitre_techniques[:3])}{'...' if len(mitre_techniques) > 3 else ''}" if mitre_techniques else "No MITRE ATT&CK tactics found",
         "methodology": "วิเคราะห์เทคนิคการโจมตีตาม MITRE ATT&CK Framework (Initial Access, Execution, Persistence ฯลฯ)",
         "methodologyEn": "Analyze attack techniques per MITRE ATT&CK Framework",
-        "scoringRules": "Raw: tactic/ID = 3-8 (cap 20) แล้ว normalize เป็น 0-100"
+        "scoringRules": "แต่ละ tactic = 3-8 คะแนน (ตามความรุนแรง) สูงสุด 20 คะแนน"
     }
     
     # 10. AI Confidence Bonus
     confidence = threat_classification.get("confidence", 0.5)
     confidence_result = calculate_confidence_bonus(confidence)
-    conf_raw = confidence_result["score"]
-    conf_score = _raw_to_score100(conf_raw, 10)
     confidence_pct = round(confidence * 100, 1)
     breakdown["ai_confidence"] = {
         **confidence_result,
-        "raw_score": conf_raw,
-        "raw_max": 10,
-        "score": round(conf_score, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("ai_confidence", conf_score, 100),
+        "maxScore": 10,
+        "weighted_score": _weighted_points("ai_confidence", confidence_result["score"], 10),
         "confidence_value": confidence,
         "description": f"ความมั่นใจ AI: {confidence_pct}%",
         "reason": f"AI classification confidence = {confidence_pct}%",
@@ -1021,7 +964,7 @@ def calculate_risk_score(
         "top_factors": top_factors,
         "target_sector": sector_result,  # NEW: Include full sector info
         "summary": {
-            "traditional_score": cross_source_raw + source_quality["score"] + keyword_result["score"] + entropy_score + geo_result["score"] + age_result["score"],
+            "traditional_score": cross_source + source_quality["score"] + keyword_result["score"] + entropy_score + geo_result["score"] + age_result["score"],
             "ai_score": threat_type_result["score"] + threat_actor_result["score"] + mitre_result["score"] + confidence_result["score"],
             "weighted_total_before_decay": weighted_total,
             "has_threat_actor": len(threat_actors) > 0,

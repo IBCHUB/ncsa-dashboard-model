@@ -1,8 +1,10 @@
 """
 NLP Threat Classifier using Zero-shot Classification
 
-Uses facebook/bart-large-mnli for classifying threat descriptions
-into predefined categories without requiring training data.
+Zero-shot MNLI classifier.
+
+Model is configurable via `CLASSIFIER_MODEL` (see `ai-service/config.py`).
+Default is a lighter MNLI model for CPU-friendly inference.
 """
 
 from typing import List, Dict, Optional, Tuple
