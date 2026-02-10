@@ -18,14 +18,14 @@ TCTI is an enterprise-grade threat intelligence platform built with:
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| **Dashboard** | Next.js 14 (TypeScript) | Interactive web interface |
+| **Dashboard** | Next.js (TypeScript) | Interactive web interface |
 | **AI Service** | FastAPI (Python) | NLP classification & risk scoring |
 | **Data Store** | Elasticsearch 8.12 | Data Lake & Data Warehouse |
 | **Visualization** | Kibana | Data exploration |
 
 ### Key Features
 - 🔍 **IOC Analysis** - IP, Domain, Hash, URL classification
-- 🤖 **AI/ML Scoring** - BART-Large-powered threat classification
+- 🤖 **AI/ML Scoring** - Zero-shot threat classification (Transformers)
 - 📊 **Risk Scoring** - Automated severity assessment (0-100)
 - 🗺️ **Threat Map** - Geographic visualization
 - 🔗 **Threat Graph** - Relationship mapping
@@ -117,6 +117,8 @@ npm run dev
 | `OPENAI_API_KEY` | - | Required for translation |
 | `ELASTICSEARCH_URL` | `http://localhost:9200` | Elasticsearch endpoint |
 | `AI_SERVICE_URL` | `http://localhost:8000` | AI Service endpoint |
+| `AI_SERVICE_API_KEYS` | - | AI Service accepted API keys (comma-separated) |
+| `AI_SERVICE_API_KEY` | - | Dashboard key used to call AI Service (X-API-Key) |
 
 ---
 
@@ -136,7 +138,7 @@ npm run dev
 - **Port:** 8000
 - **Path:** `/ai-service`
 - **Features:**
-  - Threat classification (DistilBERT)
+  - Threat classification (Zero-shot Transformers)
   - Risk scoring (0-100)
   - Entity extraction (Threat Actors, MITRE)
   - Translation (OpenAI GPT)

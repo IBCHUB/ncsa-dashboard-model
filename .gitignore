@@ -14,10 +14,12 @@ __pycache__/
 *$py.class
 venv/
 .env
+.env.remote
 
 # Data
 data_lake/
 ai-service/data/
+.data/
 *.log
 
 # Docker

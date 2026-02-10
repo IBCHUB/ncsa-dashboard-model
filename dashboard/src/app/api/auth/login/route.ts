@@ -59,10 +59,17 @@ export async function POST(request: NextRequest) {
         const authPassword = process.env.DASHBOARD_AUTH_PASSWORD || '';
         const require2FA = (process.env.DASHBOARD_REQUIRE_2FA || 'true').toLowerCase() !== 'false';
         const otpSecret = process.env.DASHBOARD_2FA_SECRET || '';
+        const sessionSecret = process.env.DASHBOARD_SESSION_SECRET || '';
 
         if (!authUser || !authPassword) {
             return NextResponse.json(
                 { success: false, error: 'Auth is not configured on server' },
+                { status: 500 }
+            );
+        }
+        if (!sessionSecret) {
+            return NextResponse.json(
+                { success: false, error: 'Session secret is not configured on server' },
                 { status: 500 }
             );
         }
@@ -98,7 +105,7 @@ export async function POST(request: NextRequest) {
             value: token,
             httpOnly: true,
             sameSite: 'lax',
-            secure: process.env.NODE_ENV === 'production',
+            secure: process.env.COOKIE_SECURE === 'true' || (process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE !== 'false'),
             path: '/',
             maxAge: parseInt(process.env.DASHBOARD_SESSION_TTL_SECONDS || '28800', 10)
         });

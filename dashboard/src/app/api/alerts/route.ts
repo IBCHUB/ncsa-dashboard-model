@@ -56,6 +56,17 @@ function writeStore(store: AlertStore): void {
     fs.writeFileSync(ALERT_STORE_PATH, JSON.stringify(store, null, 2), 'utf-8');
 }
 
+
+
+function normalizeSeverity(severity: string | undefined): string {
+    const value = (severity || 'low').toLowerCase();
+    if (value === 'very high') return 'critical';
+    return value;
+}
+
+
+
+
 function alertIdFromIOC(iocType: string, iocValue: string): string {
     const digest = crypto
         .createHash('sha1')
@@ -64,12 +75,6 @@ function alertIdFromIOC(iocType: string, iocValue: string): string {
         .slice(0, 10)
         .toUpperCase();
     return `ALERT-${digest}`;
-}
-
-function normalizeSeverity(severity: string | undefined): string {
-    const value = (severity || 'low').toLowerCase();
-    if (value === 'very high') return 'critical';
-    return value;
 }
 
 function toAlertEvent(event: ThreatEvent): any {
@@ -85,55 +90,38 @@ function toAlertEvent(event: ThreatEvent): any {
 }
 
 async function loadAlertCandidates(): Promise<any[]> {
-    let usedElasticsearch = false;
-    try {
-        const health = await checkElasticsearchHealth();
-        if (health.available) {
-            usedElasticsearch = true;
-            const result = await searchWarehouse({
-                severityLevels: ['medium', 'high', 'critical'],
-                limit: 2000,
-                sortBy: 'time'
-            });
-            return result.data.map((doc: any) => ({
-                source_type: doc.source_type || 'unknown',
-                source_name: doc.source_name || 'unknown',
-                collect_time: doc.last_seen || doc.processed_at || new Date().toISOString(),
-                event_time: doc.first_seen || doc.event_time || doc.collect_time || new Date().toISOString(),
-                threat_type: doc.threat_type || doc.ai_threat_types || [],
-                severity: doc.severity || 'low',
-                confidence: doc.ai_classification_confidence || 0,
-                ioc: { type: doc.ioc_type, value: doc.ioc_value },
-                description: doc.description || '',
-                tags: doc.tags || [],
-                status: 'open',
-                aiRiskScore: doc.ai_risk_score,
-                aiSeverity: doc.ai_severity,
-                aiThreatTypes: doc.ai_threat_types || [],
-                aiThreatActors: doc.ai_threat_actors || []
-            } as ThreatEvent))
-                .map(toAlertEvent)
-                .filter(Boolean);
-        }
-    } catch (error) {
-        console.error('[Alerts API] Elasticsearch unavailable, fallback to file', error);
+    // Check ElasticSearch Health
+    const health = await checkElasticsearchHealth();
+
+    if (health.available) {
+        const result = await searchWarehouse({
+            severityLevels: ['medium', 'high', 'critical'],
+            limit: 2000,
+            sortBy: 'time'
+        });
+        return result.data.map((doc: any) => ({
+            source_type: doc.source_type || 'unknown',
+            source_name: doc.source_name || 'unknown',
+            collect_time: doc.last_seen || doc.processed_at || new Date().toISOString(),
+            event_time: doc.first_seen || doc.event_time || doc.collect_time || new Date().toISOString(),
+            threat_type: doc.threat_type || doc.ai_threat_types || [],
+            severity: doc.severity || 'low',
+            confidence: doc.ai_classification_confidence || 0,
+            ioc: { type: doc.ioc_type, value: doc.ioc_value },
+            description: doc.description || '',
+            tags: doc.tags || [],
+            status: 'open',
+            aiRiskScore: doc.ai_risk_score,
+            aiSeverity: doc.ai_severity,
+            aiThreatTypes: doc.ai_threat_types || [],
+            aiThreatActors: doc.ai_threat_actors || []
+        } as ThreatEvent))
+            .map(toAlertEvent)
+            .filter(Boolean);
     }
 
-    if (usedElasticsearch) {
-        return [];
-    }
-
-    try {
-        const filePath = path.join(process.cwd(), 'public', 'data', 'normalized_iocs.json');
-        if (!fs.existsSync(filePath)) return [];
-        const raw = fs.readFileSync(filePath, 'utf-8');
-        const json = JSON.parse(raw);
-        const events = (json.events || []) as ThreatEvent[];
-        return events.map(toAlertEvent).filter(Boolean);
-    } catch (error) {
-        console.error('[Alerts API] Failed to read fallback file', error);
-        return [];
-    }
+    // No fallback data - return empty array
+    return [];
 }
 
 export async function GET() {

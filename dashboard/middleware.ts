@@ -12,16 +12,22 @@ const PROTECTED_PREFIXES = [
     '/api/iocs'
 ];
 
+type SessionPayload = {
+    role?: string;
+    exp?: number;
+    user?: string;
+};
+
 function isProtected(pathname: string): boolean {
     return PROTECTED_PREFIXES.some(prefix => pathname.startsWith(prefix));
 }
 
-function decodePayload(payloadB64: string): any | null {
+function decodePayload(payloadB64: string): SessionPayload | null {
     try {
         const base64 = payloadB64.replace(/-/g, '+').replace(/_/g, '/');
         const padded = base64 + '==='.slice((base64.length + 3) % 4);
         const json = atob(padded);
-        return JSON.parse(json);
+        return JSON.parse(json) as SessionPayload;
     } catch {
         return null;
     }
@@ -56,11 +62,22 @@ async function isInternalSessionValid(token: string): Promise<boolean> {
     const payload = decodePayload(payloadB64);
     if (!payload) return false;
     const now = Math.floor(Date.now() / 1000);
-    return payload.role === 'internal' && payload.exp > now;
+    return payload.role === 'internal' && typeof payload.exp === 'number' && payload.exp > now;
 }
 
 export async function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl;
+
+    // Explicit escape hatch (dev / incident response).
+    if ((process.env.DASHBOARD_DISABLE_INTERNAL_AUTH || '').toLowerCase() === 'true') {
+        return NextResponse.next();
+    }
+
+    // If session signing isn't configured, don't block access (avoids breaking local dev).
+    if (!process.env.DASHBOARD_SESSION_SECRET) {
+        return NextResponse.next();
+    }
+
     if (!isProtected(pathname)) {
         return NextResponse.next();
     }

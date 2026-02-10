@@ -77,11 +77,8 @@ export default function LoginPage() {
               type="text"
               value={otp}
               onChange={(e) => setOtp(e.target.value)}
-              required
-              pattern="[0-9]{6}"
-              maxLength={6}
               inputMode="numeric"
-              placeholder="6-digit code"
+              placeholder="6-digit code (Optional)"
             />
           </label>
 

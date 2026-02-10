@@ -140,13 +140,15 @@ Threshold จาก `CONFIDENCE_THRESHOLDS`:
 
 ## Policy Gates (ลด False Escalation)
 
-1. หากคะแนนขึ้นระดับ Critical แต่ trusted corroboration < 2 แหล่ง
-- cap ไม่ให้ถึง Critical (สูงสุด High)
+1. **Critical escalation gate (trusted corroboration)**
+- ถ้าคะแนนหลัง decay + sector bonus **>= 80** แต่ `trusted` corroboration **< 2** แหล่ง
+- cap เป็น **74 (High)** เพื่อกัน false critical จาก evidence ที่ยังไม่แข็งแรง
 
-2. หากเป็น news-only และคะแนนสูงเกินไป
-- cap ไม่ให้ถึง High จนกว่าจะมี non-news corroboration
+2. **News-only gate**
+- ถ้าเป็นข่าวล้วน (news-only: `trusted==0 && news>0 && other==0`) และคะแนน **>= 50**
+- cap เป็น **49 (Medium)** จนกว่าจะมี non-news corroboration
 
-policy ที่ trigger จะบันทึกใน `breakdown.policy_gate`
+policy ที่ trigger จะบันทึกใน `breakdown.policy_gate` (เช่น `triggered`, `adjustments`)
 
 ---
 

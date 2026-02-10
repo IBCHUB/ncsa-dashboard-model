@@ -40,7 +40,7 @@ export interface EnhancedScoreBreakdown {
     severity: SeverityLevel;
     severityTH?: string;
     breakdown: Record<string, any>;
-    topFactors?: Array<{ factor: string; score: number; label: string }>;
+    topFactors?: Array<{ factor: string; score: number; weighted_score?: number; label: string }>;
     summary?: {
         traditional_score: number;
         ai_score: number;

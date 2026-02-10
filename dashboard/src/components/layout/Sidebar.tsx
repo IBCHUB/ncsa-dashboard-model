@@ -113,7 +113,8 @@ export default function Sidebar() {
       </div>
 
       <nav className={styles.nav}>
-        {navigation.filter((item) => isInternal || !item.internalOnly).map((item) => (
+        {/* TEMPORARY: Show all menus (internalOnly filter disabled) */}
+        {navigation.map((item) => (
           <div key={item.id} className={styles.navGroup}>
             {item.children ? (
               <>

@@ -51,16 +51,20 @@ OPENAI_API_KEY=sk-your-api-key-here
 # Elasticsearch
 ELASTICSEARCH_URL=http://elasticsearch:9200
 
-# Security
+# AI Service authentication (server accepts comma-separated keys; dashboard uses one)
+AI_SERVICE_API_KEYS=your-secure-api-keys-here
 AI_SERVICE_API_KEY=your-secure-api-key-here
+
+# Dashboard internal access (set these for /login + session cookies)
+DASHBOARD_SESSION_SECRET=change-me-long-random-secret
 EOF
 ```
 
 ### 4. Production Docker Compose
 
 ```bash
-# Use production compose file
-docker-compose -f docker-compose.prod.yml up -d
+# Build and start services
+docker compose up -d --build
 ```
 
 ### 5. Nginx Reverse Proxy
@@ -109,58 +113,57 @@ sudo certbot --nginx -d tcti.your-domain.com
 
 ---
 
-## Docker Compose Production
+## Remote Deployment (192.168.1.20)
 
-```yaml
-# docker-compose.prod.yml
-version: '3.8'
+### Access
+- **Server:** `192.168.1.20`
+- **User:** `ibiz-mint`
+- **Code:** `~/cyber`
 
-services:
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
-    container_name: tcti-elasticsearch
-    restart: always
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=true
-      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
-      - "ES_JAVA_OPTS=-Xms4g -Xmx4g"
-    volumes:
-      - es-data:/usr/share/elasticsearch/data
-    networks:
-      - tcti-network
+### Configuration
+- **External ELK:** `https://pluto-elk.ibusiness.co.th`
+- **Ports:**
+  - Dashboard: `http://192.168.1.20:9001` (Mapped to 3000)
+  - AI Service: `http://192.168.1.20:9000` (Mapped to 8000)
 
-  ai-service:
-    build: ./ai-service
-    container_name: tcti-ai-service
-    restart: always
-    environment:
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-    depends_on:
-      - elasticsearch
-    networks:
-      - tcti-network
+### Deployment Commands
 
-  dashboard:
-    build: ./dashboard
-    container_name: tcti-dashboard
-    restart: always
-    environment:
-      - AI_SERVICE_URL=http://ai-service:8000
-    depends_on:
-      - ai-service
-    ports:
-      - "3000:3000"
-    networks:
-      - tcti-network
+```bash
+# Connect
+ssh ibiz-mint@192.168.1.20
 
-volumes:
-  es-data:
-
-networks:
-  tcti-network:
+# Deploy
+cd cyber
+git pull # If using git, otherwise scp
+docker compose --env-file .env.remote -f docker-compose.remote.yml down
+docker compose --env-file .env.remote -f docker-compose.remote.yml up -d --build
 ```
+
+### default Login
+- **URL:** [http://192.168.1.20:9001](http://192.168.1.20:9001)
+- **Username:** `admin`
+- **Password:** `TCTI_Admin_2026!`
+- **2FA Secret:** `JBSWY3DPEHPK3PXP` (Currently Disabled)
+
+#### 📝 วิธีใช้งาน 2FA (เมื่อเปิดใช้งาน)
+*(ปัจจุบันปิดใช้งานชั่วคราวเพื่อให้ล็อกอินได้ทันที)*
+
+> **Note:** `DASHBOARD_SESSION_SECRET` must be set for login to work.
+
+1. **ดาวน์โหลดแอป:** ติดตั้ง **Google Authenticator** หรือ **Microsoft Authenticator** บนมือถือ
+2. **เพิ่มบัญชี:** เปิดแอป กดปุ่ม `+` แล้วเลือก **"Enter setup key" (ป้อนคีย์ตั้งค่า)**
+3. **กรอกข้อมูล:**
+   - **Account:** ตั้งชื่อว่า `TCTI Dashboard`
+   - **Key:** กรอก `JBSWY3DPEHPK3PXP`
+   - **Type:** เลือก `Time-based` (ถ้ามีให้เลือก)
+4. **ใช้งาน:** แอปจะแสดงเลข 6 หลัก (เปลี่ยนทุก 30 วิ) นำเลขนั้นมากรอกช่อง OTP ตอนล็อกอิน
+
+---
+
+## Compose Files
+
+- `docker-compose.yml`: local all-in-one (Elasticsearch + Kibana + AI Service + Dashboard)
+- `docker-compose.remote.yml`: remote deployment using external ELK (use `--env-file .env.remote`)
 
 ---
 

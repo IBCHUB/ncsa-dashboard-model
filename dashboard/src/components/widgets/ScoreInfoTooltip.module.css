@@ -43,11 +43,7 @@
 }
 
 .tooltip {
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 1000;
+    /* Position handled by Portal inline styles */
     min-width: 320px;
     max-width: 400px;
     margin-top: 8px;
@@ -353,4 +349,62 @@
     font-size: 0.6875rem;
     color: var(--color-text-tertiary);
     font-style: italic;
+}
+
+/* Calculation Summary - Clear score math */
+.calculationSummary {
+    padding: 12px 16px;
+    background: var(--color-bg-secondary);
+    border-top: 1px solid var(--color-border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.calcRow {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
+}
+
+.calcValue {
+    font-weight: 600;
+    color: var(--color-text-primary);
+}
+
+.calcValueNegative {
+    font-weight: 600;
+    color: #e74c3c;
+}
+
+.calcValuePositive {
+    font-weight: 600;
+    color: #22c55e;
+}
+
+.calcTotal {
+    margin-top: 4px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--color-border);
+    font-size: 0.875rem;
+}
+
+.calcSubtotal {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px dotted var(--color-border);
+    font-size: 0.8125rem;
+}
+
+.calcValueTotal {
+    font-size: 1rem;
+    color: var(--color-primary);
+}
+.weightedScore {
+    margin-left: 6px;
+    font-size: 0.75rem;
+    color: var(--color-text-tertiary);
+    font-weight: normal;
 }

@@ -4,6 +4,8 @@ Elasticsearch Client for AI Service
 Provides connection to Elasticsearch for:
 - Data Lake (raw/semi-processed IOCs)
 - Data Warehouse (AI-processed IOCs)
+
+Supports external ELK stack with per-index API key authentication.
 """
 
 import os
@@ -21,6 +23,10 @@ DATALAKE_INDEX = os.getenv("DATALAKE_INDEX", "tcti-datalake")
 PROCESSED_INDEX = os.getenv("PROCESSED_INDEX", "tcti-processed")
 WAREHOUSE_INDEX = os.getenv("WAREHOUSE_INDEX", "tcti-warehouse")
 
+# API Keys (Per-index access)
+DATALAKE_API_KEY = os.getenv("DATALAKE_API_KEY", "")
+WAREHOUSE_API_KEY = os.getenv("WAREHOUSE_API_KEY", "")
+
 # Try to import elasticsearch, fallback to httpx if not available
 try:
     from elasticsearch import Elasticsearch, helpers
@@ -34,9 +40,9 @@ class ElasticClient:
     """
     Elasticsearch client wrapper for TCTI platform.
     
-    Supports two indexes:
-    - tcti-datalake: Raw/semi-processed IOCs (input for AI)
-    - tcti-warehouse: AI-processed IOCs (output, consumed by Dashboard)
+    Supports two indices with separate API keys:
+    - DATALAKE_INDEX (tcti-datalake): Raw IOCs, Input
+    - WAREHOUSE_INDEX (tcti-warehouse): Enriched IOCs, Output
     """
     
     def __init__(self, url: str = ELASTICSEARCH_URL):
@@ -45,19 +51,60 @@ class ElasticClient:
         self.processed_index = PROCESSED_INDEX
         self.warehouse_index = WAREHOUSE_INDEX
         
+        self.datalake_api_key = DATALAKE_API_KEY
+        self.warehouse_api_key = WAREHOUSE_API_KEY
+        
         if ES_CLIENT_AVAILABLE:
+            # Base client without headers (auth applied per request)
             self.client = Elasticsearch(url)
         else:
             self.client = None
             logger.warning("elasticsearch-py not installed, using httpx fallback")
     
+    def _get_api_key(self, index: str) -> Optional[str]:
+        """Get API Key for specific index."""
+        if index == self.datalake_index:
+            return self.datalake_api_key
+        elif index == self.warehouse_index:
+            return self.warehouse_api_key
+        elif index == self.processed_index:
+            # Use warehouse key for processed layer (output side) OR datalake key?
+            # Prefer Warehouse key as it is 'enriched' data
+            return self.warehouse_api_key
+        return None
+
+    def _get_client(self, index: str):
+        """Get Elasticsearch client configured for specific index."""
+        if not ES_CLIENT_AVAILABLE or not self.client:
+            return None
+        
+        api_key = self._get_api_key(index)
+        if api_key:
+            return self.client.options(api_key=api_key)
+        return self.client
+
+    def _get_headers(self, index: str) -> Dict[str, str]:
+        """Get HTTP headers for httpx fallback."""
+        headers = {"Content-Type": "application/json"}
+        api_key = self._get_api_key(index)
+        if api_key:
+            headers["Authorization"] = f"ApiKey {api_key}"
+        return headers
+
     def health_check(self) -> Dict[str, Any]:
         """Check Elasticsearch cluster health."""
+        # Use datalake key for basic health check
         try:
             if ES_CLIENT_AVAILABLE and self.client:
-                return self.client.cluster.health()
+                # Use options to pass key if needed, or try base client
+                client = self.client.options(api_key=self.datalake_api_key) if self.datalake_api_key else self.client
+                return client.cluster.health()
             else:
-                response = httpx.get(f"{self.url}/_cluster/health", timeout=10)
+                response = httpx.get(
+                    f"{self.url}/_cluster/health", 
+                    timeout=10,
+                    headers=self._get_headers(self.datalake_index)
+                )
                 return response.json()
         except Exception as e:
             logger.error(f"Elasticsearch health check failed: {e}")
@@ -65,10 +112,6 @@ class ElasticClient:
 
     @staticmethod
     def _build_warehouse_doc_id(ioc_data: Dict[str, Any]) -> str:
-        """
-        Build stable warehouse doc ID by IOC type + value.
-        Using hash avoids URL path issues for raw IOC values.
-        """
         ioc_type = str(ioc_data.get("ioc_type", "unknown")).strip().lower()
         ioc_value = str(ioc_data.get("ioc_value", "")).strip().lower()
         payload = f"{ioc_type}:{ioc_value}".encode("utf-8")
@@ -77,10 +120,6 @@ class ElasticClient:
 
     @staticmethod
     def _build_processed_doc_id(ioc_data: Dict[str, Any]) -> str:
-        """
-        Build stable processed doc ID for validation/backup stage.
-        Includes time window and source set to preserve changes over runs.
-        """
         ioc_type = str(ioc_data.get("ioc_type", "unknown")).strip().lower()
         ioc_value = str(ioc_data.get("ioc_value", "")).strip().lower()
         first_seen = str(ioc_data.get("first_seen", "")).strip()
@@ -92,10 +131,6 @@ class ElasticClient:
 
     @staticmethod
     def _build_datalake_doc_id(doc: Dict[str, Any]) -> str:
-        """
-        Build unique Data Lake doc ID per IOC observation (not per IOC value).
-        This preserves cross-source evidence required for enrichment/scoring.
-        """
         ioc_type = str(doc.get("ioc_type", "unknown")).strip().lower()
         ioc_value = str(doc.get("ioc_value", "")).strip().lower()
         source = str(doc.get("source_name", "unknown")).strip().lower()
@@ -111,12 +146,16 @@ class ElasticClient:
         return f"{ioc_type}:{ioc_value}:{digest}"
     
     def create_indexes(self) -> Dict[str, bool]:
-        """Create Data Lake and Data Warehouse indexes if they don't exist."""
+        """Create indexes if they don't exist."""
         results = {}
+        
+        # Mappings omitted for brevity, logic remains same but uses _get_client(index)
+        # Note: We rely on pre-created indices or permissions to create them.
         
         # Data Lake index mapping
         datalake_mapping = {
             "mappings": {
+                "dynamic": False, 
                 "properties": {
                     "ioc_value": {"type": "keyword"},
                     "ioc_type": {"type": "keyword"},
@@ -131,12 +170,14 @@ class ElasticClient:
                     "event_time": {"type": "date"},
                     "geo_country": {"type": "keyword"},
                     "ai_processed": {"type": "boolean"},
-                    "created_at": {"type": "date"}
+                    "created_at": {"type": "date"},
+                    # catch-all for other fields if needed, or rely on _source
+                    "enrichment": {"type": "object", "enabled": False} 
                 }
             }
         }
         
-        # Processed layer mapping (validation and backup before warehouse)
+        # Processed layer mapping
         processed_mapping = {
             "mappings": {
                 "properties": {
@@ -177,7 +218,7 @@ class ElasticClient:
             }
         }
 
-        # Data Warehouse index mapping (includes AI fields)
+        # Data Warehouse index mapping
         warehouse_mapping = {
             "mappings": {
                 "properties": {
@@ -185,7 +226,7 @@ class ElasticClient:
                     "ioc_type": {"type": "keyword"},
                     "source_name": {"type": "keyword"},
                     "source_type": {"type": "keyword"},
-                    "sources": {"type": "keyword"},  # Array of source names
+                    "sources": {"type": "keyword"},
                     "source_types": {"type": "keyword"},
                     "source_count": {"type": "integer"},
                     "description": {"type": "text"},
@@ -199,7 +240,6 @@ class ElasticClient:
                     "last_seen": {"type": "date"},
                     "ioc_age_days": {"type": "integer"},
                     "geo_country": {"type": "keyword"},
-                    # AI Enrichment fields
                     "ai_risk_score": {"type": "integer"},
                     "ai_severity": {"type": "keyword"},
                     "ai_severity_th": {"type": "keyword"},
@@ -225,9 +265,10 @@ class ElasticClient:
             (self.warehouse_index, warehouse_mapping)
         ]:
             try:
-                if ES_CLIENT_AVAILABLE and self.client:
-                    if not self.client.indices.exists(index=index):
-                        self.client.indices.create(index=index, body=mapping)
+                client = self._get_client(index)
+                if ES_CLIENT_AVAILABLE and client:
+                    if not client.indices.exists(index=index):
+                        client.indices.create(index=index, body=mapping)
                         results[index] = True
                         logger.info(f"Created index: {index}")
                     else:
@@ -235,12 +276,17 @@ class ElasticClient:
                         logger.info(f"Index already exists: {index}")
                 else:
                     # Check if exists
-                    check = httpx.head(f"{self.url}/{index}", timeout=10)
+                    check = httpx.head(
+                        f"{self.url}/{index}", 
+                        timeout=10, 
+                        headers=self._get_headers(index)
+                    )
                     if check.status_code == 404:
                         resp = httpx.put(
                             f"{self.url}/{index}",
                             json=mapping,
-                            timeout=30
+                            timeout=30,
+                            headers=self._get_headers(index)
                         )
                         results[index] = resp.status_code in (200, 201)
                     else:
@@ -252,27 +298,25 @@ class ElasticClient:
         return results
     
     def get_unprocessed_iocs(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get IOCs from Data Lake that haven't been processed by AI yet."""
         query = {
-            "query": {
-                "bool": {
-                    "must": [
-                        {"term": {"ai_processed": False}}
-                    ]
-                }
-            },
+            "query": {"bool": {"must": [{"term": {"ai_processed": False}}]}},
             "size": limit
         }
         
         try:
-            if ES_CLIENT_AVAILABLE and self.client:
-                result = self.client.search(index=self.datalake_index, body=query)
-                return [hit["_source"] | {"_id": hit["_id"]} for hit in result["hits"]["hits"]]
+            client = self._get_client(self.datalake_index)
+            if ES_CLIENT_AVAILABLE and client:
+                logger.info(f"Searching datalake with query: {query}")
+                result = client.search(index=self.datalake_index, body=query)
+                hits = result["hits"]["hits"]
+                logger.info(f"Found {len(hits)} hits in datalake")
+                return [hit["_source"] | {"_id": hit["_id"]} for hit in hits]
             else:
                 resp = httpx.post(
                     f"{self.url}/{self.datalake_index}/_search",
                     json=query,
-                    timeout=30
+                    timeout=30,
+                    headers=self._get_headers(self.datalake_index)
                 )
                 data = resp.json()
                 return [hit["_source"] | {"_id": hit["_id"]} for hit in data["hits"]["hits"]]
@@ -281,10 +325,10 @@ class ElasticClient:
             return []
     
     def mark_as_processed(self, doc_id: str) -> bool:
-        """Mark an IOC in Data Lake as processed."""
         try:
-            if ES_CLIENT_AVAILABLE and self.client:
-                self.client.update(
+            client = self._get_client(self.datalake_index)
+            if ES_CLIENT_AVAILABLE and client:
+                client.update(
                     index=self.datalake_index,
                     id=doc_id,
                     body={"doc": {"ai_processed": True}}
@@ -294,7 +338,8 @@ class ElasticClient:
                 resp = httpx.post(
                     f"{self.url}/{self.datalake_index}/_update/{doc_id}",
                     json={"doc": {"ai_processed": True}},
-                    timeout=10
+                    timeout=10,
+                    headers=self._get_headers(self.datalake_index)
                 )
                 return resp.status_code == 200
         except Exception as e:
@@ -302,16 +347,15 @@ class ElasticClient:
             return False
     
     def save_to_warehouse(self, ioc_data: Dict[str, Any]) -> Optional[str]:
-        """Save AI-processed IOC to Data Warehouse."""
-        # Add timestamp
         ioc_data["processed_at"] = datetime.utcnow().isoformat() + "Z"
         if "created_at" not in ioc_data:
             ioc_data["created_at"] = ioc_data["processed_at"]
         
         try:
             doc_id = self._build_warehouse_doc_id(ioc_data)
-            if ES_CLIENT_AVAILABLE and self.client:
-                result = self.client.index(
+            client = self._get_client(self.warehouse_index)
+            if ES_CLIENT_AVAILABLE and client:
+                result = client.index(
                     index=self.warehouse_index,
                     body=ioc_data,
                     id=doc_id
@@ -321,7 +365,8 @@ class ElasticClient:
                 resp = httpx.put(
                     f"{self.url}/{self.warehouse_index}/_doc/{quote(doc_id, safe='')}",
                     json=ioc_data,
-                    timeout=10
+                    timeout=10,
+                    headers=self._get_headers(self.warehouse_index)
                 )
                 if resp.status_code in (200, 201):
                     return resp.json().get("_id")
@@ -331,7 +376,6 @@ class ElasticClient:
             return None
 
     def save_to_processed(self, ioc_data: Dict[str, Any]) -> Optional[str]:
-        """Save AI-processed IOC to Processed layer (validation/backup stage)."""
         ioc_data["processed_at"] = datetime.utcnow().isoformat() + "Z"
         if "created_at" not in ioc_data:
             ioc_data["created_at"] = ioc_data["processed_at"]
@@ -339,8 +383,9 @@ class ElasticClient:
 
         try:
             doc_id = self._build_processed_doc_id(ioc_data)
-            if ES_CLIENT_AVAILABLE and self.client:
-                result = self.client.index(
+            client = self._get_client(self.processed_index)
+            if ES_CLIENT_AVAILABLE and client:
+                result = client.index(
                     index=self.processed_index,
                     body=ioc_data,
                     id=doc_id
@@ -350,7 +395,8 @@ class ElasticClient:
                 resp = httpx.put(
                     f"{self.url}/{self.processed_index}/_doc/{quote(doc_id, safe='')}",
                     json=ioc_data,
-                    timeout=10
+                    timeout=10,
+                    headers=self._get_headers(self.processed_index)
                 )
                 if resp.status_code in (200, 201):
                     return resp.json().get("_id")
@@ -360,9 +406,10 @@ class ElasticClient:
             return None
     
     def bulk_index_datalake(self, documents: List[Dict]) -> Dict[str, int]:
-        """Bulk index documents to Data Lake."""
         success = 0
         failed = 0
+        
+        client = self._get_client(self.datalake_index)
         
         for doc in documents:
             doc["ai_processed"] = False
@@ -370,8 +417,8 @@ class ElasticClient:
             
             try:
                 ioc_id = self._build_datalake_doc_id(doc)
-                if ES_CLIENT_AVAILABLE and self.client:
-                    self.client.index(
+                if ES_CLIENT_AVAILABLE and client:
+                    client.index(
                         index=self.datalake_index,
                         body=doc,
                         id=ioc_id
@@ -381,7 +428,8 @@ class ElasticClient:
                     resp = httpx.put(
                         f"{self.url}/{self.datalake_index}/_doc/{quote(ioc_id, safe='')}",
                         json=doc,
-                        timeout=10
+                        timeout=10,
+                        headers=self._get_headers(self.datalake_index)
                     )
                     if resp.status_code in (200, 201):
                         success += 1
@@ -401,7 +449,6 @@ class ElasticClient:
         limit: int = 100,
         offset: int = 0
     ) -> Dict[str, Any]:
-        """Search the Data Warehouse for IOCs."""
         must_clauses = []
         
         if query and query != "*":
@@ -419,24 +466,22 @@ class ElasticClient:
             must_clauses.append({"term": {"ai_severity": severity}})
         
         search_body = {
-            "query": {
-                "bool": {
-                    "must": must_clauses if must_clauses else [{"match_all": {}}]
-                }
-            },
+            "query": {"bool": {"must": must_clauses if must_clauses else [{"match_all": {}}]}},
             "sort": [{"ai_risk_score": "desc"}, {"processed_at": "desc"}],
             "from": offset,
             "size": limit
         }
         
         try:
-            if ES_CLIENT_AVAILABLE and self.client:
-                result = self.client.search(index=self.warehouse_index, body=search_body)
+            client = self._get_client(self.warehouse_index)
+            if ES_CLIENT_AVAILABLE and client:
+                result = client.search(index=self.warehouse_index, body=search_body)
             else:
                 resp = httpx.post(
                     f"{self.url}/{self.warehouse_index}/_search",
                     json=search_body,
-                    timeout=30
+                    timeout=30,
+                    headers=self._get_headers(self.warehouse_index)
                 )
                 result = resp.json()
             
@@ -449,33 +494,26 @@ class ElasticClient:
             return {"total": 0, "data": [], "error": str(e)}
     
     def get_warehouse_stats(self) -> Dict[str, Any]:
-        """Get statistics from Data Warehouse."""
         aggs_body = {
             "size": 0,
             "aggs": {
-                "by_severity": {
-                    "terms": {"field": "ai_severity"}
-                },
-                "by_type": {
-                    "terms": {"field": "ioc_type"}
-                },
-                "avg_score": {
-                    "avg": {"field": "ai_risk_score"}
-                },
-                "by_threat_type": {
-                    "terms": {"field": "ai_threat_types", "size": 20}
-                }
+                "by_severity": {"terms": {"field": "ai_severity"}},
+                "by_type": {"terms": {"field": "ioc_type"}},
+                "avg_score": {"avg": {"field": "ai_risk_score"}},
+                "by_threat_type": {"terms": {"field": "ai_threat_types", "size": 20}}
             }
         }
         
         try:
-            if ES_CLIENT_AVAILABLE and self.client:
-                result = self.client.search(index=self.warehouse_index, body=aggs_body)
+            client = self._get_client(self.warehouse_index)
+            if ES_CLIENT_AVAILABLE and client:
+                result = client.search(index=self.warehouse_index, body=aggs_body)
             else:
                 resp = httpx.post(
                     f"{self.url}/{self.warehouse_index}/_search",
                     json=aggs_body,
-                    timeout=30
+                    timeout=30,
+                    headers=self._get_headers(self.warehouse_index)
                 )
                 result = resp.json()
             

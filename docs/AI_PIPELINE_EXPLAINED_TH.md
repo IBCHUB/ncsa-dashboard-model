@@ -59,48 +59,66 @@ else:
 นี่คือหัวใจสำคัญที่เราเสียเวลาประมวลผลนานๆ เพื่อแลกกับ Intelligence
 
 ### 🏷️ 2.1 Zero-Shot Classification
-เราใช้โมเดล **`facebook/bart-large-mnli`** 
-*   **ทำไมต้อง Zero-shot?** เพราะเราไม่ต้องเทรนโมเดลเอง เราแค่โยน "ป้ายกำกับ" (Labels) ให้มันเลย เช่น `["Ransomware", "Phishing", "Data Breach", "Vulnerability"]`
-*   **การทำงาน:** โมเดลจะอ่านเนื้อหาข่าว 1,000 คำ แล้วตอบกลับมาว่า "เนื้อหานี้ตรงกับป้าย Ransomware 98.5%"
+เราใช้ **Zero-shot classification (MNLI)** ผ่าน HuggingFace `pipeline("zero-shot-classification")` โดยโมเดลกำหนดจาก `CLASSIFIER_MODEL` ใน `ai-service/config.py` (ค่า default ปัจจุบันเป็นโมเดลที่เบากว่าสำหรับ CPU)
+*   **ทำไมต้อง Zero-shot?** เพราะเราไม่ต้องเทรนโมเดลเอง แค่กำหนด "ป้ายกำกับ" (Labels) ให้โมเดลเลือก เช่น `THREAT_CATEGORIES = ["Ransomware", "Phishing", "Data Breach", "Vulnerability", ...]`
+*   **การทำงาน:** โมเดลจะอ่านข้อความ (title/description/content) แล้วให้ผลเป็น label + confidence (เช่น "Ransomware = 0.985")
 
 ### 📊 2.2 Risk Scoring Formula (สูตรคำนวณความเสี่ยง)
 
-**ไฟล์:** `ai-service/models/scorer.py` (941 บรรทัด)
+**Source of truth:** `docs/AI-SCORING.md`, `ai-service/models/scorer.py`, `ai-service/config.py`
 
-คะแนน **100 คะแนนเต็ม** คำนวณจาก **11 ปัจจัย** ดังนี้:
+ระบบนี้ใช้แนวทาง **Weighted Scoring (0-100)** เพื่อควบคุมสเกลและ audit ได้ (ไม่ใช่สูตร normalize แบบเดิม)
 
-#### ปัจจัยแบบ Traditional (ไม่ต้องใช้ AI)
+ลำดับการคำนวณโดยสรุป:
+1. คำนวณ **raw score** รายปัจจัย (มี maxScore)
+2. แปลงเป็นคะแนนถ่วงน้ำหนักด้วย `SCORING_WEIGHTS` (weights รวม = 1.0)
+3. รวมเป็น `weighted_total` (0-100) แล้ว apply **decay_multiplier**
+4. บวก **sector_bonus** (มี guardrails) และผ่าน **policy gates**
 
-| ปัจจัย | คะแนนเต็ม | ความหมาย |
+#### ปัจจัยคะแนน (Raw Score)
+
+| ปัจจัย | คะแนนเต็ม | สรุป |
 |--------|:---:|-----------|
-| **Cross-Source Validation** | 40 | พบใน 2+ แหล่ง = น่าเชื่อถือ (1แหล่ง=5, 2แหล่ง=15, 3แหล่ง=25, 4+=40) |
-| **Source Quality** | 40 | แหล่งเชื่อถือ (VirusTotal)=15, ข่าว=8, อื่นๆ=5 ต่อแหล่ง |
-| **Keywords** | 25 | พบคำอันตราย (ransomware, APT, zero-day) คำละ 5 คะแนน |
-| **Entropy (DGA)** | 15 | วิเคราะห์ความสุ่มของชื่อโดเมน (สูง=สุ่มมาก=อาจเป็น DGA) |
-| **Domain Age** | 20 | โดเมนใหม่ <30 วัน=20, <90 วัน=15, <180 วัน=10, <365 วัน=5 |
-| ~~**Geo Risk**~~ | ~~15~~ | **(ปิดใช้งาน)** ไม่มีแหล่งข้อมูลที่ตรวจสอบได้ |
+| **Cross-Source Validation** | 30 | 1=5, 2=10, 3=15, 4+=20..30 (diminishing) + diversity bonus |
+| **Source Quality** | 40 | trusted=15, news=8, other=5 ต่อแหล่ง (cap 40) |
+| **High-Risk Keywords** | 25 | คำละ 5 คะแนน (cap 25) |
+| **Entropy (DGA)** | 15 | >4.0=15, >3.5=10, >3.0=5 |
+| **Domain Age** | 20 | <30 วัน=20, <90=15, <180=10, <365=5 |
+| ~~**Geo Risk**~~ | ~~15~~ | **(ปิดใช้งาน)** เนื่องจากข้อมูลไม่สามารถ audit ได้ |
+| **Threat Type Severity (AI)** | 35 | อิง `THREAT_TYPE_SEVERITY` (นับสูงสุด 2 ประเภท + bonus เมื่อพบ >=3) |
+| **Threat Actor (AI)** | 30 | อิง `KNOWN_THREAT_ACTORS` (เลือกคะแนนสูงสุดของ actor ที่พบ) |
+| **MITRE ATT&CK (AI)** | 20 | อิง `MITRE_TACTICS`/Technique IDs (cap 20) |
+| **AI Confidence Bonus** | 10 | อิง `CONFIDENCE_THRESHOLDS` (0/2/5/8) |
 
-#### ปัจจัย AI-Powered (ใช้ BART Model)
+#### น้ำหนักที่ใช้จริง (`SCORING_WEIGHTS`)
 
-| ปัจจัย | คะแนนเต็ม | ความหมาย |
-|--------|:---:|-----------|
-| **Threat Type Severity** | 35 | ประเภทภัยจาก AI (Ransomware/APT=15, Botnet=12, Phishing/Malware=10) |
-| **Threat Actor** | 30 | พบชื่อกลุ่มแฮกเกอร์ที่รู้จัก (Lazarus, APT28 = 25 คะแนน) |
-| **MITRE ATT&CK Tactics** | 20 | พบกี่ tactic (5+ tactics = 20 คะแนน = Advanced) |
-| **AI Confidence Bonus** | 10 | AI มั่นใจ ≥90%=10, ≥80%=8, ≥70%=5, ≥60%=3 |
+| Factor key | Weight |
+|---|---:|
+| `cross_source` | 0.25 |
+| `threat_intel_source` | 0.15 |
+| `high_risk_keywords` | 0.10 |
+| `domain_age` | 0.10 |
+| `entropy` | 0.05 |
+| `threat_type_severity` | 0.15 |
+| `threat_actor` | 0.10 |
+| `mitre_techniques` | 0.05 |
+| `ai_confidence` | 0.05 |
 
-#### ตัวปรับคะแนน (Modifier)
+#### สูตรรวม (Weighted)
+```text
+weighted_points(factor) = (raw_score / max_score) * weight * 100
+weighted_total = Σ weighted_points(ทุก factor ที่เปิดใช้)          // 0..100
 
-| ปัจจัย | ค่าคูณ | ความหมาย |
-|--------|:---:|-----------|
-| **Decay Factor** | ×0.5-1.0 | IOC เก่า = ลดคะแนน (≤7 วัน=100%, 8-30 วัน=90%, 31-90 วัน=75%, 91-180 วัน=60%, >180 วัน=50%) |
-
-#### สูตรรวม
+score_after_decay = round(weighted_total) * decay_multiplier
+operational_risk  = min(score_after_decay + sector_bonus, 100)      // มี guardrails + policy gates
 ```
-คะแนนดิบ = Σ(ปัจจัยทั้ง 10 ข้อ)  // สูงสุด ~250 คะแนน
-คะแนน Normalize = min(100, 70 + (คะแนนดิบ - 100) × 0.3)  // ถ้าเกิน 100
-คะแนนสุดท้าย = คะแนน Normalize × Decay Factor
-```
+
+#### Modifiers / Governance ที่สำคัญ
+- **Decay Factor:** ลดคะแนนตามอายุ IOC (`ioc_age_days`) (<=7=1.00, 8-30=0.90, 31-90=0.75, 91-180=0.60, >180=0.50)
+- **Sector Bonus:** บวกคะแนนตามเซกเตอร์เป้าหมาย (มี guardrail: ถ้า confidence < 0.45 cap bonus <= 5 และถ้าเป็น news-only cap bonus <= 3)
+- **Policy Gates:** ลด false escalation (บันทึกใน `breakdown.policy_gate`) เช่น
+  - **Critical gate:** ถ้าคะแนนหลัง decay + sector bonus >= 80 แต่ `trusted` < 2 → cap เป็น 74 (High)
+  - **News-only gate:** ถ้าเป็นข่าวล้วน (news-only) และคะแนน >= 50 → cap เป็น 49 (Medium)
 
 #### ระดับความรุนแรง (Severity)
 - **Critical:** ≥ 75 คะแนน 🔴

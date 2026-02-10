@@ -6,6 +6,7 @@
 
 const ELASTICSEARCH_URL = process.env.ELASTICSEARCH_URL || 'http://localhost:9200';
 const WAREHOUSE_INDEX = process.env.WAREHOUSE_INDEX || 'tcti-warehouse';
+const ELASTICSEARCH_API_KEY = process.env.ELASTICSEARCH_API_KEY || '';
 
 interface ESSearchHit<T> {
     _id: string;
@@ -45,24 +46,38 @@ interface WarehouseIOC {
     processed_at: string;
 }
 
+function getHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+    };
+    if (ELASTICSEARCH_API_KEY) {
+        headers['Authorization'] = `ApiKey ${ELASTICSEARCH_API_KEY}`;
+    }
+    return headers;
+}
+
 export async function checkElasticsearchHealth(): Promise<{ status: string; available: boolean }> {
     try {
-        const response = await fetch(`${ELASTICSEARCH_URL}/_cluster/health`, {
+        // Instead of cluster health (requires monitor permission), 
+        // use a simple search to verify index access
+        const response = await fetch(`${ELASTICSEARCH_URL}/${WAREHOUSE_INDEX}/_search?size=0`, {
             method: 'GET',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
         });
 
         if (!response.ok) {
+            console.error(`[Elasticsearch] Health check failed: ${response.status} ${response.statusText}`);
             return { status: 'unavailable', available: false };
         }
 
-        const data = await response.json();
+        // If we can search, Elasticsearch is available
+        console.log('[Elasticsearch] Connected successfully');
         return {
-            status: data.status,
-            available: data.status === 'green' || data.status === 'yellow'
+            status: 'green',
+            available: true
         };
     } catch (error) {
-        console.error('Elasticsearch health check failed:', error);
+        console.error('[Elasticsearch] Health check failed:', error);
         return { status: 'error', available: false };
     }
 }
@@ -139,7 +154,7 @@ export async function searchWarehouse(params: {
     try {
         const response = await fetch(`${ELASTICSEARCH_URL}/${WAREHOUSE_INDEX}/_search`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify(searchBody)
         });
 
@@ -180,7 +195,7 @@ export async function getWarehouseStats(): Promise<{
     try {
         const response = await fetch(`${ELASTICSEARCH_URL}/${WAREHOUSE_INDEX}/_search`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify(aggsBody)
         });
 
@@ -247,7 +262,7 @@ export async function getIOCFromWarehouse(
     try {
         const response = await fetch(`${ELASTICSEARCH_URL}/${WAREHOUSE_INDEX}/_search`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify(searchBody)
         });
 

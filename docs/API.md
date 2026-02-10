@@ -8,10 +8,10 @@ Complete reference for the TCTI AI Service REST API.
 
 ## Authentication
 
-All endpoints (except `/health`) require an API Key:
+All endpoints (except `/health`) require an API Key header. The AI Service accepts one of the comma-separated keys in `AI_SERVICE_API_KEYS` (env var).
 
 ```
-X-API-Key: tcti-dev-key-2024
+X-API-Key: <one-of-your-ai-service-keys>
 ```
 
 ---
@@ -37,7 +37,7 @@ GET /health
 
 ### Classify Threat
 
-Classify threat text into categories using BART-Large-MNLI.
+Classify threat text into categories using zero-shot classification. The model is configurable via `CLASSIFIER_MODEL` (env var).
 
 ```http
 POST /classify
@@ -54,9 +54,9 @@ POST /classify
 **Response:**
 ```json
 {
-  "threat_types": ["ransomware", "phishing"],
+  "threat_types": ["Ransomware", "Phishing"],
   "confidence": 0.87,
-  "all_labels": ["ransomware", "phishing", "malware", "apt"],
+  "all_labels": ["Ransomware", "Phishing", "Malware", "APT"],
   "all_scores": [0.87, 0.72, 0.45, 0.12],
   "threat_actors": ["Lazarus Group"],
   "mitre_techniques": ["T1566", "T1486"]

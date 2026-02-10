@@ -748,7 +748,7 @@ def calculate_risk_score(
         "reasonEn": f"Threat actors detected: {', '.join(actor_names)}" if actor_names else "No threat actor attribution found",
         "methodology": "ค้นหาชื่อกลุ่มผู้โจมตีที่รู้จัก เช่น Lazarus, APT28, FIN7, Conti",
         "methodologyEn": "Search for known threat actor names like Lazarus, APT28, FIN7, Conti",
-        "scoringRules": "กลุ่มระดับชาติ (APT) = 25 คะแนน, กลุ่มอาชญากรรม = 20 คะแนน, Hacktivist = 15 คะแนน"
+        "scoringRules": "กลุ่มระดับชาติ (APT) = 28-30 คะแนน, Ransomware = 22-25 คะแนน, อาชญากรรม = 18-22 คะแนน, Hacktivist = 14-15 คะแนน, ไม่รู้จัก = 15 คะแนน (สูงสุด 30)"
     }
     
     # 9. MITRE ATT&CK Techniques
@@ -764,7 +764,7 @@ def calculate_risk_score(
         "reasonEn": f"Found {len(mitre_techniques)} tactics: {', '.join(mitre_techniques[:3])}{'...' if len(mitre_techniques) > 3 else ''}" if mitre_techniques else "No MITRE ATT&CK tactics found",
         "methodology": "วิเคราะห์เทคนิคการโจมตีตาม MITRE ATT&CK Framework (Initial Access, Execution, Persistence ฯลฯ)",
         "methodologyEn": "Analyze attack techniques per MITRE ATT&CK Framework",
-        "scoringRules": "1-2 tactics = 5 คะแนน, 3-4 tactics = 10 คะแนน, 5+ tactics = 20 คะแนน"
+        "scoringRules": "แต่ละ tactic = 3-8 คะแนน (ตามความรุนแรง) สูงสุด 20 คะแนน"
     }
     
     # 10. AI Confidence Bonus
@@ -882,6 +882,10 @@ def calculate_risk_score(
 
     total = min(total + sector_bonus, 100)
 
+    # Update breakdown with actual capped sector bonus (after policy guardrails)
+    breakdown["target_sector"]["score"] = sector_bonus
+    breakdown["target_sector"]["risk_bonus_original"] = sector_result["risk_bonus"]
+
     policy_adjustments = []
     # Prevent Critical escalation without strong trusted corroboration.
     if total >= 80 and source_quality["trusted"] < 2:
@@ -919,23 +923,32 @@ def calculate_risk_score(
         severity = "clean"
         severity_th = "ปลอดภัย"
 
-    factor_scores = [
-        ("cross_source", weighted_components["cross_source"], "การยืนยันข้ามแหล่ง"),
-        ("source_quality", weighted_components["source_quality"], "คุณภาพแหล่งข้อมูล"),
-        ("keywords", weighted_components["keywords"], "คำสำคัญอันตราย"),
-        ("entropy", weighted_components["entropy"], "การวิเคราะห์ Entropy"),
-        ("domain_age", weighted_components["domain_age"], "อายุโดเมน"),
-        ("threat_type_severity", weighted_components["threat_type_severity"], "ประเภทภัยคุกคาม (AI)"),
-        ("threat_actor", weighted_components["threat_actor"], "กลุ่มผู้โจมตี (AI)"),
-        ("mitre_techniques", weighted_components["mitre_techniques"], "MITRE ATT&CK (AI)"),
-        ("ai_confidence", weighted_components["ai_confidence"], "ความมั่นใจ AI"),
-        ("target_sector", float(sector_bonus), "ความเสี่ยงตามเซกเตอร์")
+    # Build factor list with RAW scores (matching methodology/scoringRules text)
+    # and WEIGHTED scores (for the calculation summary to add up)
+    factor_entries = [
+        ("cross_source", breakdown["cross_source"]["score"], weighted_components["cross_source"], "การยืนยันข้ามแหล่ง"),
+        ("source_quality", breakdown["source_quality"]["score"], weighted_components["source_quality"], "คุณภาพแหล่งข้อมูล"),
+        ("keywords", breakdown["keywords"]["score"], weighted_components["keywords"], "คำสำคัญอันตราย"),
+        ("entropy", breakdown["entropy"]["score"], weighted_components["entropy"], "การวิเคราะห์ Entropy"),
+        ("domain_age", breakdown["domain_age"]["score"], weighted_components["domain_age"], "อายุโดเมน"),
+        ("threat_type_severity", breakdown["threat_type_severity"]["score"], weighted_components["threat_type_severity"], "ประเภทภัยคุกคาม (AI)"),
+        ("threat_actor", breakdown["threat_actor"]["score"], weighted_components["threat_actor"], "กลุ่มผู้โจมตี (AI)"),
+        ("mitre_techniques", breakdown["mitre_techniques"]["score"], weighted_components["mitre_techniques"], "MITRE ATT&CK (AI)"),
+        ("ai_confidence", breakdown["ai_confidence"]["score"], weighted_components["ai_confidence"], "ความมั่นใจ AI"),
+        ("target_sector", float(sector_bonus), float(sector_bonus), "ความเสี่ยงตามเซกเตอร์")
     ]
 
-    top_factors = sorted(factor_scores, key=lambda x: x[1], reverse=True)[:5]
+    # Send ALL factors with score > 0 for full transparency
+    # Sort by weighted_score for ranking, but display raw_score in UI
+    all_factors = sorted(factor_entries, key=lambda x: x[2], reverse=True)
     top_factors = [
-        {"factor": f, "score": round(float(s), 2), "label": label}
-        for f, s, label in top_factors if s > 0
+        {
+            "factor": f,
+            "score": round(float(raw), 2),       # RAW score (matches methodology text)
+            "weighted_score": round(float(w), 2),  # WEIGHTED score (for calculation summary)
+            "label": label
+        }
+        for f, raw, w, label in all_factors if raw > 0
     ]
     
     return {

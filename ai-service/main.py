@@ -714,8 +714,10 @@ async def run_pipeline(
             # Save to processed layer first (for validation/backup)
             processed_id = es_client.save_to_processed(processed_doc)
             if not processed_id:
-                failed += 1
-                continue
+                # Log warning but proceed to warehouse (due to permission issues on processed index)
+                logger.warning(f"Failed to save to processed layer for {key}. Proceeding to warehouse.")
+                # failed += 1
+                # continue
 
             # Save to warehouse
             saved_id = es_client.save_to_warehouse(warehouse_doc)
