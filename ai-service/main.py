@@ -587,6 +587,7 @@ async def run_pipeline(
             ioc_type = primary.get("ioc_type", "unknown")
 
             source_names = []
+            source_objects = []
             source_types = []
             descriptions = []
             tags = set()
@@ -599,8 +600,26 @@ async def run_pipeline(
 
             for doc in ioc_docs:
                 source_name = str(doc.get("source_name", "")).strip()
-                if source_name and source_name not in source_names:
-                    source_names.append(source_name)
+                confidence = float(doc.get("confidence", 0) or 0)
+
+                if source_name:
+                    if source_name not in source_names:
+                        source_names.append(source_name)
+                    
+                    # Update source objects with max confidence for duplicates
+                    found = False
+                    for obj in source_objects:
+                        if obj["name"] == source_name:
+                            if confidence > obj["confidence"]:
+                                obj["confidence"] = confidence
+                            found = True
+                            break
+                    if not found:
+                        source_objects.append({
+                            "name": source_name,
+                            "confidence": confidence,
+                            "type": str(doc.get("source_type", "unknown"))
+                        })
 
                 source_type = str(doc.get("source_type", "")).strip()
                 if source_type and source_type not in source_types:
@@ -638,7 +657,7 @@ async def run_pipeline(
                     last_seen_candidates.append(collect_dt)
 
             merged_description = "\n".join(descriptions) if descriptions else ""
-            sources = source_names or ["unknown"]
+            sources = source_objects if source_objects else ["unknown"]
 
             first_seen_dt = min(first_seen_candidates) if first_seen_candidates else None
             last_seen_dt = max(last_seen_candidates) if last_seen_candidates else None

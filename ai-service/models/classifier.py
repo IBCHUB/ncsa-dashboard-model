@@ -1,43 +1,72 @@
 """
-NLP Threat Classifier using Zero-shot Classification
+NLP Threat Classifier using Hybrid Pipeline (English + Multilingual)
 
-Zero-shot MNLI classifier.
+1. Language Detection: lingua-language-detector
+2. English Model: DeBERTa-v3-large
+3. Multilingual Model: BGE-M3
 
-Model is configurable via `CLASSIFIER_MODEL` (see `ai-service/config.py`).
-Default is a lighter MNLI model for CPU-friendly inference.
+Configurable via `ai-service/config.py`.
 """
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 import logging
-
-from transformers import pipeline
 import torch
+from transformers import pipeline
+from lingua import Language, LanguageDetectorBuilder
 
-from config import THREAT_CATEGORIES, DEVICE, CLASSIFIER_MODEL, MITRE_TACTICS
+from config import (
+    MODEL_EN, 
+    MODEL_MULTI, 
+    DEVICE, 
+    THREAT_LABELS, 
+    LABEL_MAPPING, 
+    THREAT_CATEGORIES,
+    MITRE_TACTICS
+)
 
 logger = logging.getLogger(__name__)
 
-# Global classifier instance (lazy loaded)
-_classifier = None
+# Global instances (lazy loaded)
+_detector = None
+_en_classifier = None
+_multi_classifier = None
 
 
-def get_classifier():
-    """Get or create the zero-shot classifier (singleton pattern)"""
-    global _classifier
-    
-    if _classifier is None:
-        logger.info(f"Loading classifier model: {CLASSIFIER_MODEL}")
-        logger.info(f"Using device: {DEVICE}")
-        
-        _classifier = pipeline(
+def get_detector():
+    """Get or create Language Detector (singleton)"""
+    global _detector
+    if _detector is None:
+        logger.info("Loading Language Detector (Lingua)...")
+        # Load all languages as requested
+        _detector = LanguageDetectorBuilder.from_all_languages().build()
+        logger.info("Language Detector loaded.")
+    return _detector
+
+
+def get_en_classifier():
+    """Get or create English Classifier (singleton)"""
+    global _en_classifier
+    if _en_classifier is None:
+        logger.info(f"Loading English Classifier: {MODEL_EN}")
+        _en_classifier = pipeline(
             "zero-shot-classification",
-            model=CLASSIFIER_MODEL,
+            model=MODEL_EN,
             device=0 if DEVICE == "cuda" and torch.cuda.is_available() else -1
         )
-        
-        logger.info("Classifier loaded successfully")
-    
-    return _classifier
+    return _en_classifier
+
+
+def get_multi_classifier():
+    """Get or create Multilingual Classifier (singleton)"""
+    global _multi_classifier
+    if _multi_classifier is None:
+        logger.info(f"Loading Multilingual Classifier: {MODEL_MULTI}")
+        _multi_classifier = pipeline(
+            "zero-shot-classification",
+            model=MODEL_MULTI,
+            device=0 if DEVICE == "cuda" and torch.cuda.is_available() else -1
+        )
+    return _multi_classifier
 
 
 def classify_threat(
@@ -47,54 +76,74 @@ def classify_threat(
     threshold: float = 0.3
 ) -> Dict:
     """
-    Classify threat description into categories.
+    Classify threat description using Hybrid Pipeline.
     
-    Args:
-        text: The description/title to classify
-        candidate_labels: Categories to classify into (default: THREAT_CATEGORIES)
-        multi_label: Allow multiple labels (default: True)
-        threshold: Minimum confidence threshold (default: 0.3)
-    
-    Returns:
-        Dict with labels and scores
+    1. Detect Language
+    2. Route to appropriate model (EN vs Multi)
+    3. Return standardized results (mapped to Title Case)
     """
-    if not text or len(text.strip()) < 10:
+    if not text or len(text.strip()) < 5:
         return {
             "labels": [],
             "scores": [],
             "threat_types": [],
-            "confidence": 0.0
+            "confidence": 0.0,
+            "language": "unknown"
         }
-    
-    labels = candidate_labels or THREAT_CATEGORIES
-    classifier = get_classifier()
-    
+
+    # Use configured labels if not provided
+    # NOTE: We prefer the lowercase THREAT_LABELS for the model input
+    labels = candidate_labels or THREAT_LABELS
+
     try:
+        # 1. Language Detection
+        detector = get_detector()
+        detected_lang = detector.detect_language_of(text)
+        
+        # 2. Model Selection
+        if detected_lang == Language.ENGLISH:
+            classifier = get_en_classifier()
+            lang_code = "en"
+        else:
+            classifier = get_multi_classifier()
+            lang_code = str(detected_lang.iso_code_639_1).lower().split('.')[-1]  # e.g. TH
+
+        # 3. Inference
         result = classifier(
             text,
             candidate_labels=labels,
             multi_label=multi_label
         )
-        
-        # Filter by threshold
+
+        # 4. Post-processing & Mapping
         filtered_labels = []
         filtered_scores = []
         
+        # Map ALL results to Title Case (for output consistency)
+        mapped_labels_all = []
+        
         for label, score in zip(result["labels"], result["scores"]):
+            # Normalize label using mapping (e.g. "ransomware" -> "Ransomware")
+            # If label not in mapping (e.g. custom candidate), keep as is or title case
+            mapped_label = LABEL_MAPPING.get(label, label.title())
+            mapped_labels_all.append(mapped_label)
+            
             if score >= threshold:
-                filtered_labels.append(label)
+                filtered_labels.append(mapped_label)
                 filtered_scores.append(round(score, 3))
-        
-        # Get top confidence
+
         top_confidence = filtered_scores[0] if filtered_scores else 0.0
-        
+
         return {
-            "labels": result["labels"],  # All labels sorted by score
+            "labels": mapped_labels_all,
             "scores": [round(s, 3) for s in result["scores"]],
-            "threat_types": filtered_labels,  # Only above threshold
-            "confidence": round(top_confidence, 3)
+            "threat_types": filtered_labels,
+            "threat_details": [{"type": l, "confidence": s} for l, s in zip(filtered_labels, filtered_scores)],
+            "confidence": round(top_confidence, 3),
+            "language": lang_code,
+            "model_used": "english" if detected_lang == Language.ENGLISH else "multilingual"
         }
-        
+
     except Exception as e:
         logger.error(f"Classification error: {e}")
         return {
@@ -112,87 +161,14 @@ def classify_batch(
     batch_size: int = 16
 ) -> List[Dict]:
     """
-    Classify multiple texts in batch using true parallel processing.
-    
-    Args:
-        texts: List of descriptions to classify
-        threshold: Minimum confidence threshold
-        batch_size: Number of texts to process in parallel (default: 16)
-    
-    Returns:
-        List of classification results
+    Classify multiple texts.
+    For hybrid pipeline, we process sequentially (or simple loop) to handle dynamic routing.
+    True batching would require grouping by language vs model which is complex.
     """
-    if not texts:
-        return []
-    
-    # Filter out empty/short texts and track their indices
-    valid_texts = []
-    valid_indices = []
-    results = [None] * len(texts)
-    
-    empty_result = {
-        "labels": [],
-        "scores": [],
-        "threat_types": [],
-        "confidence": 0.0
-    }
-    
-    for i, text in enumerate(texts):
-        if text and len(text.strip()) >= 10:
-            valid_texts.append(text)
-            valid_indices.append(i)
-        else:
-            results[i] = empty_result.copy()
-    
-    if not valid_texts:
-        return results
-    
-    # Get classifier and run batch inference
-    classifier = get_classifier()
-    labels = THREAT_CATEGORIES
-    
-    try:
-        # Use pipeline's native batch processing
-        batch_results = classifier(
-            valid_texts,
-            candidate_labels=labels,
-            multi_label=True,
-            batch_size=batch_size
-        )
-        
-        # Handle single result (pipeline returns dict instead of list for single input)
-        if isinstance(batch_results, dict):
-            batch_results = [batch_results]
-        
-        # Process results and apply threshold
-        for idx, result in zip(valid_indices, batch_results):
-            filtered_labels = []
-            filtered_scores = []
-            
-            for label, score in zip(result["labels"], result["scores"]):
-                if score >= threshold:
-                    filtered_labels.append(label)
-                    filtered_scores.append(round(score, 3))
-            
-            top_confidence = filtered_scores[0] if filtered_scores else 0.0
-            
-            results[idx] = {
-                "labels": result["labels"],
-                "scores": [round(s, 3) for s in result["scores"]],
-                "threat_types": filtered_labels,
-                "confidence": round(top_confidence, 3)
-            }
-        
-        logger.info(f"Batch classified {len(valid_texts)} texts successfully")
-        return results
-        
-    except Exception as e:
-        logger.error(f"Batch classification error: {e}")
-        # Fallback to sequential processing
-        logger.info("Falling back to sequential processing...")
-        for i, text in zip(valid_indices, valid_texts):
-            results[i] = classify_threat(text, threshold=threshold)
-        return results
+    results = []
+    for text in texts:
+        results.append(classify_threat(text, threshold=threshold))
+    return results
 
 
 def _load_threat_actors_config() -> dict:
@@ -200,6 +176,7 @@ def _load_threat_actors_config() -> dict:
     import json
     from pathlib import Path
     
+    # Resolve path relative to this file
     config_path = Path(__file__).parent.parent / "config" / "threat_actors.json"
     
     try:
@@ -213,28 +190,20 @@ def _load_threat_actors_config() -> dict:
         return {"threat_actors": []}
 
 
-# Cache loaded config
 _threat_actors_cache = None
 
 
 def get_threat_actors_config() -> list:
     """Get threat actors config with caching."""
     global _threat_actors_cache
-    
     if _threat_actors_cache is None:
         config = _load_threat_actors_config()
         _threat_actors_cache = config.get("threat_actors", [])
-    
     return _threat_actors_cache
 
 
 def extract_threat_actors(text: str) -> List[str]:
-    """
-    Extract known threat actor names from text.
-    
-    Loads actors from config/threat_actors.json for dynamic updates.
-    Matches both primary names and aliases.
-    """
+    """Extract known threat actor names from text."""
     if not text:
         return []
     
@@ -246,13 +215,11 @@ def extract_threat_actors(text: str) -> List[str]:
         name = actor.get("name", "")
         aliases = actor.get("aliases", [])
         
-        # Check primary name
         if name.lower() in text_lower:
             if name not in found_actors:
                 found_actors.append(name)
             continue
         
-        # Check aliases
         for alias in aliases:
             if alias.lower() in text_lower:
                 if name not in found_actors:
@@ -263,12 +230,8 @@ def extract_threat_actors(text: str) -> List[str]:
 
 
 def extract_mitre_techniques(text: str) -> List[str]:
-    """
-    Extract MITRE ATT&CK references from text.
-    Supports both technique IDs (Txxxx / Txxxx.xxx) and tactic names.
-    """
+    """Extract MITRE ATT&CK references from text."""
     import re
-
     if not text:
         return []
 
@@ -283,7 +246,7 @@ def extract_mitre_techniques(text: str) -> List[str]:
         if upper not in found:
             found.append(upper)
 
-    # Match tactic names from config (e.g., "Lateral Movement")
+    # Match tactic names from config
     for tactic_name, tactic_info in MITRE_TACTICS.items():
         tactic_lower = tactic_name.lower()
         tactic_id = tactic_info.get("id", "")
@@ -295,18 +258,18 @@ def extract_mitre_techniques(text: str) -> List[str]:
     return found
 
 
-# For testing
 if __name__ == "__main__":
+    # Simple test
     logging.basicConfig(level=logging.INFO)
     
     test_texts = [
         "Ransomware attack encrypts files and demands Bitcoin payment",
-        "Phishing campaign targets Thai government employees",
-        "New zero-day vulnerability in Microsoft Exchange Server"
+        "มีการตรวจพบมัลแวร์ดูดข้อมูลลูกค้าธนาคาร",
+        "New zero-day exploit found in iOS"
     ]
     
     for text in test_texts:
-        print(f"\nText: {text[:50]}...")
-        result = classify_threat(text)
-        print(f"Threat Types: {result['threat_types']}")
-        print(f"Confidence: {result['confidence']}")
+        print(f"\nText: {text}")
+        res = classify_threat(text)
+        print(f"Lang: {res.get('language')} | Model: {res.get('model_used')}")
+        print(f"Types: {res['threat_types']}")

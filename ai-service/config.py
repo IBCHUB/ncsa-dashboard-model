@@ -20,30 +20,37 @@ API_KEYS = {k.strip() for k in _raw_keys.split(",") if k.strip()}
 REQUIRE_AUTH = os.getenv("AI_SERVICE_REQUIRE_AUTH", "true").lower() == "true"
 
 # Model Configuration
-# Using a lighter model for CPU compatibility
-CLASSIFIER_MODEL = os.getenv(
-    "CLASSIFIER_MODEL", 
-    "typeform/distilbert-base-uncased-mnli"  # Lighter zero-shot model
+# Model Configuration (Hybrid Pipeline)
+# 1. English Model (High Accuracy)
+MODEL_EN = os.getenv(
+    "MODEL_EN", 
+    "MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli"
+)
+
+# 2. Multilingual Model (Thai Support)
+MODEL_MULTI = os.getenv(
+    "MODEL_MULTI", 
+    "MoritzLaurer/bge-m3-zeroshot-v2.0"
 )
 
 # Use CPU by default (no CUDA)
 DEVICE = os.getenv("DEVICE", "cpu")
 
-# Threat Categories for Classification
-THREAT_CATEGORIES = [
-    "Ransomware",
-    "Phishing",
-    "Malware",
-    "Data Breach",
-    "DDoS",
-    "APT",
-    "Defacement",
-    "Vulnerability",
-    "Botnet",
-    "C2",
-    "Credential Theft",
-    "Other"
-]
+# Threat Categories (Used for Zero-shot Classification)
+# NOTE: Lowercase for model input, mapped to Title Case for scoring
+# using a mapping to preserve acronyms like DDoS, APT
+LABEL_MAPPING = {
+    "ransomware": "Ransomware",
+    "phishing": "Phishing",
+    "DDoS": "DDoS",
+    "data breach": "Data Breach",
+    "supply chain attack": "Supply Chain Attack",
+    "zero-day exploit": "Zero-day Exploit",
+    "APT": "APT"
+}
+
+THREAT_LABELS = list(LABEL_MAPPING.keys())
+THREAT_CATEGORIES = list(LABEL_MAPPING.values())
 
 # ============================================
 # ENHANCED SCORING CONFIGURATION
@@ -52,85 +59,85 @@ THREAT_CATEGORIES = [
 # Risk Scoring Weights (sum = 1.0)
 # NOTE: geo_risk removed - data source not auditable
 SCORING_WEIGHTS = {
-    "cross_source": 0.25,      # พบจากหลายแหล่ง (เพิ่มจาก 0.20)
+    "cross_source": 0.25,      # พบจากหลายแหล่ง
     "threat_intel_source": 0.15,  # แหล่งน่าเชื่อถือ
     "high_risk_keywords": 0.10,   # คำสำคัญอันตราย
     "domain_age": 0.10,        # อายุโดเมน
     "entropy": 0.05,           # ความสุ่ม (DGA)
-    # geo_risk removed - ไม่มีแหล่งข้อมูลที่ตรวจสอบได้
-    # New NLP-based factors
-    "threat_type_severity": 0.15,  # AI: ประเภทภัยคุกคาม
+    "threat_type_severity": 0.20,  # AI: ประเภทภัยคุกคาม
     "threat_actor": 0.10,          # AI: กลุ่มผู้โจมตี
-    "mitre_techniques": 0.05,      # AI: MITRE ATT&CK
-    "ai_confidence": 0.05          # AI: ความมั่นใจในการจำแนก
+    "mitre_techniques": 0.05       # AI: MITRE ATT&CK
 }
 
 # Threat Type Severity Levels
 # Level 1 (Critical): Maximum impact, nation-state or destructive
 # Level 2 (High): Significant impact, common attack vectors
 # Level 3 (Medium): Moderate impact, less targeted
+# NOTE: Scores are now normalized to 0-100 scale for direct weighting
 THREAT_TYPE_SEVERITY = {
-    # Level 1 - Critical (25 points)
-    "Ransomware": {"level": 1, "score": 25, "description": "การเข้ารหัสเรียกค่าไถ่"},
-    "APT": {"level": 1, "score": 25, "description": "การโจมตีแบบ Advanced Persistent Threat"},
-    "C2": {"level": 1, "score": 25, "description": "เซิร์ฟเวอร์ Command & Control"},
-    "Botnet": {"level": 1, "score": 22, "description": "เครือข่ายบอท"},
-    "Wiper": {"level": 1, "score": 25, "description": "มัลแวร์ลบข้อมูล"},
+    # Level 1 - Critical (Max 100)
+    "Ransomware": {"level": 1, "score": 80, "description": "การเข้ารหัสเรียกค่าไถ่"},
+    "APT": {"level": 1, "score": 80, "description": "การโจมตีแบบ Advanced Persistent Threat"},
+    "C2": {"level": 1, "score": 80, "description": "เซิร์ฟเวอร์ Command & Control"},
+    "Botnet": {"level": 1, "score": 75, "description": "เครือข่ายบอท"},
+    "Wiper": {"level": 1, "score": 80, "description": "มัลแวร์ลบข้อมูล"},
+    "Supply Chain Attack": {"level": 1, "score": 90, "description": "การโจมตีผ่านห่วงโซ่อุปทาน"},
+    "Zero-day Exploit": {"level": 1, "score": 90, "description": "การโจมตีช่องโหว่ใหม่ที่ไม่เคยพบมาก่อน"},
     
-    # Level 2 - High (15-20 points)
-    "Malware": {"level": 2, "score": 18, "description": "มัลแวร์ทั่วไป"},
-    "Credential Theft": {"level": 2, "score": 18, "description": "การขโมย credentials"},
-    "Trojan": {"level": 2, "score": 16, "description": "โทรจัน"},
-    "Backdoor": {"level": 2, "score": 18, "description": "ช่องทางลับ"},
-    "Exploit": {"level": 2, "score": 17, "description": "โค้ดโจมตีช่องโหว่"},
-    "Data Breach": {"level": 2, "score": 15, "description": "การรั่วไหลของข้อมูล"},
+    # Level 2 - High (Max 70)
+    "Malware": {"level": 2, "score": 60, "description": "มัลแวร์ทั่วไป"},
+    "Credential Theft": {"level": 2, "score": 60, "description": "การขโมย credentials"},
+    "Trojan": {"level": 2, "score": 55, "description": "โทรจัน"},
+    "Backdoor": {"level": 2, "score": 60, "description": "ช่องทางลับ"},
+    "Exploit": {"level": 2, "score": 55, "description": "โค้ดโจมตีช่องโหว่"},
+    "Data Breach": {"level": 2, "score": 50, "description": "การรั่วไหลของข้อมูล"},
     
-    # Level 3 - Medium (10-15 points)
-    "Phishing": {"level": 3, "score": 12, "description": "การหลอกลวง"},
-    "DDoS": {"level": 3, "score": 10, "description": "การโจมตี Distributed DoS"},
-    "Spam": {"level": 3, "score": 8, "description": "สแปม"},
-    "Scanning": {"level": 3, "score": 6, "description": "การสแกนหาช่องโหว่"},
+    # Level 3 - Medium (Max 40)
+    "Phishing": {"level": 3, "score": 40, "description": "การหลอกลวง"},
+    "DDoS": {"level": 3, "score": 35, "description": "การโจมตี Distributed DoS"},
+    "Spam": {"level": 3, "score": 25, "description": "สแปม"},
+    "Scanning": {"level": 3, "score": 20, "description": "การสแกนหาช่องโหว่"},
     
-    # Level 4 - Low (5-10 points)
-    "Vulnerability": {"level": 4, "score": 8, "description": "ช่องโหว่ที่รู้จัก"},
-    "Defacement": {"level": 4, "score": 5, "description": "การเปลี่ยนแปลงหน้าเว็บ"},
-    "Other": {"level": 4, "score": 3, "description": "อื่นๆ"}
+    # Level 4 - Low (Max 20)
+    "Vulnerability": {"level": 4, "score": 20, "description": "ช่องโหว่ที่รู้จัก"},
+    "Defacement": {"level": 4, "score": 15, "description": "การเปลี่ยนแปลงหน้าเว็บ"},
+    "Other": {"level": 4, "score": 10, "description": "อื่นๆ"}
 }
 
 # Known Threat Actors Database
-# Score based on sophistication and impact
+# Score based on sophistication and impact (Scale 0-100)
 KNOWN_THREAT_ACTORS = {
-    # Nation-State APT Groups (30 points)
-    "Lazarus": {"score": 30, "origin": "KP", "aliases": ["Hidden Cobra", "ZINC"], "targets": ["Finance", "Crypto"]},
-    "APT28": {"score": 30, "origin": "RU", "aliases": ["Fancy Bear", "Sofacy"], "targets": ["Government", "Military"]},
-    "APT29": {"score": 30, "origin": "RU", "aliases": ["Cozy Bear", "Nobelium"], "targets": ["Government", "Think Tanks"]},
-    "APT41": {"score": 30, "origin": "CN", "aliases": ["Winnti", "Barium"], "targets": ["Gaming", "Tech"]},
-    "Sandworm": {"score": 30, "origin": "RU", "aliases": ["Voodoo Bear"], "targets": ["Energy", "Government"]},
-    "Equation Group": {"score": 30, "origin": "US", "aliases": ["EQGRP"], "targets": ["Government"]},
-    "Charming Kitten": {"score": 28, "origin": "IR", "aliases": ["APT35", "Phosphorus"], "targets": ["Journalists", "Academics"]},
-    "MuddyWater": {"score": 28, "origin": "IR", "aliases": ["MERCURY"], "targets": ["Government", "Telco"]},
+    # Nation-State APT Groups (80-100 points)
+    "Lazarus": {"score": 100, "origin": "KP", "aliases": ["Hidden Cobra", "ZINC"], "targets": ["Finance", "Crypto"]},
+    "APT28": {"score": 100, "origin": "RU", "aliases": ["Fancy Bear", "Sofacy"], "targets": ["Government", "Military"]},
+    "APT29": {"score": 100, "origin": "RU", "aliases": ["Cozy Bear", "Nobelium"], "targets": ["Government", "Think Tanks"]},
+    "APT41": {"score": 100, "origin": "CN", "aliases": ["Winnti", "Barium"], "targets": ["Gaming", "Tech"]},
+    "Sandworm": {"score": 100, "origin": "RU", "aliases": ["Voodoo Bear"], "targets": ["Energy", "Government"]},
+    "Equation Group": {"score": 100, "origin": "US", "aliases": ["EQGRP"], "targets": ["Government"]},
+    "Charming Kitten": {"score": 90, "origin": "IR", "aliases": ["APT35", "Phosphorus"], "targets": ["Journalists", "Academics"]},
+    "MuddyWater": {"score": 90, "origin": "IR", "aliases": ["MERCURY"], "targets": ["Government", "Telco"]},
     
-    # Ransomware Groups (25 points)
-    "LockBit": {"score": 25, "origin": "RU", "aliases": ["ABCD"], "targets": ["Enterprise"]},
-    "BlackCat": {"score": 25, "origin": "RU", "aliases": ["ALPHV"], "targets": ["Enterprise"]},
-    "Conti": {"score": 25, "origin": "RU", "aliases": ["Wizard Spider"], "targets": ["Healthcare", "Enterprise"]},
-    "REvil": {"score": 25, "origin": "RU", "aliases": ["Sodinokibi"], "targets": ["Enterprise"]},
-    "Cl0p": {"score": 24, "origin": "RU", "aliases": ["TA505"], "targets": ["Enterprise"]},
-    "Play": {"score": 22, "origin": "Unknown", "aliases": [], "targets": ["Enterprise"]},
-    "Royal": {"score": 22, "origin": "Unknown", "aliases": [], "targets": ["Healthcare"]},
+    # Ransomware Groups (70-90 points)
+    "LockBit": {"score": 90, "origin": "RU", "aliases": ["ABCD"], "targets": ["Enterprise"]},
+    "BlackCat": {"score": 90, "origin": "RU", "aliases": ["ALPHV"], "targets": ["Enterprise"]},
+    "Conti": {"score": 90, "origin": "RU", "aliases": ["Wizard Spider"], "targets": ["Healthcare", "Enterprise"]},
+    "REvil": {"score": 90, "origin": "RU", "aliases": ["Sodinokibi"], "targets": ["Enterprise"]},
+    "Cl0p": {"score": 85, "origin": "RU", "aliases": ["TA505"], "targets": ["Enterprise"]},
+    "Play": {"score": 80, "origin": "Unknown", "aliases": [], "targets": ["Enterprise"]},
+    "Royal": {"score": 80, "origin": "Unknown", "aliases": [], "targets": ["Healthcare"]},
     
-    # Cybercrime Groups (20 points)
-    "FIN7": {"score": 22, "origin": "RU", "aliases": ["Carbanak"], "targets": ["Finance", "Retail"]},
-    "FIN8": {"score": 20, "origin": "Unknown", "aliases": [], "targets": ["Retail", "Hospitality"]},
-    "Qakbot": {"score": 20, "origin": "Unknown", "aliases": ["QBot", "Quakbot"], "targets": ["Banking"]},
-    "Emotet": {"score": 20, "origin": "Unknown", "aliases": ["Heodo"], "targets": ["All"]},
-    "TrickBot": {"score": 20, "origin": "RU", "aliases": ["Trickster"], "targets": ["Banking"]},
-    "IcedID": {"score": 18, "origin": "Unknown", "aliases": ["BokBot"], "targets": ["Banking"]},
+    # Cybercrime Groups (60-80 points)
+    "FIN7": {"score": 75, "origin": "RU", "aliases": ["Carbanak"], "targets": ["Finance", "Retail"]},
+    "FIN8": {"score": 70, "origin": "Unknown", "aliases": [], "targets": ["Retail", "Hospitality"]},
+    "Qakbot": {"score": 70, "origin": "Unknown", "aliases": ["QBot", "Quakbot"], "targets": ["Banking"]},
+    "Emotet": {"score": 70, "origin": "Unknown", "aliases": ["Heodo"], "targets": ["All"]},
+    "TrickBot": {"score": 70, "origin": "RU", "aliases": ["Trickster"], "targets": ["Banking"]},
+    "IcedID": {"score": 65, "origin": "Unknown", "aliases": ["BokBot"], "targets": ["Banking"]},
     
-    # Hacktivists (15 points)
-    "Anonymous": {"score": 15, "origin": "Global", "aliases": [], "targets": ["Various"]},
-    "LulzSec": {"score": 15, "origin": "Global", "aliases": [], "targets": ["Various"]},
-    "GhostSec": {"score": 14, "origin": "Global", "aliases": [], "targets": ["Various"]},
+    # Hacktivists (40-60 points)
+    "Anonymous": {"score": 50, "origin": "Global", "aliases": [], "targets": ["Various"]},
+    "LulzSec": {"score": 50, "origin": "Global", "aliases": [], "targets": ["Various"]},
+    "GhostSec": {"score": 45, "origin": "Global", "aliases": [], "targets": ["Various"]},
     
     # Regional (10 points)
     "Cobalt Group": {"score": 18, "origin": "Unknown", "aliases": [], "targets": ["Finance"]},
