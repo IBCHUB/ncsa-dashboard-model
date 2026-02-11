@@ -20,6 +20,7 @@ import logging
 from config import (
     SCORING_WEIGHTS,
     HIGH_RISK_KEYWORDS,
+    HIGH_RISK_KEYWORDS_TIERED,
     HIGH_RISK_COUNTRIES,
     TRUSTED_SOURCES,
     NEWS_SOURCES,
@@ -120,32 +121,39 @@ def calculate_entropy(text: str) -> float:
 def calculate_keyword_score(text: str) -> Dict[str, Any]:
     """
     Calculate score based on high-risk keyword presence.
+    Uses tiered scoring: critical=30, high=20, medium=10 per keyword.
     
     Returns:
-        Dict with score and matched keywords
+        Dict with score, matched keywords, and tier details
     """
     if not text:
-        return {"score": 0, "keywords": []}
+        return {"score": 0, "keywords": [], "tier_breakdown": {}}
     
     text_lower = text.lower()
     matched = []
+    tier_breakdown = {"critical": [], "high": [], "medium": []}
+    score = 0
 
-    # Use boundary-aware regex to reduce substring false positives.
-    for keyword in HIGH_RISK_KEYWORDS:
-        keyword_lower = keyword.lower().strip()
-        if not keyword_lower:
-            continue
-        pattern = r"(?<![a-z0-9])" + re.escape(keyword_lower) + r"(?![a-z0-9])"
-        if re.search(pattern, text_lower):
-            matched.append(keyword)
+    # Use tiered keywords for contextual scoring
+    for tier_name, tier_info in HIGH_RISK_KEYWORDS_TIERED.items():
+        tier_score = tier_info["score"]
+        for keyword in tier_info["keywords"]:
+            keyword_lower = keyword.lower().strip()
+            if not keyword_lower:
+                continue
+            pattern = r"(?<![a-z0-9])" + re.escape(keyword_lower) + r"(?![a-z0-9])"
+            if re.search(pattern, text_lower):
+                matched.append(keyword)
+                tier_breakdown[tier_name].append(keyword)
+                score += tier_score
 
-    # Score: max 100 points (5 keywords = max)
-    # 20 points per keyword
-    score = min(len(matched) * 20, 100)
+    # Cap at 100
+    score = min(score, 100)
     
     return {
         "score": score,
-        "keywords": matched
+        "keywords": matched,
+        "tier_breakdown": tier_breakdown
     }
 
 
@@ -206,10 +214,35 @@ def calculate_source_score(sources: List[Any]) -> Dict[str, Any]:
     }
 
 
+def _calculate_source_independence(source_diversity: int, source_count: int) -> float:
+    """
+    Calculate independence factor (0.5 - 1.0) based on source class diversity.
+    
+    Penalizes "echo chamber" sources where multiple sources are from the
+    same class (e.g., 5 news sites copying each other).
+    
+    Args:
+        source_diversity: Number of distinct source classes (1-3: trusted/news/other)
+        source_count: Total number of unique sources
+    
+    Returns:
+        Independence factor (0.5 = single class, 1.0 = all classes represented)
+    """
+    if source_count <= 1:
+        return 1.0  # Single source, no echo chamber possible
+    
+    # Max diversity = 3 classes (trusted, news, other)
+    # 1 class = 0.5 (heavy penalty for echo chamber)
+    # 2 classes = 0.8 (moderate confidence)
+    # 3 classes = 1.0 (full confidence, independent corroboration)
+    independence_map = {1: 0.5, 2: 0.8, 3: 1.0}
+    return independence_map.get(min(source_diversity, 3), 0.5)
+
+
 def calculate_cross_source_score(source_count: int, source_diversity: int = 1) -> int:
     """
     Calculate score based on source corroboration + diversity.
-    Designed to avoid double-counting with source quality scoring.
+    Applies independence factor to penalize echo chamber sources.
     """
     if source_count <= 0:
         return 0
@@ -226,10 +259,14 @@ def calculate_cross_source_score(source_count: int, source_diversity: int = 1) -
     else:
         points = 100  # 5+ sources
     
-    # Diversity bonus (approx 10 points)
+    # Apply independence factor (penalizes single-class echo chamber)
+    independence = _calculate_source_independence(source_diversity, source_count)
+    adjusted = int(points * independence)
+    
+    # Diversity bonus (only if truly diverse)
     diversity_bonus = max(0, source_diversity - 1) * 10
     
-    return min(points + diversity_bonus, 100)
+    return min(adjusted + diversity_bonus, 100)
 
 
 def calculate_geo_risk(country_code: Optional[str]) -> Dict[str, Any]:
@@ -433,10 +470,13 @@ def calculate_threat_actor_score(threat_actors: List[str]) -> Dict[str, Any]:
     """
     Calculate score based on known threat actors.
     Named threat actors indicate attributed attacks.
+    Applies activity_status multiplier: active=1.0, dormant=0.7, disbanded=0.4
     
     Returns:
         Dict with score, matched actors, and their details
     """
+    ACTIVITY_MULTIPLIER = {"active": 1.0, "dormant": 0.7, "disbanded": 0.4}
+    
     if not threat_actors:
         return {
             "score": 0,
@@ -454,35 +494,54 @@ def calculate_threat_actor_score(threat_actors: List[str]) -> Dict[str, Any]:
         # Check direct match
         if actor_normalized in KNOWN_THREAT_ACTORS:
             actor_info = KNOWN_THREAT_ACTORS[actor_normalized]
+            activity = actor_info.get("activity_status", "active")
+            multiplier = ACTIVITY_MULTIPLIER.get(activity, 1.0)
+            adjusted_score = int(actor_info["score"] * multiplier)
+            
             matched_actors.append({
                 "name": actor_normalized,
-                "score": actor_info["score"],
+                "base_score": actor_info["score"],
+                "score": adjusted_score,
+                "activity_status": activity,
+                "activity_multiplier": multiplier,
+                "last_known_activity": actor_info.get("last_known_activity", "Unknown"),
                 "origin": actor_info.get("origin", "Unknown"),
                 "aliases": actor_info.get("aliases", []),
                 "targets": actor_info.get("targets", [])
             })
-            if actor_info["score"] > max_score:
-                max_score = actor_info["score"]
+            if adjusted_score > max_score:
+                max_score = adjusted_score
         else:
             # Check aliases
             for known_actor, info in KNOWN_THREAT_ACTORS.items():
                 if actor_normalized in info.get("aliases", []):
+                    activity = info.get("activity_status", "active")
+                    multiplier = ACTIVITY_MULTIPLIER.get(activity, 1.0)
+                    adjusted_score = int(info["score"] * multiplier)
+                    
                     matched_actors.append({
                         "name": known_actor,
                         "alias_matched": actor_normalized,
-                        "score": info["score"],
+                        "base_score": info["score"],
+                        "score": adjusted_score,
+                        "activity_status": activity,
+                        "activity_multiplier": multiplier,
+                        "last_known_activity": info.get("last_known_activity", "Unknown"),
                         "origin": info.get("origin", "Unknown"),
                         "aliases": info.get("aliases", []),
                         "targets": info.get("targets", [])
                     })
-                    if info["score"] > max_score:
-                        max_score = info["score"]
+                    if adjusted_score > max_score:
+                        max_score = adjusted_score
                     break
             else:
                 # Unknown actor still gets some score
                 matched_actors.append({
                     "name": actor_normalized,
+                    "base_score": 50,
                     "score": 50,  # Unknown but named = medium score
+                    "activity_status": "unknown",
+                    "activity_multiplier": 1.0,
                     "origin": "Unknown",
                     "aliases": [],
                     "targets": []
@@ -657,8 +716,8 @@ def calculate_risk_score(
     # 2. Cross-source validation score
     unique_sources = list(set([n for n in source_names if n]))  # Filter empty strings
     source_count = len(unique_sources)
-    source_count = len(unique_sources)
     cross_source_raw = calculate_cross_source_score(source_count, source_diversity)
+    independence_factor = _calculate_source_independence(source_diversity, source_count)
     cross_source_score = _raw_to_score100(cross_source_raw, 100)
     breakdown["cross_source"] = {
         "raw_score": cross_source_raw,
@@ -668,13 +727,14 @@ def calculate_risk_score(
         "weighted_score": _weighted_points("cross_source", cross_source_score, 100),
         "count": source_count,
         "source_diversity": source_diversity,
+        "independence_factor": independence_factor,
         "sources_found": unique_sources,
-        "description": f"พบจาก {source_count} แหล่งข้อมูล",
-        "reason": f"พบใน {source_count} แหล่ง: {', '.join(unique_sources)}" if unique_sources else "ไม่พบในแหล่งใด",
-        "reasonEn": f"Found in {source_count} source(s): {', '.join(unique_sources)}" if unique_sources else "Not found in any source",
-        "methodology": "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ พร้อม bonus จากความหลากหลายของประเภทแหล่งข้อมูล",
-        "methodologyEn": "Count unique sources with diversity bonus across source classes.",
-        "scoringRules": "Raw: 1=20, 2=40, 3=60, 4=80, 5+=100 + diversity bonus (cap 100)"
+        "description": f"พบจาก {source_count} แหล่งข้อมูล (independence: {independence_factor})",
+        "reason": f"พบใน {source_count} แหล่ง: {', '.join(unique_sources)} (diversity: {source_diversity}/3)" if unique_sources else "ไม่พบในแหล่งใด",
+        "reasonEn": f"Found in {source_count} source(s): {', '.join(unique_sources)} (diversity: {source_diversity}/3)" if unique_sources else "Not found in any source",
+        "methodology": "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ คูณ independence factor ตามความหลากหลายของประเภทแหล่ง",
+        "methodologyEn": "Count unique sources × independence factor based on source class diversity.",
+        "scoringRules": "Raw: 1=20, 2=40, 3=60, 4=80, 5+=100 × independence(1class=0.5, 2class=0.8, 3class=1.0) + diversity bonus"
     }
 
     # 3. Source reliability score
@@ -724,7 +784,6 @@ def calculate_risk_score(
     # 4. Keyword analysis
     keyword_result = calculate_keyword_score(description)
     matched_keywords = keyword_result.get('keywords', [])
-    matched_keywords = keyword_result.get('keywords', [])
     keyword_raw = keyword_result["score"]
     keyword_score = _raw_to_score100(keyword_raw, 100)
     breakdown["keywords"] = {
@@ -739,7 +798,7 @@ def calculate_risk_score(
         "reasonEn": f"Keywords found: {', '.join(matched_keywords)}" if matched_keywords else "No high-risk keywords found",
         "methodology": "ค้นหาคำสำคัญที่บ่งชี้ภัยคุกคาม เช่น ransomware, zero-day, exploit, APT, backdoor",
         "methodologyEn": "Search for keywords indicating threats like ransomware, zero-day, exploit, APT, backdoor",
-        "scoringRules": "Raw: คำสำคัญละ 20 คะแนน (cap 100)"
+        "scoringRules": "Tiered: Critical=30, High=20, Medium=10 คะแนน/คำ (cap 100)"
     }
     
     # 4. Entropy (for domains/URLs)
@@ -1015,18 +1074,22 @@ def calculate_risk_score(
         "methodologyEn": "Analyzed from keywords, domain patterns, and associated threat actors"
     }
     
-    # Apply sector bonus with policy guardrails
+    # Apply sector bonus as MULTIPLIER (not additive) to prevent threshold jumps
+    # e.g. Base 60 + additive 15 = 75 (jumps severity) vs 60 × 1.15 = 69 (stays same)
     sector_bonus = sector_result["risk_bonus"]
     if sector_result["confidence"] < 0.45:
         sector_bonus = min(sector_bonus, 5)
     if source_quality["trusted"] == 0 and source_quality["news"] > 0 and source_quality["other"] == 0:
         sector_bonus = min(sector_bonus, 3)
 
-    total = min(total + sector_bonus, 100)
+    pre_sector_total = total
+    sector_multiplier = 1.0 + (sector_bonus / 100.0)
+    total = min(int(total * sector_multiplier), 100)
 
     # Update breakdown with actual capped sector bonus (after policy guardrails)
-    breakdown["target_sector"]["score"] = sector_bonus
+    breakdown["target_sector"]["score"] = total - pre_sector_total  # Actual points added
     breakdown["target_sector"]["risk_bonus_original"] = sector_result["risk_bonus"]
+    breakdown["target_sector"]["multiplier_used"] = round(sector_multiplier, 3)
 
     policy_adjustments = []
     # Prevent Critical escalation without strong trusted corroboration.
@@ -1069,6 +1132,7 @@ def calculate_risk_score(
 
     # Build factor list with RAW scores (matching methodology/scoringRules text)
     # and WEIGHTED scores (for the calculation summary to add up)
+    actual_sector_points = total - pre_sector_total  # Actual points added by multiplier
     factor_entries = [
         ("cross_source", breakdown["cross_source"]["score"], weighted_components["cross_source"], "การยืนยันข้ามแหล่ง"),
         ("source_quality", breakdown["source_quality"]["score"], weighted_components["source_quality"], "คุณภาพแหล่งข้อมูล"),
@@ -1078,7 +1142,7 @@ def calculate_risk_score(
         ("threat_type_severity", breakdown["threat_type_severity"]["score"], weighted_components["threat_type_severity"], "ประเภทภัยคุกคาม (AI)"),
         ("threat_actor", breakdown["threat_actor"]["score"], weighted_components["threat_actor"], "กลุ่มผู้โจมตี (AI)"),
         ("mitre_techniques", breakdown["mitre_techniques"]["score"], weighted_components["mitre_techniques"], "MITRE ATT&CK (AI)"),
-        ("target_sector", float(sector_bonus), float(sector_bonus), "ผลกระทบต่อโครงสร้างพื้นฐานสำคัญ")
+        ("target_sector", float(actual_sector_points), float(actual_sector_points), "ผลกระทบต่อโครงสร้างพื้นฐานสำคัญ")
     ]
 
     # Send ALL factors with score > 0 for full transparency
@@ -1094,47 +1158,41 @@ def calculate_risk_score(
         for f, raw, w, label in all_factors if raw > 0
     ]
     
-    return {
-        "risk_score": total,
-        "operational_risk_score": total,
-        "credibility_score": credibility_score,
-        "impact_score": impact_score,
-        "severity": severity,
-        "severity_th": severity_th,
-        "score_model_version": SCORE_MODEL_VERSION,
-        "score_config_version": SCORE_CONFIG_VERSION,
-        "breakdown": breakdown,
-        "top_factors": top_factors,
-        "target_sector": sector_result,  # NEW: Include full sector info
-        "summary": {
-            "traditional_score": cross_source_raw + source_quality["score"] + keyword_result["score"] + entropy_score + geo_result["score"] + age_result["score"],
-            "ai_score": threat_type_result["score"] + threat_actor_result["score"] + mitre_result["score"], # Removed confidence_result["score"]
-            "weighted_total_before_decay": weighted_total,
-            "has_threat_actor": len(threat_actors) > 0,
-            "has_mitre": len(mitre_techniques) > 0,
-            "primary_threat": threat_types[0] if threat_types else None,
-            "target_sector": sector_result["sector"]  # NEW
-        }
-    }
-
-    # Send ALL factors with score > 0 for full transparency
-    # Sort by weighted_score for ranking, but display raw_score in UI
-    all_factors = sorted(factor_entries, key=lambda x: x[2], reverse=True)
-    top_factors = [
-        {
-            "factor": f,
-            "score": round(float(raw), 2),       # RAW score (matches methodology text)
-            "weighted_score": round(float(w), 2),  # WEIGHTED score (for calculation summary)
-            "label": label
-        }
-        for f, raw, w, label in all_factors if raw > 0
-    ]
+    # ==========================================
+    # UNCERTAINTY SCORE (Separate dimension from Risk)
+    # ==========================================
+    # Measures "how confident are we in this risk assessment?"
+    # NOT the same as risk — high risk + high uncertainty = "investigate more"
     
+    confidence_component = ai_confidence * 40  # AI confidence contributes 40%
+    source_component = min(source_count, 5) / 5 * 30  # Source count contributes 30%
+    diversity_component = min(source_diversity, 3) / 3 * 30  # Diversity contributes 30%
+    
+    certainty = int(confidence_component + source_component + diversity_component)
+    uncertainty = max(0, min(100 - certainty, 100))
+    
+    # Interpretation for SOC analysts
+    if total >= 50 and uncertainty <= 30:
+        interpretation = "Risk สูง + Uncertainty ต่ำ → ควร Act ทันที"
+        interpretation_en = "High Risk + Low Uncertainty → Act immediately"
+    elif total >= 50 and uncertainty > 30:
+        interpretation = "Risk สูง + Uncertainty สูง → ต้องสืบเพิ่มก่อน Act"
+        interpretation_en = "High Risk + High Uncertainty → Investigate before acting"
+    elif total < 50 and uncertainty <= 30:
+        interpretation = "Risk ต่ำ + Uncertainty ต่ำ → มอนิเตอร์ปกติ"
+        interpretation_en = "Low Risk + Low Uncertainty → Normal monitoring"
+    else:
+        interpretation = "Risk ต่ำ + Uncertainty สูง → ยังไม่มั่นใจ ควรติดตาม"
+        interpretation_en = "Low Risk + High Uncertainty → Not confident, keep watching"
+
     return {
         "risk_score": total,
         "operational_risk_score": total,
         "credibility_score": credibility_score,
         "impact_score": impact_score,
+        "uncertainty": uncertainty,
+        "interpretation": interpretation,
+        "interpretation_en": interpretation_en,
         "severity": severity,
         "severity_th": severity_th,
         "score_model_version": SCORE_MODEL_VERSION,
@@ -1144,7 +1202,7 @@ def calculate_risk_score(
         "target_sector": sector_result,  # NEW: Include full sector info
         "summary": {
             "traditional_score": cross_source_raw + source_quality["score"] + keyword_result["score"] + entropy_score + geo_result["score"] + age_result["score"],
-            "ai_score": threat_type_result["score"] + threat_actor_result["score"] + mitre_result["score"] + confidence_result["score"],
+            "ai_score": threat_type_result["score"] + threat_actor_result["score"] + mitre_result["score"],
             "weighted_total_before_decay": weighted_total,
             "has_threat_actor": len(threat_actors) > 0,
             "has_mitre": len(mitre_techniques) > 0,

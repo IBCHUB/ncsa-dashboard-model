@@ -106,42 +106,43 @@ THREAT_TYPE_SEVERITY = {
 
 # Known Threat Actors Database
 # Score based on sophistication and impact (Scale 0-100)
+# activity_status: active (1.0x), dormant (0.7x), disbanded (0.4x)
 KNOWN_THREAT_ACTORS = {
     # Nation-State APT Groups (80-100 points)
-    "Lazarus": {"score": 100, "origin": "KP", "aliases": ["Hidden Cobra", "ZINC"], "targets": ["Finance", "Crypto"]},
-    "APT28": {"score": 100, "origin": "RU", "aliases": ["Fancy Bear", "Sofacy"], "targets": ["Government", "Military"]},
-    "APT29": {"score": 100, "origin": "RU", "aliases": ["Cozy Bear", "Nobelium"], "targets": ["Government", "Think Tanks"]},
-    "APT41": {"score": 100, "origin": "CN", "aliases": ["Winnti", "Barium"], "targets": ["Gaming", "Tech"]},
-    "Sandworm": {"score": 100, "origin": "RU", "aliases": ["Voodoo Bear"], "targets": ["Energy", "Government"]},
-    "Equation Group": {"score": 100, "origin": "US", "aliases": ["EQGRP"], "targets": ["Government"]},
-    "Charming Kitten": {"score": 90, "origin": "IR", "aliases": ["APT35", "Phosphorus"], "targets": ["Journalists", "Academics"]},
-    "MuddyWater": {"score": 90, "origin": "IR", "aliases": ["MERCURY"], "targets": ["Government", "Telco"]},
+    "Lazarus": {"score": 100, "origin": "KP", "aliases": ["Hidden Cobra", "ZINC"], "targets": ["Finance", "Crypto"], "activity_status": "active", "last_known_activity": "2025"},
+    "APT28": {"score": 100, "origin": "RU", "aliases": ["Fancy Bear", "Sofacy"], "targets": ["Government", "Military"], "activity_status": "active", "last_known_activity": "2025"},
+    "APT29": {"score": 100, "origin": "RU", "aliases": ["Cozy Bear", "Nobelium"], "targets": ["Government", "Think Tanks"], "activity_status": "active", "last_known_activity": "2025"},
+    "APT41": {"score": 100, "origin": "CN", "aliases": ["Winnti", "Barium"], "targets": ["Gaming", "Tech"], "activity_status": "active", "last_known_activity": "2025"},
+    "Sandworm": {"score": 100, "origin": "RU", "aliases": ["Voodoo Bear"], "targets": ["Energy", "Government"], "activity_status": "active", "last_known_activity": "2025"},
+    "Equation Group": {"score": 100, "origin": "US", "aliases": ["EQGRP"], "targets": ["Government"], "activity_status": "dormant", "last_known_activity": "2017"},
+    "Charming Kitten": {"score": 90, "origin": "IR", "aliases": ["APT35", "Phosphorus"], "targets": ["Journalists", "Academics"], "activity_status": "active", "last_known_activity": "2025"},
+    "MuddyWater": {"score": 90, "origin": "IR", "aliases": ["MERCURY"], "targets": ["Government", "Telco"], "activity_status": "active", "last_known_activity": "2025"},
     
     # Ransomware Groups (70-90 points)
-    "LockBit": {"score": 90, "origin": "RU", "aliases": ["ABCD"], "targets": ["Enterprise"]},
-    "BlackCat": {"score": 90, "origin": "RU", "aliases": ["ALPHV"], "targets": ["Enterprise"]},
-    "Conti": {"score": 90, "origin": "RU", "aliases": ["Wizard Spider"], "targets": ["Healthcare", "Enterprise"]},
-    "REvil": {"score": 90, "origin": "RU", "aliases": ["Sodinokibi"], "targets": ["Enterprise"]},
-    "Cl0p": {"score": 85, "origin": "RU", "aliases": ["TA505"], "targets": ["Enterprise"]},
-    "Play": {"score": 80, "origin": "Unknown", "aliases": [], "targets": ["Enterprise"]},
-    "Royal": {"score": 80, "origin": "Unknown", "aliases": [], "targets": ["Healthcare"]},
+    "LockBit": {"score": 90, "origin": "RU", "aliases": ["ABCD"], "targets": ["Enterprise"], "activity_status": "active", "last_known_activity": "2025"},
+    "BlackCat": {"score": 90, "origin": "RU", "aliases": ["ALPHV"], "targets": ["Enterprise"], "activity_status": "disbanded", "last_known_activity": "2024"},
+    "Conti": {"score": 90, "origin": "RU", "aliases": ["Wizard Spider"], "targets": ["Healthcare", "Enterprise"], "activity_status": "disbanded", "last_known_activity": "2022"},
+    "REvil": {"score": 90, "origin": "RU", "aliases": ["Sodinokibi"], "targets": ["Enterprise"], "activity_status": "disbanded", "last_known_activity": "2022"},
+    "Cl0p": {"score": 85, "origin": "RU", "aliases": ["TA505"], "targets": ["Enterprise"], "activity_status": "active", "last_known_activity": "2025"},
+    "Play": {"score": 80, "origin": "Unknown", "aliases": [], "targets": ["Enterprise"], "activity_status": "active", "last_known_activity": "2025"},
+    "Royal": {"score": 80, "origin": "Unknown", "aliases": [], "targets": ["Healthcare"], "activity_status": "dormant", "last_known_activity": "2023"},
     
     # Cybercrime Groups (60-80 points)
-    "FIN7": {"score": 75, "origin": "RU", "aliases": ["Carbanak"], "targets": ["Finance", "Retail"]},
-    "FIN8": {"score": 70, "origin": "Unknown", "aliases": [], "targets": ["Retail", "Hospitality"]},
-    "Qakbot": {"score": 70, "origin": "Unknown", "aliases": ["QBot", "Quakbot"], "targets": ["Banking"]},
-    "Emotet": {"score": 70, "origin": "Unknown", "aliases": ["Heodo"], "targets": ["All"]},
-    "TrickBot": {"score": 70, "origin": "RU", "aliases": ["Trickster"], "targets": ["Banking"]},
-    "IcedID": {"score": 65, "origin": "Unknown", "aliases": ["BokBot"], "targets": ["Banking"]},
+    "FIN7": {"score": 75, "origin": "RU", "aliases": ["Carbanak"], "targets": ["Finance", "Retail"], "activity_status": "active", "last_known_activity": "2025"},
+    "FIN8": {"score": 70, "origin": "Unknown", "aliases": [], "targets": ["Retail", "Hospitality"], "activity_status": "dormant", "last_known_activity": "2023"},
+    "Qakbot": {"score": 70, "origin": "Unknown", "aliases": ["QBot", "Quakbot"], "targets": ["Banking"], "activity_status": "disbanded", "last_known_activity": "2023"},
+    "Emotet": {"score": 70, "origin": "Unknown", "aliases": ["Heodo"], "targets": ["All"], "activity_status": "active", "last_known_activity": "2025"},
+    "TrickBot": {"score": 70, "origin": "RU", "aliases": ["Trickster"], "targets": ["Banking"], "activity_status": "disbanded", "last_known_activity": "2022"},
+    "IcedID": {"score": 65, "origin": "Unknown", "aliases": ["BokBot"], "targets": ["Banking"], "activity_status": "dormant", "last_known_activity": "2023"},
     
     # Hacktivists (40-60 points)
-    "Anonymous": {"score": 50, "origin": "Global", "aliases": [], "targets": ["Various"]},
-    "LulzSec": {"score": 50, "origin": "Global", "aliases": [], "targets": ["Various"]},
-    "GhostSec": {"score": 45, "origin": "Global", "aliases": [], "targets": ["Various"]},
+    "Anonymous": {"score": 50, "origin": "Global", "aliases": [], "targets": ["Various"], "activity_status": "active", "last_known_activity": "2025"},
+    "LulzSec": {"score": 50, "origin": "Global", "aliases": [], "targets": ["Various"], "activity_status": "disbanded", "last_known_activity": "2014"},
+    "GhostSec": {"score": 45, "origin": "Global", "aliases": [], "targets": ["Various"], "activity_status": "active", "last_known_activity": "2025"},
     
     # Regional (10 points)
-    "Cobalt Group": {"score": 18, "origin": "Unknown", "aliases": [], "targets": ["Finance"]},
-    "OilRig": {"score": 20, "origin": "IR", "aliases": ["APT34", "Helix Kitten"], "targets": ["Telco", "Government"]}
+    "Cobalt Group": {"score": 18, "origin": "Unknown", "aliases": [], "targets": ["Finance"], "activity_status": "dormant", "last_known_activity": "2020"},
+    "OilRig": {"score": 20, "origin": "IR", "aliases": ["APT34", "Helix Kitten"], "targets": ["Telco", "Government"], "activity_status": "active", "last_known_activity": "2025"}
 }
 
 # MITRE ATT&CK Tactics (for bonus scoring)
@@ -162,16 +163,36 @@ MITRE_TACTICS = {
 
 # High Risk Keywords
 # NOTE: Removed 'critical' and 'encryption' - too generic, causes false positives
-HIGH_RISK_KEYWORDS = [
-    "ransomware", "zero-day", "0day", "exploit", "active",
-    "lazarus", "apt", "backdoor", "c2", "cnc", "botnet", "credential",
-    "phishing", "malware", "trojan", "wiper", "lockbit",
-    "conti", "revil", "emotet", "trickbot", "cobalt strike",
-    # Additional keywords
-    "obfuscated", "c&c", "command and control", "exfiltration",
-    "lateral movement", "privilege escalation", "persistence", "rootkit",
-    "keylogger", "stealer", "banker", "infostealer", "loader", "dropper"
-]
+HIGH_RISK_KEYWORDS_TIERED = {
+    "critical": {  # 30 คะแนน/คำ - ภัยร้ายแรงสูงสุด
+        "score": 30,
+        "keywords": [
+            "ransomware", "zero-day", "0day", "wiper", "supply chain",
+            "cobalt strike", "command and control", "c&c", "exfiltration"
+        ]
+    },
+    "high": {      # 20 คะแนน/คำ - ภัยร้ายแรงสูง
+        "score": 20,
+        "keywords": [
+            "exploit", "backdoor", "c2", "cnc", "apt", "credential",
+            "rootkit", "keylogger", "lateral movement", "privilege escalation",
+            "persistence", "obfuscated"
+        ]
+    },
+    "medium": {    # 10 คะแนน/คำ - ภัยระดับกลาง
+        "score": 10,
+        "keywords": [
+            "malware", "trojan", "phishing", "botnet", "active",
+            "lazarus", "lockbit", "conti", "revil", "emotet", "trickbot",
+            "stealer", "banker", "infostealer", "loader", "dropper"
+        ]
+    }
+}
+
+# Backward-compatible flat list (auto-generated from tiered)
+HIGH_RISK_KEYWORDS = []
+for tier_info in HIGH_RISK_KEYWORDS_TIERED.values():
+    HIGH_RISK_KEYWORDS.extend(tier_info["keywords"])
 
 # High Risk Countries (ISO Alpha-2)
 HIGH_RISK_COUNTRIES = ["RU", "CN", "KP", "IR", "BY", "SY", "VE"]
