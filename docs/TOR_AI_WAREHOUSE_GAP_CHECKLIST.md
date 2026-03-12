@@ -149,10 +149,8 @@
 - TOR ref: หน้า 21 ข้อ 1.6-1.7, หน้า 27 ข้อ 4.3
 - Status: `[Partial]`
 - Current implementation:
-  - มี forecasting modules และ dashboard analytics endpoint
+  - มี dashboard analytics endpoint ที่สร้าง forecast สำหรับงานแสดงผล
   - ยังไม่เป็นส่วนหนึ่งของ production warehouse pipeline
-- Evidence:
-  - [trend_predictor.py](/Users/mm/Desktop/ibusiness/Cyber/ai-service/legacy/trend_predictor.py#L1)
 - Gap:
   - `pipeline/run` ไม่เรียก forecasting
   - ไม่มี persisted prediction outputs ใน warehouse

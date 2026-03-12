@@ -1,8 +1,8 @@
 # แพลตฟอร์ม Thailand Cyber Threat Intelligence (TCTI)
 
-รีโปนี้เป็นชุดงานหลักของระบบ `AI / ML` และ `Threat Data Warehouse` สำหรับโครงการ TCTI โดยรับข้อมูลดิบจาก `Threat Data Lake` ที่มาจากระบบภายนอก แล้วประมวลผลผ่าน AI Service ก่อนบันทึกลง `Processed Index` และ `Threat Data Warehouse`
+รีโปนี้เป็นชุดงานหลักของระบบ `AI / ML` และ `Threat Data Warehouse` สำหรับโครงการ TCTI โดยรับข้อมูลดิบจาก `Threat Data Lake` ที่มาจากระบบภายนอก แล้วประมวลผลผ่าน AI Service ก่อนบันทึกลง `Threat Data Warehouse`
 
-ระบบ `Dashboard` และ `Threat Search` ที่ใช้งานจริงไม่ได้อยู่ในรีโปนี้ โดยในรีโปจะเก็บเพียง PoC เดิมไว้ที่ [legacy/dashboard-poc](legacy/dashboard-poc)
+ระบบ `Dashboard` และ `Threat Search` ที่ใช้งานจริงไม่ได้อยู่ในรีโปนี้แล้ว และถูกดูแลแยกในรีโปอื่น
 
 ## ภาพรวม
 
@@ -11,9 +11,8 @@
 | องค์ประกอบ | เทคโนโลยี | หน้าที่ |
 |------------|-----------|---------|
 | `ai-service` | FastAPI + Python | จัดหมวดหมู่ภัยคุกคาม, คำนวณคะแนนความเสี่ยง, ตรวจสอบความถูกต้อง, และเปิด API |
-| `Elasticsearch` | Elasticsearch 8.x | เก็บ `Data Lake`, `Processed`, และ `Data Warehouse` |
+| `Elasticsearch` | Elasticsearch 8.x | เก็บ `Data Lake` และ `Data Warehouse` |
 | `Kibana` | Kibana | ใช้ตรวจสอบข้อมูลและ debug |
-| `legacy/dashboard-poc` | Next.js | PoC เดิมที่ถูก archive แล้ว |
 
 ความสามารถหลักในปัจจุบัน
 
@@ -22,7 +21,7 @@
 - คำนวณคะแนนความเสี่ยงจากหลายปัจจัย
 - sanitize ข้อมูลก่อนเข้า AI / Warehouse
 - แยกผลลัพธ์เป็น `validated_auto`, `needs_review`, `rejected`
-- เปิด review queue ภายในสำหรับอนุมัติหรือปฏิเสธรายการที่ไม่ควรเข้า warehouse อัตโนมัติ
+- เปิด review queue ภายในสำหรับอนุมัติหรือปฏิเสธรายการใน warehouse
 - เตรียม API สำหรับ external consumers เช่น dashboard หรือ threat search
 
 ## สถาปัตยกรรม
@@ -40,8 +39,6 @@ External Threat Data Lake
   - score risk
   - validate / review gate
           |
-          +--> Processed Index
-          |
           +--> Data Warehouse
                     |
                     v
@@ -53,9 +50,8 @@ External Threat Data Lake
 1. ระบบภายนอกส่งข้อมูลดิบเข้ามาที่ `Data Lake`
 2. `ai-service` อ่านเอกสารที่ยังไม่ถูกประมวลผล
 3. ระบบ sanitize ข้อมูล, รวม observation ของ IOC เดียวกัน, แล้วรัน AI/ML
-4. ผลลัพธ์ทุกตัวจะถูกบันทึกลง `Processed Index`
-5. เฉพาะรายการที่ `validated_auto` หรือ `validated_manual` เท่านั้นที่จะถูกบันทึกลง `Threat Data Warehouse`
-6. ระบบภายนอกจะเรียก API หรืออ่านข้อมูลต่อจาก warehouse
+4. ผลลัพธ์ทุกตัวจะถูกบันทึกลง `Threat Data Warehouse` พร้อม metadata ของ validation และ action
+5. ระบบภายนอกจะเรียก API หรืออ่านข้อมูลต่อจาก warehouse
 
 ## โครงสร้างรีโป
 
@@ -71,10 +67,8 @@ Cyber/
 │   ├── utils/                # sanitizer และ pipeline helpers
 │   ├── scripts/ops/          # import, backfill, operational scripts
 │   ├── scripts/dev/          # local verification scripts
-│   ├── legacy/               # โค้ดเก่าที่ quarantine ไว้
 │   └── tests/                # unit tests
 ├── docs/                     # เอกสารคู่มือและเอกสารอ้างอิง
-├── legacy/dashboard-poc/     # Dashboard PoC เดิม
 ├── data_lake/                # ตัวอย่างไฟล์ JSON สำหรับ import/local test
 ├── docker-compose.yml        # local stack
 └── docker-compose.remote.yml # remote ELK stack
@@ -120,10 +114,9 @@ python main.py
 | `AI_SERVICE_REQUIRE_AUTH` | `true` | บังคับตรวจ `X-API-Key` หรือไม่ |
 | `ELASTICSEARCH_URL` | ในโค้ดชี้ remote ELK | URL ของ Elasticsearch |
 | `DATALAKE_INDEX` | `cyber-logs-datalake` | index ข้อมูลดิบ |
-| `PROCESSED_INDEX` | `cyber-logs-processed` | index ระหว่างทางหลัง AI |
 | `WAREHOUSE_INDEX` | `cyber-logs-datawarehouse` | index ผลลัพธ์สำหรับใช้งานต่อ |
 | `DATALAKE_API_KEY` | ว่าง | API key สำหรับอ่าน/เขียน datalake |
-| `WAREHOUSE_API_KEY` | ว่าง | API key สำหรับ processed/warehouse |
+| `WAREHOUSE_API_KEY` | ว่าง | API key สำหรับ warehouse |
 | `OPENAI_API_KEY` | ว่าง | ใช้กับ endpoint แปลภาษา |
 | `HELPDESK_MOCK_MODE` | `true` | ใช้ mock helpdesk หรือยิง API จริง |
 
@@ -163,5 +156,5 @@ python main.py
 รีโปนี้ไม่มี dashboard runtime ที่ใช้งานจริงแล้ว
 
 - UI ที่ใช้งานจริงจะถูกนำมารวมภายหลังจากอีกโครงการ
-- dashboard เดิมในรีโปนี้ถูกย้ายไปไว้ที่ `legacy/dashboard-poc`
+- dashboard PoC เดิมถูกลบออกจากรีโปนี้แล้ว
 - การออกแบบ API สำหรับ dashboard/threat search ภายนอกจะนิยามเพิ่มเมื่อมี spec อย่างเป็นทางการ

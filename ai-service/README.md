@@ -147,7 +147,6 @@ curl -X POST http://localhost:8000/pipeline/review/<doc_id>/approve \
 
 - `scripts/ops/` สำหรับ import, backfill, และงานปฏิบัติการจริง
 - `scripts/dev/` สำหรับ local verification
-- `legacy/` สำหรับโค้ดเก่าที่ไม่อยู่ใน active runtime path
 
 ตัวอย่างคำสั่งที่ใช้จริง
 
