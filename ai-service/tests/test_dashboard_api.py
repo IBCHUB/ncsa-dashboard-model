@@ -507,6 +507,10 @@ def test_remaining_dashboard_routes(client):
     assert logout.status_code == 200
     assert logout.json()["data"]["logged_out"] is True
 
+    repeated_logout = test_client.post("/api/v1/auth/logout")
+    assert repeated_logout.status_code == 200
+    assert repeated_logout.json()["data"]["logged_out"] is True
+
     me_after_logout = test_client.get("/api/v1/auth/me", headers=headers)
     assert me_after_logout.status_code == 401
 

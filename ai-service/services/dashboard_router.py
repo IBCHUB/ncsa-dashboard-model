@@ -1550,7 +1550,6 @@ def dashboard_me(current_user: Dict[str, Any] = Depends(require_dashboard_user))
 @router.post("/auth/logout", tags=["Auth"])
 def dashboard_logout(
     request: Request,
-    current_user: Dict[str, Any] = Depends(require_dashboard_user),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTP_BEARER),
 ):
     token = _token_from_request(request, credentials)
