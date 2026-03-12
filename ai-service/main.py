@@ -4,10 +4,9 @@ AI Service API
 FastAPI server for threat classification and risk scoring.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import logging
 import time
-from datetime import datetime, timezone
 import os
 
 from fastapi import FastAPI, HTTPException, Depends, Security
@@ -22,6 +21,16 @@ from models.classifier import (
     extract_mitre_techniques
 )
 from models.scorer import calculate_risk_score
+from models.validation import NEEDS_REVIEW, REJECTED
+from services.review_queue import (
+    approve_review_document,
+    build_review_queue_response,
+    reject_review_document,
+)
+from services.dashboard_compat_router import router as dashboard_compat_router
+from services.dashboard_router import router as dashboard_router
+from utils.pipeline_documents import build_enriched_ioc_document
+from utils.sanitizer import sanitize_text
 
 # Configure logging
 logging.basicConfig(
@@ -37,7 +46,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware (allow Next.js dashboard)
+# CORS middleware (allow local UI clients)
 cors_origins = [
     origin.strip() for origin in os.getenv(
         "AI_SERVICE_CORS_ORIGINS",
@@ -54,6 +63,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(dashboard_compat_router)
+app.include_router(dashboard_router)
 
 # ============================================
 # AUTHENTICATION
@@ -197,12 +209,12 @@ class TranslateResponse(BaseModel):
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint."""
-    from models.classifier import _classifier
+    from models.classifier import models_loaded
     
     return {
         "status": "healthy",
         "version": "1.0.0",
-        "classifier_loaded": _classifier is not None
+        "classifier_loaded": models_loaded()
     }
 
 
@@ -211,10 +223,11 @@ async def classify_endpoint(request: ClassifyRequest, api_key: str = Depends(ver
     """Classify threat description into categories. Requires API Key."""
     try:
         start = time.time()
-        
-        result = classify_threat(request.text, threshold=request.threshold)
-        actors = extract_threat_actors(request.text)
-        mitre = extract_mitre_techniques(request.text)
+
+        sanitized_text = sanitize_text(request.text)["text"]
+        result = classify_threat(sanitized_text, threshold=request.threshold)
+        actors = extract_threat_actors(sanitized_text)
+        mitre = extract_mitre_techniques(sanitized_text)
         
         elapsed = int((time.time() - start) * 1000)
         logger.info(f"Classification completed in {elapsed}ms")
@@ -238,11 +251,12 @@ async def score_endpoint(request: ScoreRequest, api_key: str = Depends(verify_ap
     """Calculate risk score for an IOC. Requires API Key."""
     try:
         start = time.time()
-        
+
+        sanitized_description = sanitize_text(request.description)["text"]
         result = calculate_risk_score(
             ioc_value=request.ioc_value,
             ioc_type=request.ioc_type,
-            description=request.description,
+            description=sanitized_description,
             sources=request.sources,
             country_code=request.country_code,
             domain_age_days=request.domain_age_days,
@@ -268,9 +282,9 @@ async def enrich_endpoint(request: EnrichRequest, api_key: str = Depends(verify_
     """
     try:
         start = time.time()
-        
+
         # Combine title and description for better classification
-        full_text = f"{request.title} {request.description}".strip()
+        full_text = sanitize_text(f"{request.title} {request.description}".strip())["text"]
         
         # 1. Classify threat
         classification = classify_threat(full_text)
@@ -482,7 +496,10 @@ class PipelineRunRequest(BaseModel):
 
 class PipelineRunResponse(BaseModel):
     processed: int
+    needs_review: int
+    rejected: int
     failed: int
+    observations_updated: int
     processing_time_ms: int
     message: str
 
@@ -490,11 +507,47 @@ class PipelineRunResponse(BaseModel):
 class ElasticsearchStatusResponse(BaseModel):
     status: str
     datalake_index: str
-    processed_index: str
     warehouse_index: str
     datalake_count: int
-    processed_count: int
     warehouse_count: int
+
+
+class ReviewQueueItem(BaseModel):
+    doc_id: str
+    ioc_value: str
+    ioc_type: str
+    validation_status: str
+    review_state: str
+    warehouse_eligible: bool
+    review_required: bool
+    validation_reasons: List[str]
+    ai_risk_score: int = 0
+    ai_severity: str = "low"
+    ai_classification_confidence: float = 0.0
+    source_name: str = "unknown"
+    processed_at: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    review_notes: Optional[str] = None
+
+
+class ReviewQueueResponse(BaseModel):
+    total: int
+    items: List[ReviewQueueItem]
+
+
+class ReviewActionRequest(BaseModel):
+    reviewer: str = Field(..., description="Reviewer identifier")
+    notes: str = Field(default="", description="Optional review notes")
+
+
+class ReviewActionResponse(BaseModel):
+    success: bool
+    doc_id: str
+    validation_status: str
+    review_state: str
+    warehouse_saved: bool
+    message: str
 
 
 @app.post("/pipeline/run", response_model=PipelineRunResponse)
@@ -506,9 +559,9 @@ async def run_pipeline(
     Run AI Pipeline: Read from Data Lake → Process with AI → Write to Data Warehouse.
     
     This is the main on-demand pipeline endpoint that:
-    1. Queries unprocessed IOCs from tcti-datalake
+    1. Queries unprocessed IOCs from the configured Data Lake
     2. Runs classification and scoring on each
-    3. Saves enriched results to tcti-warehouse
+    3. Saves enriched results to the configured Data Warehouse
     4. Marks source IOCs as processed
     """
     from elastic_client import get_elastic_client
@@ -522,49 +575,13 @@ async def run_pipeline(
     if not unprocessed:
         return {
             "processed": 0,
+            "needs_review": 0,
+            "rejected": 0,
             "failed": 0,
+            "observations_updated": 0,
             "processing_time_ms": 0,
             "message": "No unprocessed IOCs found in Data Lake"
         }
-    
-    def parse_dt(value: Any) -> Optional[datetime]:
-        if not value:
-            return None
-        if isinstance(value, datetime):
-            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-        try:
-            text = str(value).strip()
-            if not text:
-                return None
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            parsed = datetime.fromisoformat(text)
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-        except Exception:
-            return None
-
-    def to_iso_z(value: Optional[datetime]) -> Optional[str]:
-        if value is None:
-            return None
-        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-    def pick_highest_severity(values: List[str]) -> str:
-        severity_rank = {
-            "critical": 4,
-            "high": 3,
-            "medium": 2,
-            "low": 1,
-            "clean": 0
-        }
-        best = "low"
-        best_rank = -1
-        for raw in values:
-            sev = str(raw or "").strip().lower()
-            rank = severity_rank.get(sev, -1)
-            if rank > best_rank:
-                best = sev
-                best_rank = rank
-        return best if best_rank >= 0 else "low"
 
     # Group by IOC key to preserve all source-level observations (MOM requirement)
     grouped_iocs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
@@ -577,189 +594,48 @@ async def run_pipeline(
         grouped_iocs.setdefault(key, []).append(ioc)
 
     processed = 0
+    needs_review = 0
+    rejected = 0
     failed = 0
     processed_observations = 0
 
     for (_, _), ioc_docs in grouped_iocs.items():
         try:
-            primary = ioc_docs[0]
-            ioc_value = primary.get("ioc_value", "")
-            ioc_type = primary.get("ioc_type", "unknown")
+            build_result = build_enriched_ioc_document(ioc_docs)
+            pipeline_doc = build_result["document"]
+            validation_status = pipeline_doc["validation_status"]
+            ioc_value = pipeline_doc["ioc_value"]
 
-            source_names = []
-            source_objects = []
-            source_types = []
-            descriptions = []
-            tags = set()
-            references = []
-            threat_types_raw = []
-            severity_values = []
-            geo_countries = []
-            first_seen_candidates: List[datetime] = []
-            last_seen_candidates: List[datetime] = []
-
-            for doc in ioc_docs:
-                source_name = str(doc.get("source_name", "")).strip()
-                confidence = float(doc.get("confidence", 0) or 0)
-
-                if source_name:
-                    if source_name not in source_names:
-                        source_names.append(source_name)
-                    
-                    # Update source objects with max confidence for duplicates
-                    found = False
-                    for obj in source_objects:
-                        if obj["name"] == source_name:
-                            if confidence > obj["confidence"]:
-                                obj["confidence"] = confidence
-                            found = True
-                            break
-                    if not found:
-                        source_objects.append({
-                            "name": source_name,
-                            "confidence": confidence,
-                            "type": str(doc.get("source_type", "unknown"))
-                        })
-
-                source_type = str(doc.get("source_type", "")).strip()
-                if source_type and source_type not in source_types:
-                    source_types.append(source_type)
-
-                description = str(doc.get("description", "")).strip()
-                if description and description not in descriptions:
-                    descriptions.append(description)
-
-                for tag in doc.get("tags", []) or []:
-                    if tag:
-                        tags.add(str(tag))
-
-                reference = str(doc.get("reference", "")).strip()
-                if reference and reference not in references:
-                    references.append(reference)
-
-                for threat in doc.get("threat_type", []) or []:
-                    if threat:
-                        threat_types_raw.append(str(threat))
-
-                severity_values.append(str(doc.get("severity", "")).strip().lower())
-
-                geo_country = str(doc.get("geo_country", "")).strip()
-                if geo_country:
-                    geo_countries.append(geo_country)
-
-                event_dt = parse_dt(doc.get("event_time"))
-                collect_dt = parse_dt(doc.get("collect_time"))
-                if event_dt:
-                    first_seen_candidates.append(event_dt)
-                    last_seen_candidates.append(event_dt)
-                if collect_dt:
-                    first_seen_candidates.append(collect_dt)
-                    last_seen_candidates.append(collect_dt)
-
-            merged_description = "\n".join(descriptions) if descriptions else ""
-            sources = source_objects if source_objects else ["unknown"]
-
-            first_seen_dt = min(first_seen_candidates) if first_seen_candidates else None
-            last_seen_dt = max(last_seen_candidates) if last_seen_candidates else None
-            first_seen = to_iso_z(first_seen_dt) or primary.get("event_time")
-            last_seen = to_iso_z(last_seen_dt) or primary.get("collect_time")
-
-            ioc_age_days = None
-            if first_seen_dt:
-                ioc_age_days = max(
-                    0,
-                    (datetime.now(timezone.utc) - first_seen_dt.astimezone(timezone.utc)).days
-                )
-            
-            # Run classification
-            classification = classify_threat(merged_description)
-            threat_actors = extract_threat_actors(merged_description)
-            mitre_techniques = extract_mitre_techniques(merged_description)
-            
-            # Run scoring
-            score_result = calculate_risk_score(
-                ioc_value=ioc_value,
-                ioc_type=ioc_type,
-                description=merged_description,
-                sources=sources,
-                ioc_age_days=ioc_age_days,
-                threat_classification={
-                    "threat_types": classification["threat_types"],
-                    "threat_actors": threat_actors,
-                    "mitre_techniques": mitre_techniques,
-                    "confidence": classification["confidence"]
-                }
-            )
-            
-            # Build warehouse document
-            warehouse_doc = {
-                "ioc_value": ioc_value,
-                "ioc_type": ioc_type,
-                "source_name": ", ".join(sources),
-                "source_type": "multi" if len(source_types) > 1 else (source_types[0] if source_types else "unknown"),
-                "sources": sources,
-                "source_types": source_types,
-                "source_count": len(sources),
-                "description": merged_description,
-                "threat_type": sorted(set(threat_types_raw)),
-                "severity": pick_highest_severity(severity_values),
-                "tags": sorted(tags),
-                "reference": "\n".join(references),
-                "collect_time": last_seen,
-                "event_time": first_seen,
-                "first_seen": first_seen,
-                "last_seen": last_seen,
-                "ioc_age_days": ioc_age_days,
-                "geo_country": geo_countries[0] if geo_countries else primary.get("geo_country"),
-                # AI Enrichment
-                "ai_risk_score": score_result.get("risk_score", 0),
-                "ai_severity": score_result.get("severity", "low"),
-                "ai_severity_th": score_result.get("severity_th", "ต่ำ"),
-                "ai_threat_types": classification["threat_types"],
-                "ai_threat_actors": threat_actors,
-                "ai_mitre_techniques": mitre_techniques,
-                "ai_classification_confidence": classification["confidence"],
-                "ai_score_breakdown": score_result.get("breakdown", {}),
-                "ai_top_factors": score_result.get("top_factors", []),
-                "score_model_version": score_result.get("score_model_version"),
-                "score_config_version": score_result.get("score_config_version"),
-                "credibility_score": score_result.get("credibility_score", 0),
-                "impact_score": score_result.get("impact_score", 0)
-            }
-            
-            processed_doc = dict(warehouse_doc)
-            processed_doc["validation_status"] = "validated"
-
-            # Save to processed layer first (for validation/backup)
-            processed_id = es_client.save_to_processed(processed_doc)
-            if not processed_id:
-                # Log warning but proceed to warehouse (due to permission issues on processed index)
-                logger.warning(f"Failed to save to processed layer for {key}. Proceeding to warehouse.")
-                # failed += 1
-                # continue
-
-            # Save to warehouse
-            saved_id = es_client.save_to_warehouse(warehouse_doc)
-            
-            if saved_id:
-                # Mark all contributing observations as processed
-                mark_failed = False
-                for doc in ioc_docs:
-                    doc_id = doc.get("_id")
-                    if doc_id and not es_client.mark_as_processed(doc_id):
-                        mark_failed = True
-                        logger.warning(
-                            "Failed marking datalake doc as processed: %s (%s)",
-                            doc_id,
-                            ioc_value
-                        )
-                if mark_failed:
-                    failed += 1
-                    continue
-                processed += 1
-                processed_observations += len(ioc_docs)
-            else:
+            saved_id = es_client.save_to_warehouse(dict(pipeline_doc))
+            if not saved_id:
+                logger.warning("Failed to save to warehouse for %s", ioc_value)
                 failed += 1
+                continue
+
+            mark_failed = False
+            for doc in ioc_docs:
+                doc_id = doc.get("_id")
+                if doc_id and not es_client.mark_as_processed(doc_id):
+                    mark_failed = True
+                    logger.warning(
+                        "Failed marking datalake doc as processed: %s (%s)",
+                        doc_id,
+                        ioc_value
+                    )
+
+            if mark_failed:
+                failed += 1
+                continue
+
+            if pipeline_doc["warehouse_eligible"]:
+                processed += 1
+            elif validation_status == NEEDS_REVIEW:
+                needs_review += 1
+            elif validation_status == REJECTED:
+                rejected += 1
+            else:
+                needs_review += 1
+            processed_observations += len(ioc_docs)
                 
         except Exception as e:
             logger.error(f"Pipeline error for {ioc_docs[0].get('ioc_value')}: {e}")
@@ -769,51 +645,94 @@ async def run_pipeline(
     
     return {
         "processed": processed,
+        "needs_review": needs_review,
+        "rejected": rejected,
         "failed": failed,
+        "observations_updated": processed_observations,
         "processing_time_ms": elapsed,
         "message": (
-            f"Pipeline completed: {processed} aggregated IOCs processed, "
+            f"Pipeline completed: {processed} auto-validated to warehouse, "
+            f"{needs_review} queued for review, {rejected} rejected, "
             f"{processed_observations} observations updated, {failed} failed"
         )
     }
 
 
+@app.get("/pipeline/review-queue", response_model=ReviewQueueResponse)
+async def get_review_queue(
+    limit: int = 50,
+    offset: int = 0,
+    validation_status: str = NEEDS_REVIEW,
+    review_state: str = "pending",
+    api_key: str = Depends(verify_api_key),
+):
+    """List warehouse IOC documents that require human review."""
+    from elastic_client import get_elastic_client
+
+    es_client = get_elastic_client()
+    result = es_client.search_review_documents(
+        validation_status=validation_status,
+        review_state=review_state,
+        limit=limit,
+        offset=offset,
+    )
+
+    return build_review_queue_response(result)
+
+
+@app.post("/pipeline/review/{doc_id}/approve", response_model=ReviewActionResponse)
+async def approve_review_item(
+    doc_id: str,
+    request: ReviewActionRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """Approve a reviewed IOC and promote it to the warehouse."""
+    from elastic_client import get_elastic_client
+
+    es_client = get_elastic_client()
+    try:
+        return approve_review_document(es_client, doc_id, request.reviewer, request.notes)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/pipeline/review/{doc_id}/reject", response_model=ReviewActionResponse)
+async def reject_review_item(
+    doc_id: str,
+    request: ReviewActionRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """Reject a reviewed IOC and keep it out of the warehouse."""
+    from elastic_client import get_elastic_client
+
+    es_client = get_elastic_client()
+    try:
+        return reject_review_document(es_client, doc_id, request.reviewer, request.notes)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.get("/pipeline/status", response_model=ElasticsearchStatusResponse)
 async def pipeline_status(api_key: str = Depends(verify_api_key)):
     """Get Elasticsearch and pipeline status."""
-    from elastic_client import get_elastic_client, DATALAKE_INDEX, PROCESSED_INDEX, WAREHOUSE_INDEX
+    from elastic_client import get_elastic_client, DATALAKE_INDEX, WAREHOUSE_INDEX
     
     es_client = get_elastic_client()
     health = es_client.health_check()
     
     # Get document counts
-    datalake_count = 0
-    processed_count = 0
-    warehouse_count = 0
-    
-    try:
-        import httpx
-        resp = httpx.get(f"{es_client.url}/{DATALAKE_INDEX}/_count", timeout=10)
-        if resp.status_code == 200:
-            datalake_count = resp.json().get("count", 0)
-
-        resp = httpx.get(f"{es_client.url}/{PROCESSED_INDEX}/_count", timeout=10)
-        if resp.status_code == 200:
-            processed_count = resp.json().get("count", 0)
-        
-        resp = httpx.get(f"{es_client.url}/{WAREHOUSE_INDEX}/_count", timeout=10)
-        if resp.status_code == 200:
-            warehouse_count = resp.json().get("count", 0)
-    except:
-        pass
+    datalake_count = es_client.count_documents(DATALAKE_INDEX)
+    warehouse_count = es_client.count_documents(WAREHOUSE_INDEX)
     
     return {
         "status": health.get("status", "unknown"),
         "datalake_index": DATALAKE_INDEX,
-        "processed_index": PROCESSED_INDEX,
         "warehouse_index": WAREHOUSE_INDEX,
         "datalake_count": datalake_count,
-        "processed_count": processed_count,
         "warehouse_count": warehouse_count
     }
 
@@ -835,6 +754,10 @@ async def setup_elasticsearch(api_key: str = Depends(verify_api_key)):
 @app.on_event("startup")
 async def startup_event():
     """Pre-load models on startup."""
+    if os.getenv("AI_SERVICE_SKIP_STARTUP_PRELOAD", "").lower() == "true":
+        logger.info("Skipping startup preload and Elasticsearch initialization")
+        return
+
     logger.info("AI Service starting up...")
     logger.info(f"Loading classifier model (this may take 1-2 minutes on first run)...")
     
@@ -850,10 +773,14 @@ async def startup_event():
         from elastic_client import get_elastic_client
         es_client = get_elastic_client()
         health = es_client.health_check()
-        if health.get("status") in ("green", "yellow"):
+        auto_create_indexes = os.getenv("AI_SERVICE_AUTO_CREATE_INDEXES", "").lower() == "true"
+        if health.get("status") in ("green", "degraded"):
             logger.info("Elasticsearch connected successfully!")
-            es_client.create_indexes()
-            logger.info("Elasticsearch indexes ready!")
+            if auto_create_indexes or es_client.url.startswith("http://localhost"):
+                es_client.create_indexes()
+                logger.info("Elasticsearch indexes ready!")
+            else:
+                logger.info("Skipping index auto-create for remote Elasticsearch")
         else:
             logger.warning(f"Elasticsearch not available: {health}")
     except Exception as e:

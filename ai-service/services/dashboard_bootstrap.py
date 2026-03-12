@@ -1,0 +1,505 @@
+"""
+Bootstrap state for dashboard-facing APIs.
+
+This module provides lightweight in-process storage for domains that do not
+yet have a dedicated backend service, such as auth, users, groups,
+notifications, enforcement points, and export jobs.
+"""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+import os
+import secrets
+import threading
+from typing import Any, Dict, List, Optional
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _isoformat(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _group_permissions() -> Dict[str, List[Dict[str, Any]]]:
+    return {
+        "grp-super-admin": [
+            {"module": "Executive Dashboard", "read": True, "edit": True},
+            {"module": "Threat Intelligence", "read": True, "edit": True},
+            {"module": "IOC Data Lake", "read": True, "edit": True},
+            {"module": "Reports & Export", "read": True, "edit": True},
+            {"module": "Setting", "read": True, "edit": True},
+        ],
+        "grp-admin": [
+            {"module": "Executive Dashboard", "read": True, "edit": True},
+            {"module": "Threat Intelligence", "read": True, "edit": False},
+            {"module": "IOC Data Lake", "read": True, "edit": False},
+            {"module": "Reports & Export", "read": True, "edit": True},
+            {"module": "Setting", "read": True, "edit": False},
+        ],
+        "grp-general": [
+            {"module": "Executive Dashboard", "read": True, "edit": False},
+            {"module": "Threat Intelligence", "read": True, "edit": False},
+            {"module": "IOC Data Lake", "read": False, "edit": False},
+            {"module": "Reports & Export", "read": False, "edit": False},
+            {"module": "Setting", "read": False, "edit": False},
+        ],
+    }
+
+
+def _default_groups() -> Dict[str, Dict[str, Any]]:
+    permissions = _group_permissions()
+    return {
+        "grp-super-admin": {
+            "group_id": "grp-super-admin",
+            "name": "Super Admin",
+            "permissions": permissions["grp-super-admin"],
+        },
+        "grp-admin": {
+            "group_id": "grp-admin",
+            "name": "Admin",
+            "permissions": permissions["grp-admin"],
+        },
+        "grp-general": {
+            "group_id": "grp-general",
+            "name": "General",
+            "permissions": permissions["grp-general"],
+        },
+    }
+
+
+def _default_users() -> Dict[str, Dict[str, Any]]:
+    admin_username = os.getenv("DASHBOARD_BOOTSTRAP_USERNAME", "admin")
+    admin_password = os.getenv("DASHBOARD_BOOTSTRAP_PASSWORD", "admin123!")
+    now = _utcnow()
+    return {
+        "usr-admin": {
+            "user_id": "usr-admin",
+            "username": admin_username,
+            "password": admin_password,
+            "name": "Natakarn Kanjanamas",
+            "role_name": "Admin",
+            "email": "natakarn@example.com",
+            "group_id": "grp-admin",
+            "user_group": "Admin",
+            "national_id": "X-XXXX-XXXXX-XX-1234",
+            "phone_number": "088-888-8888",
+            "avatar_url": "/user.png",
+            "status": "active",
+            "last_password_reset_at": _isoformat(now - timedelta(days=12)),
+        },
+        "usr-super-admin": {
+            "user_id": "usr-super-admin",
+            "username": "superadmin",
+            "password": "superadmin123!",
+            "name": "Napat Pongpai",
+            "role_name": "Super Admin",
+            "email": "napat@example.com",
+            "group_id": "grp-super-admin",
+            "user_group": "Super Admin",
+            "national_id": "X-XXXX-XXXXX-XX-0001",
+            "phone_number": "081-234-5670",
+            "avatar_url": "/user.png",
+            "status": "active",
+            "last_password_reset_at": _isoformat(now - timedelta(days=20)),
+        },
+        "usr-general": {
+            "user_id": "usr-general",
+            "username": "analyst",
+            "password": "analyst123!",
+            "name": "Kenika Krajangwong",
+            "role_name": "General",
+            "email": "kenika@example.com",
+            "group_id": "grp-general",
+            "user_group": "General",
+            "national_id": "X-XXXX-XXXXX-XX-1452",
+            "phone_number": "086-789-0125",
+            "avatar_url": "/user.png",
+            "status": "active",
+            "last_password_reset_at": _isoformat(now - timedelta(days=4)),
+        },
+    }
+
+
+def _default_notifications() -> List[Dict[str, Any]]:
+    created_at = _utcnow() - timedelta(minutes=5)
+    return [
+        {
+            "notification_id": "ntf-001",
+            "title": "New Match: IOC Data Lake",
+            "message": "Detected critical IOC in Zone-H feed",
+            "created_at": _isoformat(created_at),
+            "relative_time": "5 minutes",
+            "type": "ioc_match",
+            "unread": True,
+            "linked_resource_type": "ioc",
+            "linked_resource_id": "ip::http://malicious-site.example",
+            "ioc_summary": {
+                "ioc_value": "http://malicious-site.example",
+                "ioc_type": "url",
+                "severity": "Critical",
+                "risk_score": 90,
+                "threat_types": ["Malware"],
+            },
+        },
+        {
+            "notification_id": "ntf-002",
+            "title": "Action Ticket Updated",
+            "message": "Review queue item requires analyst confirmation",
+            "created_at": _isoformat(created_at - timedelta(minutes=12)),
+            "relative_time": "17 minutes",
+            "type": "action_update",
+            "unread": True,
+            "linked_resource_type": "action",
+            "linked_resource_id": "pending-review",
+            "ioc_summary": None,
+        },
+    ]
+
+
+def _default_enforcement_points() -> List[Dict[str, Any]]:
+    return [
+        {"enforcement_point_id": "fw-bkk-01", "name": "Bangkok Firewall 01", "type": "firewall", "location": "Bangkok", "active": True},
+        {"enforcement_point_id": "waf-bkk-02", "name": "Bangkok WAF 02", "type": "waf", "location": "Bangkok", "active": True},
+        {"enforcement_point_id": "proxy-cdc-01", "name": "CDC Secure Proxy 01", "type": "proxy", "location": "CDC", "active": True},
+    ]
+
+
+@dataclass
+class DashboardState:
+    token_ttl_seconds: int = field(default_factory=lambda: int(os.getenv("DASHBOARD_ACCESS_TOKEN_TTL_SECONDS", "3600")))
+    users: Dict[str, Dict[str, Any]] = field(default_factory=_default_users)
+    groups: Dict[str, Dict[str, Any]] = field(default_factory=_default_groups)
+    notifications: List[Dict[str, Any]] = field(default_factory=_default_notifications)
+    enforcement_points: List[Dict[str, Any]] = field(default_factory=_default_enforcement_points)
+    sessions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    export_jobs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    action_assignments: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    action_notes: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def _cleanup_sessions(self) -> None:
+        now = _utcnow()
+        expired = [
+            token
+            for token, session in self.sessions.items()
+            if session.get("expires_at") and session["expires_at"] <= now
+        ]
+        for token in expired:
+            self.sessions.pop(token, None)
+
+    def authenticate(self, username: str, password: str) -> Optional[Dict[str, Any]]:
+        with self.lock:
+            for user in self.users.values():
+                if user["username"] == username and user["password"] == password and user["status"] == "active":
+                    token = secrets.token_urlsafe(24)
+                    expires_at = _utcnow() + timedelta(seconds=self.token_ttl_seconds)
+                    self.sessions[token] = {
+                        "user_id": user["user_id"],
+                        "expires_at": expires_at,
+                    }
+                    return {
+                        "access_token": token,
+                        "token_type": "Bearer",
+                        "expires_in": self.token_ttl_seconds,
+                        "user": self.public_user(user),
+                    }
+        return None
+
+    def logout(self, token: str) -> bool:
+        with self.lock:
+            return self.sessions.pop(token, None) is not None
+
+    def get_user_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        with self.lock:
+            self._cleanup_sessions()
+            session = self.sessions.get(token)
+            if not session:
+                return None
+            user = self.users.get(session["user_id"])
+            if not user or user.get("status") != "active":
+                return None
+            return deepcopy(user)
+
+    def public_user(self, user: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "user_id": user["user_id"],
+            "username": user["username"],
+            "name": user["name"],
+            "role_name": user["role_name"],
+            "avatar_url": user.get("avatar_url"),
+        }
+
+    def profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+        user = self.users.get(user_id)
+        if not user:
+            return None
+        return {
+            "user_id": user["user_id"],
+            "username": user["username"],
+            "name": user["name"],
+            "role_name": user["role_name"],
+            "national_id": user.get("national_id"),
+            "phone_number": user.get("phone_number"),
+            "email": user["email"],
+            "avatar_url": user.get("avatar_url"),
+            "last_password_reset_at": user.get("last_password_reset_at"),
+            "status": user["status"],
+        }
+
+    def update_profile(self, user_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        with self.lock:
+            user = self.users.get(user_id)
+            if not user:
+                return None
+            for field in ["name", "national_id", "phone_number", "email", "avatar_url"]:
+                if field in payload and payload[field] is not None:
+                    user[field] = payload[field]
+            return self.profile(user_id)
+
+    def reset_password(self, user_id: str, new_password: Optional[str] = None) -> bool:
+        with self.lock:
+            user = self.users.get(user_id)
+            if not user:
+                return False
+            if new_password:
+                user["password"] = new_password
+            user["last_password_reset_at"] = _isoformat(_utcnow())
+            return True
+
+    def delete_user(self, user_id: str) -> bool:
+        with self.lock:
+            existed = self.users.pop(user_id, None)
+            if not existed:
+                return False
+            self.sessions = {
+                token: session
+                for token, session in self.sessions.items()
+                if session.get("user_id") != user_id
+            }
+            return True
+
+    def list_users(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "user_id": user["user_id"],
+                "name": user["name"],
+                "email": user["email"],
+                "user_group": user["user_group"],
+                "group_id": user["group_id"],
+                "national_id": user.get("national_id"),
+                "phone_number": user.get("phone_number"),
+                "status": user["status"],
+            }
+            for user in self.users.values()
+        ]
+
+    def create_user(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            user_id = f"usr-{secrets.token_hex(4)}"
+            group = self.groups.get(payload["group_id"])
+            user = {
+                "user_id": user_id,
+                "username": payload.get("username") or payload["email"].split("@")[0],
+                "password": payload["password"],
+                "name": payload["name"],
+                "role_name": group["name"] if group else "General",
+                "email": payload["email"],
+                "group_id": payload["group_id"],
+                "user_group": group["name"] if group else "General",
+                "national_id": payload.get("national_id"),
+                "phone_number": payload.get("phone_number"),
+                "avatar_url": payload.get("avatar_url"),
+                "status": payload["status"],
+                "last_password_reset_at": _isoformat(_utcnow()),
+            }
+            self.users[user_id] = user
+            return self.list_users()[-1]
+
+    def update_user(self, user_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        with self.lock:
+            user = self.users.get(user_id)
+            if not user:
+                return None
+            for field in ["name", "email", "national_id", "phone_number", "status", "avatar_url"]:
+                if field in payload and payload[field] is not None:
+                    user[field] = payload[field]
+            if payload.get("password"):
+                user["password"] = payload["password"]
+                user["last_password_reset_at"] = _isoformat(_utcnow())
+            if payload.get("group_id"):
+                group = self.groups.get(payload["group_id"])
+                user["group_id"] = payload["group_id"]
+                if group:
+                    user["user_group"] = group["name"]
+                    user["role_name"] = group["name"]
+            for item in self.list_users():
+                if item["user_id"] == user_id:
+                    return item
+        return None
+
+    def list_groups(self) -> List[Dict[str, Any]]:
+        return [deepcopy(group) for group in self.groups.values()]
+
+    def create_group(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            group_id = f"grp-{secrets.token_hex(4)}"
+            group = {
+                "group_id": group_id,
+                "name": payload["name"],
+                "permissions": deepcopy(payload["permissions"]),
+            }
+            self.groups[group_id] = group
+            return deepcopy(group)
+
+    def update_group(self, group_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        with self.lock:
+            group = self.groups.get(group_id)
+            if not group:
+                return None
+            if payload.get("name"):
+                group["name"] = payload["name"]
+            if payload.get("permissions") is not None:
+                group["permissions"] = deepcopy(payload["permissions"])
+            for user in self.users.values():
+                if user.get("group_id") == group_id:
+                    user["user_group"] = group["name"]
+                    user["role_name"] = group["name"]
+            return deepcopy(group)
+
+    def delete_group(self, group_id: str) -> bool:
+        with self.lock:
+            if group_id not in self.groups:
+                return False
+            for user in self.users.values():
+                if user.get("group_id") == group_id:
+                    user["group_id"] = "grp-general"
+                    user["user_group"] = "General"
+                    user["role_name"] = "General"
+            self.groups.pop(group_id, None)
+            return True
+
+    def list_notifications(self) -> List[Dict[str, Any]]:
+        return [deepcopy(item) for item in self.notifications]
+
+    def mark_notification_read(self, notification_id: str) -> Optional[Dict[str, Any]]:
+        with self.lock:
+            for notification in self.notifications:
+                if notification["notification_id"] == notification_id:
+                    notification["unread"] = False
+                    return deepcopy(notification)
+        return None
+
+    def mark_all_notifications_read(self, notification_type: Optional[str] = None) -> Dict[str, int]:
+        with self.lock:
+            count = 0
+            for notification in self.notifications:
+                if notification_type and notification.get("type") != notification_type:
+                    continue
+                if notification.get("unread"):
+                    notification["unread"] = False
+                    count += 1
+            unread_count = sum(1 for item in self.notifications if item.get("unread"))
+            return {"marked_count": count, "unread_count": unread_count}
+
+    def list_assignees(self, query: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        items = []
+        for user in self.users.values():
+            if status and user["status"] != status:
+                continue
+            haystack = f"{user['name']} {user['email']} {user['role_name']}".lower()
+            if query and query.lower() not in haystack:
+                continue
+            items.append(
+                {
+                    "user_id": user["user_id"],
+                    "name": user["name"],
+                    "role_name": user["role_name"],
+                    "avatar_url": user.get("avatar_url"),
+                    "status": user["status"],
+                }
+            )
+        return items
+
+    def list_enforcement_points(self, query: Optional[str] = None, kind: Optional[str] = None) -> List[Dict[str, Any]]:
+        items = []
+        for point in self.enforcement_points:
+            if kind and point["type"] != kind:
+                continue
+            haystack = f"{point['name']} {point.get('location', '')}".lower()
+            if query and query.lower() not in haystack:
+                continue
+            items.append(deepcopy(point))
+        return items
+
+    def create_export_job(
+        self,
+        export_format: str,
+        file_prefix: str,
+        report_type: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        with self.lock:
+            export_id = f"exp-{secrets.token_hex(4)}"
+            created_at = _utcnow()
+            job = {
+                "export_id": export_id,
+                "status": "completed",
+                "format": export_format,
+                "file_name": f"{file_prefix}-{created_at.strftime('%Y%m%d%H%M%S')}.{export_format.lower()}",
+                "download_url": None,
+                "created_at": _isoformat(created_at),
+                "completed_at": _isoformat(created_at),
+                "report_type": report_type or file_prefix,
+                "filters": deepcopy(filters or {}),
+            }
+            self.export_jobs[export_id] = job
+            return deepcopy(job)
+
+    def get_export_job(self, export_id: str) -> Optional[Dict[str, Any]]:
+        job = self.export_jobs.get(export_id)
+        return deepcopy(job) if job else None
+
+    def get_action_assignment(self, action_id: str) -> Optional[Dict[str, Any]]:
+        item = self.action_assignments.get(action_id)
+        return deepcopy(item) if item else None
+
+    def assign_action(self, action_id: str, assignee: Dict[str, Any], handover_note: str = "") -> Dict[str, Any]:
+        with self.lock:
+            payload = {
+                "assignee": deepcopy(assignee),
+                "handover_note": handover_note,
+                "assigned_at": _isoformat(_utcnow()),
+            }
+            self.action_assignments[action_id] = payload
+            return deepcopy(payload)
+
+    def append_action_note(self, action_id: str, author_name: str, content: str) -> Dict[str, Any]:
+        with self.lock:
+            note = {
+                "note_id": f"note-{secrets.token_hex(4)}",
+                "author_name": author_name,
+                "created_at": _isoformat(_utcnow()),
+                "content": content,
+            }
+            self.action_notes.setdefault(action_id, []).append(note)
+            return deepcopy(note)
+
+    def get_action_notes(self, action_id: str) -> List[Dict[str, Any]]:
+        return deepcopy(self.action_notes.get(action_id, []))
+
+
+_state: Optional[DashboardState] = None
+
+
+def get_dashboard_state() -> DashboardState:
+    global _state
+    if _state is None:
+        _state = DashboardState()
+    return _state

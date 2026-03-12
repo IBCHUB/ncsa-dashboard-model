@@ -77,29 +77,6 @@ services:
     networks:
       - tcti-network
 
-  # Next.js Dashboard
-  dashboard:
-    build:
-      context: ./dashboard
-      dockerfile: Dockerfile
-    container_name: tcti-dashboard
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=production
-      - AI_SERVICE_URL=http://ai-service:8000
-      - AI_SERVICE_API_KEY=${AI_SERVICE_API_KEY:-tcti-dashboard-key}
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - WAREHOUSE_INDEX=tcti-warehouse
-    depends_on:
-      ai-service:
-        condition: service_healthy
-    volumes:
-      - ./data_lake:/app/data_lake:ro
-    networks:
-      - tcti-network
-
 volumes:
   ai-model-cache:
   es-data:

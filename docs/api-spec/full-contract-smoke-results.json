@@ -1,0 +1,1579 @@
+{
+  "summary": {
+    "total_routes": 67,
+    "passed": 67,
+    "failed": 0
+  },
+  "results": [
+    {
+      "name": "canonical_login",
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "access_token",
+        "expires_in",
+        "token_type",
+        "user"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "canonical_me",
+      "method": "GET",
+      "path": "/api/v1/auth/me",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "avatar_url",
+        "name",
+        "role_name",
+        "user_id",
+        "username"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "lookup_threat_types",
+      "method": "GET",
+      "path": "/api/v1/lookups/threat-types?query=phish",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "lookup_severities",
+      "method": "GET",
+      "path": "/api/v1/lookups/severities",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "lookup_risk_levels",
+      "method": "GET",
+      "path": "/api/v1/lookups/risk-levels",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "lookup_sources",
+      "method": "GET",
+      "path": "/api/v1/lookups/sources?query=abuse",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "lookup_export_formats",
+      "method": "GET",
+      "path": "/api/v1/lookups/export-formats",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "lookup_assignees",
+      "method": "GET",
+      "path": "/api/v1/lookups/assignees?status=active&query=nat",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "lookup_enforcement_points",
+      "method": "GET",
+      "path": "/api/v1/lookups/enforcement-points?type=firewall",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "executive_dashboard",
+      "method": "GET",
+      "path": "/api/v1/executive/dashboard?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "attack_origin_map",
+        "attack_volume_trend",
+        "exposure_today",
+        "severity_distribution",
+        "threat_level",
+        "threat_volume_severity"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "executive_preview",
+      "method": "POST",
+      "path": "/api/v1/reports/executive/preview",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "attack_origin_map",
+        "attack_volume_trend",
+        "exposure_today",
+        "filters",
+        "severity_distribution",
+        "threat_level",
+        "threat_volume_severity"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "executive_export",
+      "method": "POST",
+      "path": "/api/v1/reports/executive/export",
+      "status_code": 202,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "completed_at",
+        "created_at",
+        "download_url",
+        "export_id",
+        "file_name",
+        "filters",
+        "format",
+        "report_type",
+        "status"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "operations_dashboard",
+      "method": "GET",
+      "path": "/api/v1/operations/dashboard?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "attack_time_heatmap",
+        "incident_by_severity",
+        "overview",
+        "target_sectors",
+        "top_attack_origins",
+        "top_intelligence_sources",
+        "top_threat_types"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "operations_report",
+      "method": "GET",
+      "path": "/api/v1/operations/reports/attack-origin?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "filters",
+        "ranking",
+        "report_key",
+        "severity_distribution",
+        "summary",
+        "title",
+        "top_chart",
+        "trend_comparison"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "operations_preview",
+      "method": "POST",
+      "path": "/api/v1/reports/operations/attack-origin/preview",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "filters",
+        "ranking",
+        "report_key",
+        "severity_distribution",
+        "summary",
+        "title",
+        "top_chart",
+        "trend_comparison"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "operations_export",
+      "method": "POST",
+      "path": "/api/v1/reports/operations/attack-origin/export",
+      "status_code": 202,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "completed_at",
+        "created_at",
+        "download_url",
+        "export_id",
+        "file_name",
+        "filters",
+        "format",
+        "report_type",
+        "status"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "attack_time_report",
+      "method": "GET",
+      "path": "/api/v1/operations/attack-time-report?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "events",
+        "filters",
+        "heatmap",
+        "summary"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "operations_event_detail",
+      "method": "GET",
+      "path": "/api/v1/operations/events/dl-1",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "event_id",
+        "formatted",
+        "raw_json"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "actions_list",
+      "method": "GET",
+      "path": "/api/v1/actions?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "facets",
+        "items",
+        "summary"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "actions_detail",
+      "method": "GET",
+      "path": "/api/v1/actions/wh-1",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "action",
+        "activity_log",
+        "available_actions",
+        "context",
+        "evidence_graph",
+        "notes",
+        "owner",
+        "related_evidence",
+        "related_evidence_graph",
+        "related_ioc_count",
+        "remediation_plan"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "actions_related_iocs",
+      "method": "GET",
+      "path": "/api/v1/actions/wh-1/related-iocs",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "actions_assign",
+      "method": "POST",
+      "path": "/api/v1/actions/wh-1/assign",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "action_id",
+        "audit_id",
+        "message",
+        "status"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "actions_false_positive",
+      "method": "POST",
+      "path": "/api/v1/actions/wh-1/false-positive",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "action_id",
+        "audit_id",
+        "message",
+        "status"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "actions_block_ip",
+      "method": "POST",
+      "path": "/api/v1/actions/wh-2/block-ip",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "action_id",
+        "audit_id",
+        "execution",
+        "message",
+        "status"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "actions_preview",
+      "method": "POST",
+      "path": "/api/v1/reports/actions/preview",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "facets",
+        "items",
+        "summary"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "actions_export",
+      "method": "POST",
+      "path": "/api/v1/reports/actions/export",
+      "status_code": 202,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "completed_at",
+        "created_at",
+        "download_url",
+        "export_id",
+        "file_name",
+        "filters",
+        "format",
+        "report_type",
+        "status"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "iocs_list",
+      "method": "GET",
+      "path": "/api/v1/iocs?high_risk_only=true",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "facets",
+        "items",
+        "quick_filters",
+        "summary"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "iocs_detail",
+      "method": "GET",
+      "path": "/api/v1/iocs/domain::malicious.example",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "abuse_contact",
+        "asn_infrastructure",
+        "enrichment_context",
+        "geo_location_owner",
+        "history_preview",
+        "key_identifiers",
+        "network_ownership",
+        "relationship",
+        "risk_assessment",
+        "score_breakdown",
+        "target_sector"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "iocs_events",
+      "method": "GET",
+      "path": "/api/v1/iocs/domain::malicious.example/events",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "ioc_analytics_summary",
+      "method": "GET",
+      "path": "/api/v1/ioc-analytics?tab=ioc-summary",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "cards",
+        "charts",
+        "tab"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "ioc_analytics_import",
+      "method": "GET",
+      "path": "/api/v1/ioc-analytics?tab=statistics-import",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "cards",
+        "charts",
+        "tab"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "report_ioc_preview",
+      "method": "POST",
+      "path": "/api/v1/reports/ioc/preview",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "charts",
+        "filters",
+        "items",
+        "summary"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "report_ioc_export",
+      "method": "POST",
+      "path": "/api/v1/reports/ioc/export",
+      "status_code": 202,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "completed_at",
+        "created_at",
+        "download_url",
+        "export_id",
+        "file_name",
+        "filters",
+        "format",
+        "report_type",
+        "status"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "report_most_frequent_preview",
+      "method": "POST",
+      "path": "/api/v1/reports/most-frequent-threats/preview",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "filters",
+        "items",
+        "summary"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "export_status",
+      "method": "GET",
+      "path": "/api/v1/exports/exp-5e2c5348",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "completed_at",
+        "created_at",
+        "download_url",
+        "export_id",
+        "file_name",
+        "filters",
+        "format",
+        "report_type",
+        "status"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "news_list",
+      "method": "GET",
+      "path": "/api/v1/news",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "news_detail",
+      "method": "GET",
+      "path": "/api/v1/news/d7add9de074d949e",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "article_id",
+        "content_excerpt",
+        "published_at",
+        "references",
+        "related_ioc_count",
+        "related_ioc_records",
+        "related_iocs",
+        "snippets",
+        "source",
+        "source_type",
+        "summary",
+        "title",
+        "url"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "account_profile",
+      "method": "GET",
+      "path": "/api/v1/account/profile",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "avatar_url",
+        "email",
+        "last_password_reset_at",
+        "name",
+        "national_id",
+        "phone_number",
+        "role_name",
+        "status",
+        "user_id",
+        "username"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "account_profile_update",
+      "method": "PATCH",
+      "path": "/api/v1/account/profile",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "avatar_url",
+        "email",
+        "last_password_reset_at",
+        "name",
+        "national_id",
+        "phone_number",
+        "role_name",
+        "status",
+        "user_id",
+        "username"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "account_password_reset",
+      "method": "POST",
+      "path": "/api/v1/account/password/reset",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "message",
+        "success"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "users_create",
+      "method": "POST",
+      "path": "/api/v1/users",
+      "status_code": 201,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "email",
+        "group_id",
+        "name",
+        "national_id",
+        "phone_number",
+        "status",
+        "user_group",
+        "user_id"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "users_list",
+      "method": "GET",
+      "path": "/api/v1/users?status=active",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "users_update",
+      "method": "PATCH",
+      "path": "/api/v1/users/usr-99060ee5",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "email",
+        "group_id",
+        "name",
+        "national_id",
+        "phone_number",
+        "status",
+        "user_group",
+        "user_id"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "users_delete",
+      "method": "DELETE",
+      "path": "/api/v1/users/usr-99060ee5",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "message",
+        "success"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "groups_create",
+      "method": "POST",
+      "path": "/api/v1/user-groups",
+      "status_code": 201,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "group_id",
+        "name",
+        "permissions"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "groups_list",
+      "method": "GET",
+      "path": "/api/v1/user-groups",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "groups_update",
+      "method": "PATCH",
+      "path": "/api/v1/user-groups/grp-8614bff7",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "group_id",
+        "name",
+        "permissions"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "groups_delete",
+      "method": "DELETE",
+      "path": "/api/v1/user-groups/grp-8614bff7",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "message",
+        "success"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "notifications_list",
+      "method": "GET",
+      "path": "/api/v1/notifications?unread_only=true",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items",
+        "unread_count"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "notifications_read_one",
+      "method": "POST",
+      "path": "/api/v1/notifications/ntf-001/read",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "created_at",
+        "ioc_summary",
+        "linked_resource_id",
+        "linked_resource_type",
+        "message",
+        "notification_id",
+        "relative_time",
+        "title",
+        "type",
+        "unread"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "notifications_read_all",
+      "method": "POST",
+      "path": "/api/v1/notifications/read-all",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "marked_count",
+        "unread_count"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "compat_login",
+      "method": "POST",
+      "path": "/login",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "expires_in",
+        "token",
+        "token_type",
+        "user"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_dashboard",
+      "method": "GET",
+      "path": "/dashboard?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "ActiveIOC",
+        "CriticalIOCActive",
+        "NewIOC",
+        "SourcesActive"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_incident_by_severity",
+      "method": "GET",
+      "path": "/incidentbyseverity?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "Color",
+        "Name",
+        "Percentage",
+        "Value"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_attack_time",
+      "method": "GET",
+      "path": "/attacktime?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "data",
+        "mode",
+        "xAxis",
+        "yAxis"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_intelligence_sources",
+      "method": "GET",
+      "path": "/intelligencesources?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "Name",
+        "Value"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_threat_type_chart",
+      "method": "GET",
+      "path": "/threattype?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "Name",
+        "Value"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_countries_by_threat_association",
+      "method": "GET",
+      "path": "/countriesbythreatassociation?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "Name",
+        "Value"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_target_sectors",
+      "method": "GET",
+      "path": "/targetsectors?start_date=2026-03-10&end_date=2026-03-11",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "Name",
+        "Value"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_lookup_threat_type",
+      "method": "GET",
+      "path": "/threat-type",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "Id",
+        "Name",
+        "Value"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_lookup_source",
+      "method": "GET",
+      "path": "/source",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "Id",
+        "Name",
+        "Value"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_lookup_severity",
+      "method": "GET",
+      "path": "/severity",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "Id",
+        "Name",
+        "Value"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_lookup_risk_level",
+      "method": "GET",
+      "path": "/rick-level",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "Id",
+        "Name",
+        "Value"
+      ],
+      "ok": true
+    },
+    {
+      "name": "compat_lookup_export_type",
+      "method": "GET",
+      "path": "/export-type",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "res_result"
+      ],
+      "sample_keys": [
+        "Id",
+        "Name",
+        "Value"
+      ],
+      "ok": true
+    },
+    {
+      "name": "canonical_logout",
+      "method": "POST",
+      "path": "/api/v1/auth/logout",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "logged_out"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "canonical_relogin",
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "access_token",
+        "expires_in",
+        "token_type",
+        "user"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    },
+    {
+      "name": "account_delete",
+      "method": "DELETE",
+      "path": "/api/v1/account",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "message",
+        "success"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "error": null,
+      "ok": true
+    }
+  ]
+}

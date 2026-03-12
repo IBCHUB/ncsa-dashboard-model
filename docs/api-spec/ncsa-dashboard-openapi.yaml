@@ -1,0 +1,3528 @@
+openapi: 3.0.3
+info:
+  title: NCSA Dashboard Web API
+  version: 1.0.0
+  description: |
+    สัญญา API หลักสำหรับ `ncsa-dashboard-web`
+
+    หลักการสำคัญ:
+    - canonical path ใช้ `/api/v1/...`
+    - response มาตรฐานใช้ `data`, `meta`, `error`
+    - authentication ใช้ `Bearer token`
+    - web client สามารถเก็บ token ใน cookie ชื่อ `token` ได้ตามพฤติกรรมของ UI ปัจจุบัน
+    - analytics ทั้งหมดใช้ timezone เริ่มต้น `Asia/Bangkok`
+servers:
+  - url: https://api.example.com
+    description: Production placeholder
+  - url: http://localhost:8000
+    description: Local backend
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Lookups
+  - name: Executive
+  - name: Operations
+  - name: Actions
+  - name: IOCs
+  - name: Reports
+  - name: News
+  - name: Account
+  - name: Users
+  - name: Notifications
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: เข้าสู่ระบบ
+      operationId: login
+      security: []
+      x-compat-aliases:
+        - path: /login
+          method: POST
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              default:
+                value:
+                  username: analyst01
+                  password: secret-password
+      responses:
+        '200':
+          description: เข้าสู่ระบบสำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              examples:
+                success:
+                  value:
+                    data:
+                      access_token: jwt-token
+                      token_type: Bearer
+                      expires_in: 3600
+                      user:
+                        user_id: usr-001
+                        username: analyst01
+                        name: Natakarn Kanjanamas
+                        role_name: Admin
+                        avatar_url: /avatars/usr-001.png
+                    meta:
+                      request_id: req-login-001
+                      generated_at: '2026-03-11T11:45:00+07:00'
+                      timezone: Asia/Bangkok
+                    error: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: ดึงข้อมูล session ปัจจุบัน
+      operationId: getCurrentSession
+      responses:
+        '200':
+          description: ข้อมูลผู้ใช้ปัจจุบัน
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: ออกจากระบบ
+      operationId: logout
+      responses:
+        '200':
+          description: ออกจากระบบสำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+
+  /api/v1/lookups/threat-types:
+    get:
+      tags: [Lookups]
+      summary: รายการ threat types
+      operationId: listThreatTypes
+      x-compat-aliases:
+        - path: /threat-type
+          method: GET
+      parameters:
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/ActiveOnly'
+      responses:
+        '200':
+          description: threat type options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupListResponse'
+
+  /api/v1/lookups/severities:
+    get:
+      tags: [Lookups]
+      summary: รายการ severity
+      operationId: listSeverities
+      x-compat-aliases:
+        - path: /severity
+          method: GET
+      parameters:
+        - $ref: '#/components/parameters/ActiveOnly'
+      responses:
+        '200':
+          description: severity options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupListResponse'
+
+  /api/v1/lookups/risk-levels:
+    get:
+      tags: [Lookups]
+      summary: รายการ risk levels
+      operationId: listRiskLevels
+      x-compat-aliases:
+        - path: /rick-level
+          method: GET
+      parameters:
+        - $ref: '#/components/parameters/ActiveOnly'
+      responses:
+        '200':
+          description: risk level options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupListResponse'
+
+  /api/v1/lookups/sources:
+    get:
+      tags: [Lookups]
+      summary: รายการ intelligence sources
+      operationId: listSources
+      x-compat-aliases:
+        - path: /source
+          method: GET
+      parameters:
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/ActiveOnly'
+      responses:
+        '200':
+          description: source options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupListResponse'
+
+  /api/v1/lookups/export-formats:
+    get:
+      tags: [Lookups]
+      summary: รายการ export formats
+      operationId: listExportFormats
+      x-compat-aliases:
+        - path: /export-type
+          method: GET
+      responses:
+        '200':
+          description: export format options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupListResponse'
+
+  /api/v1/lookups/assignees:
+    get:
+      tags: [Lookups]
+      summary: รายชื่อผู้รับมอบหมาย
+      operationId: listAssignees
+      parameters:
+        - $ref: '#/components/parameters/Query'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, inactive]
+      responses:
+        '200':
+          description: assignee options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupAssigneeResponse'
+
+  /api/v1/lookups/enforcement-points:
+    get:
+      tags: [Lookups]
+      summary: รายการ enforcement points
+      operationId: listEnforcementPoints
+      parameters:
+        - $ref: '#/components/parameters/Query'
+        - name: type
+          in: query
+          schema:
+            type: string
+            example: firewall
+      responses:
+        '200':
+          description: enforcement point options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnforcementPointListResponse'
+
+  /api/v1/executive/dashboard:
+    get:
+      tags: [Executive]
+      summary: ข้อมูล executive dashboard ทั้งหน้า
+      operationId: getExecutiveDashboard
+      parameters:
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+      responses:
+        '200':
+          description: executive dashboard payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveDashboardResponse'
+
+  /api/v1/reports/executive/preview:
+    post:
+      tags: [Reports]
+      summary: preview รายงาน executive dashboard
+      operationId: previewExecutiveReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecutiveReportRequest'
+      responses:
+        '200':
+          description: executive preview payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveDashboardResponse'
+
+  /api/v1/reports/executive/export:
+    post:
+      tags: [Reports]
+      summary: สร้าง export job สำหรับ executive dashboard
+      operationId: exportExecutiveReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IocReportExportRequest'
+      responses:
+        '202':
+          description: export job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJobResponse'
+
+  /api/v1/operations/dashboard:
+    get:
+      tags: [Operations]
+      summary: ข้อมูล operations dashboard ทั้งหน้า
+      operationId: getOperationsDashboard
+      x-compat-aliases:
+        - path: /dashboard
+          method: GET
+        - path: /incidentbyseverity
+          method: GET
+        - path: /attacktime
+          method: GET
+        - path: /intelligencesources
+          method: GET
+        - path: /threattype
+          method: GET
+        - path: /countriesbythreatassociation
+          method: GET
+        - path: /targetsectors
+          method: GET
+      parameters:
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+      responses:
+        '200':
+          description: operations dashboard payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationsDashboardResponse'
+
+  /api/v1/operations/reports/{report_key}:
+    get:
+      tags: [Operations]
+      summary: รายงาน detail ของ top list
+      operationId: getOperationsReport
+      parameters:
+        - name: report_key
+          in: path
+          required: true
+          schema:
+            type: string
+            enum:
+              - intelligence-sources
+              - threat-types
+              - attack-origins
+              - target-sectors
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Query'
+        - name: threat_types
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: sources
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: severities
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '200':
+          description: report detail payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationsReportResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/reports/operations/{report_key}/preview:
+    post:
+      tags: [Reports]
+      summary: preview รายงาน operations detail
+      operationId: previewOperationsReport
+      parameters:
+        - name: report_key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationsReportPreviewRequest'
+      responses:
+        '200':
+          description: operations report preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationsReportResponse'
+
+  /api/v1/reports/operations/{report_key}/export:
+    post:
+      tags: [Reports]
+      summary: สร้าง export job สำหรับ operations detail report
+      operationId: exportOperationsReport
+      parameters:
+        - name: report_key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IocReportExportRequest'
+      responses:
+        '202':
+          description: export job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJobResponse'
+
+  /api/v1/operations/attack-time-report:
+    get:
+      tags: [Operations]
+      summary: รายงาน attack time analysis
+      operationId: getAttackTimeReport
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+        - name: threat_types
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: sources
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: severities
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '200':
+          description: attack time report payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttackTimeReportResponse'
+
+  /api/v1/operations/events/{event_id}:
+    get:
+      tags: [Operations]
+      summary: รายละเอียด event และ raw payload
+      operationId: getOperationEvent
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: event detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttackEventDetailResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/actions:
+    get:
+      tags: [Actions]
+      summary: รายการ action tickets พร้อม summary และ facets
+      operationId: listActions
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+        - name: threat_types
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: sources
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: severities
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: status
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [open, in_progress, closed]
+      responses:
+        '200':
+          description: paged action tickets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionListResponse'
+
+  /api/v1/actions/{action_id}:
+    get:
+      tags: [Actions]
+      summary: รายละเอียด action ticket
+      operationId: getActionDetail
+      parameters:
+        - name: action_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: action detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionDetailResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/actions/{action_id}/related-iocs:
+    get:
+      tags: [Actions]
+      summary: IOC ที่เกี่ยวข้องกับ action ticket
+      operationId: listRelatedIocs
+      parameters:
+        - name: action_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: related IOC list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelatedIocsResponse'
+
+  /api/v1/actions/{action_id}/assign:
+    post:
+      tags: [Actions]
+      summary: มอบหมาย action ticket
+      operationId: assignAction
+      parameters:
+        - name: action_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionAssignRequest'
+            examples:
+              default:
+                value:
+                  assignee_id: usr-002
+                  handover_note: Investigate source IP and confirm gateway block.
+      responses:
+        '200':
+          description: assignment updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionMutationResponse'
+
+  /api/v1/actions/{action_id}/false-positive:
+    post:
+      tags: [Actions]
+      summary: ปิด ticket เป็น false positive
+      operationId: markFalsePositive
+      parameters:
+        - name: action_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/FalsePositiveRequest'
+      responses:
+        '200':
+          description: false positive recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionMutationResponse'
+
+  /api/v1/actions/{action_id}/block-ip:
+    post:
+      tags: [Actions]
+      summary: สั่ง block IP
+      operationId: blockActionIp
+      parameters:
+        - name: action_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockIpRequest'
+            examples:
+              default:
+                value:
+                  target_ioc: 192.168.10.5
+                  enforcement_point_ids: [fw-bkk-01, waf-bkk-02]
+                  duration_mode: temporary
+                  duration_days: 7
+                  reason: Block confirmed malicious traffic
+      responses:
+        '200':
+          description: block execution result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionMutationResponse'
+
+  /api/v1/reports/actions/preview:
+    post:
+      tags: [Reports]
+      summary: preview รายงาน action center
+      operationId: previewActionReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionReportRequest'
+      responses:
+        '200':
+          description: action report preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionListResponse'
+
+  /api/v1/reports/actions/export:
+    post:
+      tags: [Reports]
+      summary: สร้าง export job สำหรับ action center
+      operationId: exportActionReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionReportRequest'
+      responses:
+        '202':
+          description: export job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJobResponse'
+
+  /api/v1/iocs:
+    get:
+      tags: [IOCs]
+      summary: IOC list พร้อม quick filters, facets และ global search
+      operationId: listIocs
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortOrder'
+        - name: sources
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: threat_types
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: risk_levels
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: ioc_types
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: severities
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: high_risk_only
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: IOC resource list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IocListResponse'
+
+  /api/v1/iocs/{ioc_id}:
+    get:
+      tags: [IOCs]
+      summary: IOC detail
+      operationId: getIocDetail
+      parameters:
+        - name: ioc_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: IOC detail payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IocDetailResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/iocs/{ioc_id}/events:
+    get:
+      tags: [IOCs]
+      summary: IOC history / observations
+      operationId: listIocEvents
+      parameters:
+        - name: ioc_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: IOC event history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IocEventsResponse'
+
+  /api/v1/ioc-analytics:
+    get:
+      tags: [IOCs]
+      summary: IOC analytics dashboard
+      operationId: getIocAnalytics
+      parameters:
+        - name: tab
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [ioc-summary, statistics-import]
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+      responses:
+        '200':
+          description: IOC analytics payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IocAnalyticsResponse'
+
+  /api/v1/reports/ioc/preview:
+    post:
+      tags: [Reports]
+      summary: preview รายงาน IOC
+      operationId: previewIocReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IocReportPreviewRequest'
+      responses:
+        '200':
+          description: report preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IocReportPreviewResponse'
+
+  /api/v1/reports/ioc/export:
+    post:
+      tags: [Reports]
+      summary: สร้าง export job สำหรับรายงาน IOC
+      operationId: exportIocReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IocReportExportRequest'
+      responses:
+        '202':
+          description: export job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJobResponse'
+
+  /api/v1/reports/most-frequent-threats/preview:
+    post:
+      tags: [Reports]
+      summary: preview รายงาน most frequent threats
+      operationId: previewMostFrequentThreats
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MostFrequentThreatsPreviewRequest'
+      responses:
+        '200':
+          description: most frequent threats preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MostFrequentThreatsPreviewResponse'
+
+  /api/v1/exports/{export_id}:
+    get:
+      tags: [Reports]
+      summary: เช็กสถานะ export job
+      operationId: getExportJob
+      parameters:
+        - name: export_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: export job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJobResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/news:
+    get:
+      tags: [News]
+      summary: รายการข่าวไซเบอร์
+      operationId: listNews
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+        - $ref: '#/components/parameters/SortBy'
+        - name: sources
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '200':
+          description: paged news list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NewsListResponse'
+
+  /api/v1/news/{article_id}:
+    get:
+      tags: [News]
+      summary: รายละเอียดข่าวไซเบอร์
+      operationId: getNewsArticle
+      parameters:
+        - name: article_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+      responses:
+        '200':
+          description: article detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NewsDetailResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/account/profile:
+    get:
+      tags: [Account]
+      summary: ข้อมูล profile ของผู้ใช้ปัจจุบัน
+      operationId: getProfile
+      responses:
+        '200':
+          description: current profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileResponse'
+    patch:
+      tags: [Account]
+      summary: แก้ไข profile
+      operationId: updateProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileUpdateRequest'
+      responses:
+        '200':
+          description: updated profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileResponse'
+
+  /api/v1/account/password/reset:
+    post:
+      tags: [Account]
+      summary: reset หรือเปลี่ยนรหัสผ่าน
+      operationId: resetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequest'
+      responses:
+        '200':
+          description: password reset confirmation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleActionResponse'
+
+  /api/v1/account:
+    delete:
+      tags: [Account]
+      summary: ลบบัญชีผู้ใช้ของตนเอง
+      operationId: deleteOwnAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteAccountRequest'
+      responses:
+        '200':
+          description: account deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleActionResponse'
+
+  /api/v1/users:
+    get:
+      tags: [Users]
+      summary: รายการผู้ใช้
+      operationId: listUsers
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Query'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, inactive]
+        - name: group_ids
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '200':
+          description: paged users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+    post:
+      tags: [Users]
+      summary: สร้างผู้ใช้
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '201':
+          description: created user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+
+  /api/v1/users/{user_id}:
+    patch:
+      tags: [Users]
+      summary: แก้ไขผู้ใช้
+      operationId: updateUser
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+      responses:
+        '200':
+          description: updated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+    delete:
+      tags: [Users]
+      summary: ลบผู้ใช้
+      operationId: deleteUser
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: user deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleActionResponse'
+
+  /api/v1/user-groups:
+    get:
+      tags: [Users]
+      summary: รายการ user groups
+      operationId: listUserGroups
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Query'
+      responses:
+        '200':
+          description: paged user groups
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserGroupListResponse'
+    post:
+      tags: [Users]
+      summary: สร้าง user group
+      operationId: createUserGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserGroupCreateRequest'
+      responses:
+        '201':
+          description: created user group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserGroupResponse'
+
+  /api/v1/user-groups/{group_id}:
+    patch:
+      tags: [Users]
+      summary: แก้ไข user group
+      operationId: updateUserGroup
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserGroupUpdateRequest'
+      responses:
+        '200':
+          description: updated user group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserGroupResponse'
+    delete:
+      tags: [Users]
+      summary: ลบ user group
+      operationId: deleteUserGroup
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: user group deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleActionResponse'
+
+  /api/v1/notifications:
+    get:
+      tags: [Notifications]
+      summary: รายการ notifications
+      operationId: listNotifications
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: unread_only
+          in: query
+          schema:
+            type: boolean
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: notification list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationListResponse'
+
+  /api/v1/notifications/{notification_id}/read:
+    post:
+      tags: [Notifications]
+      summary: ทำเครื่องหมายว่าอ่านแล้ว
+      operationId: markNotificationRead
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: updated notification
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationResponse'
+
+  /api/v1/notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: ทำเครื่องหมายทุก notification ว่าอ่านแล้ว
+      operationId: markAllNotificationsRead
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+      responses:
+        '200':
+          description: bulk update result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkMarkReadResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 20
+    Query:
+      name: query
+      in: query
+      schema:
+        type: string
+    SortBy:
+      name: sort_by
+      in: query
+      schema:
+        type: string
+        default: created_at
+    SortOrder:
+      name: sort_order
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: desc
+    StartDate:
+      name: start_date
+      in: query
+      schema:
+        type: string
+        format: date
+    EndDate:
+      name: end_date
+      in: query
+      schema:
+        type: string
+        format: date
+    ActiveOnly:
+      name: active
+      in: query
+      schema:
+        type: boolean
+        default: true
+  responses:
+    Unauthorized:
+      description: ไม่ได้รับอนุญาต
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: ไม่พบข้อมูล
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ApiMeta:
+      type: object
+      properties:
+        request_id:
+          type: string
+        generated_at:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+          example: Asia/Bangkok
+      required: [generated_at, timezone]
+    PagedMeta:
+      allOf:
+        - $ref: '#/components/schemas/ApiMeta'
+        - type: object
+          properties:
+            page:
+              type: integer
+            page_size:
+              type: integer
+            total:
+              type: integer
+            total_pages:
+              type: integer
+          required: [page, page_size, total, total_pages]
+    ErrorObject:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+      required: [code, message]
+    ErrorEnvelope:
+      type: object
+      properties:
+        data:
+          nullable: true
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          $ref: '#/components/schemas/ErrorObject'
+      required: [meta, error]
+    ResponseBase:
+      type: object
+      properties:
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          $ref: '#/components/schemas/ErrorObject'
+          nullable: true
+      required: [meta, error]
+    PagedResponseBase:
+      type: object
+      properties:
+        meta:
+          $ref: '#/components/schemas/PagedMeta'
+        error:
+          $ref: '#/components/schemas/ErrorObject'
+          nullable: true
+      required: [meta, error]
+    LookupItem:
+      type: object
+      properties:
+        value:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+          nullable: true
+        active:
+          type: boolean
+          default: true
+      required: [value, label]
+    AssigneeItem:
+      type: object
+      properties:
+        user_id:
+          type: string
+        name:
+          type: string
+        role_name:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+        status:
+          type: string
+      required: [user_id, name, role_name, status]
+    EnforcementPoint:
+      type: object
+      properties:
+        enforcement_point_id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        location:
+          type: string
+          nullable: true
+        active:
+          type: boolean
+      required: [enforcement_point_id, name, type, active]
+    UserSummary:
+      type: object
+      properties:
+        user_id:
+          type: string
+        username:
+          type: string
+        name:
+          type: string
+        role_name:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+      required: [user_id, username, name, role_name]
+    LoginRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+      required: [username, password]
+    LoginPayload:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+        user:
+          $ref: '#/components/schemas/UserSummary'
+      required: [access_token, token_type, expires_in, user]
+    LogoutPayload:
+      type: object
+      properties:
+        logged_out:
+          type: boolean
+      required: [logged_out]
+    LookupListPayload:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LookupItem'
+      required: [items]
+    LookupAssigneePayload:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssigneeItem'
+      required: [items]
+    EnforcementPointListPayload:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnforcementPoint'
+      required: [items]
+    TopListItem:
+      type: object
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        value:
+          type: number
+        percentage:
+          type: number
+          nullable: true
+        color:
+          type: string
+          nullable: true
+      required: [key, label, value]
+    SeveritySlice:
+      type: object
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        color:
+          type: string
+        value:
+          type: integer
+        percentage:
+          type: number
+      required: [key, label, color, value, percentage]
+    PrimarySector:
+      type: object
+      properties:
+        name:
+          type: string
+        value:
+          type: integer
+      required: [name, value]
+    ThreatLevelCard:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        level:
+          type: string
+        level_th:
+          type: string
+        score:
+          type: number
+        delta_percent:
+          type: number
+          nullable: true
+        primary_sector:
+          $ref: '#/components/schemas/PrimarySector'
+      required: [date, level, level_th, score, primary_sector]
+    ExposureSummary:
+      type: object
+      properties:
+        total_threats:
+          type: integer
+        ioc_active:
+          type: integer
+        critical_active:
+          type: integer
+        high_active:
+          type: integer
+      required: [total_threats, ioc_active, critical_active, high_active]
+    TreemapNode:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        severity:
+          type: string
+        value:
+          type: integer
+      required: [id, label, severity, value]
+    TreemapPayload:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TreemapNode'
+      required: [nodes]
+    TrendPoint:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        total:
+          type: integer
+        critical:
+          type: integer
+        high:
+          type: integer
+        point_type:
+          type: string
+          enum: [historical, forecast]
+      required: [timestamp, total, critical, high, point_type]
+    ForecastTrendPayload:
+      type: object
+      properties:
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrendPoint'
+        forecast_start_index:
+          type: integer
+      required: [points, forecast_start_index]
+    MapOrigin:
+      type: object
+      properties:
+        country_code:
+          type: string
+          nullable: true
+        country_name:
+          type: string
+        value:
+          type: integer
+        latitude:
+          type: number
+        longitude:
+          type: number
+      required: [country_name, value, latitude, longitude]
+    MapConnection:
+      type: object
+      properties:
+        origin_country:
+          type: string
+        target_country:
+          type: string
+        count:
+          type: integer
+      required: [origin_country, target_country, count]
+    AttackOriginMap:
+      type: object
+      properties:
+        target_country:
+          type: string
+        origins:
+          type: array
+          items:
+            $ref: '#/components/schemas/MapOrigin'
+        connections:
+          type: array
+          items:
+            $ref: '#/components/schemas/MapConnection'
+      required: [target_country, origins, connections]
+    ExecutiveDashboardPayload:
+      type: object
+      properties:
+        threat_level:
+          $ref: '#/components/schemas/ThreatLevelCard'
+        exposure_today:
+          $ref: '#/components/schemas/ExposureSummary'
+        severity_distribution:
+          type: array
+          items:
+            $ref: '#/components/schemas/SeveritySlice'
+        threat_volume_severity:
+          $ref: '#/components/schemas/TreemapPayload'
+        attack_volume_trend:
+          $ref: '#/components/schemas/ForecastTrendPayload'
+        attack_origin_map:
+          $ref: '#/components/schemas/AttackOriginMap'
+        filters:
+          type: object
+          additionalProperties: true
+      required:
+        - threat_level
+        - exposure_today
+        - severity_distribution
+        - threat_volume_severity
+        - attack_volume_trend
+        - attack_origin_map
+    OperationsOverview:
+      type: object
+      properties:
+        active_ioc:
+          type: integer
+        critical_ioc_active:
+          type: integer
+        new_ioc:
+          type: integer
+        sources_active:
+          type: integer
+      required: [active_ioc, critical_ioc_active, new_ioc, sources_active]
+    HeatmapCell:
+      type: object
+      properties:
+        x:
+          type: string
+        y:
+          type: string
+        value:
+          type: integer
+      required: [x, y, value]
+    HeatmapMatrix:
+      type: object
+      properties:
+        mode:
+          type: string
+          example: day-hour
+        x_axis:
+          type: array
+          items:
+            type: string
+        y_axis:
+          type: array
+          items:
+            type: string
+        cells:
+          type: array
+          items:
+            $ref: '#/components/schemas/HeatmapCell'
+      required: [mode, x_axis, y_axis, cells]
+    OperationsDashboardPayload:
+      type: object
+      properties:
+        overview:
+          $ref: '#/components/schemas/OperationsOverview'
+        incident_by_severity:
+          type: array
+          items:
+            $ref: '#/components/schemas/SeveritySlice'
+        attack_time_heatmap:
+          $ref: '#/components/schemas/HeatmapMatrix'
+        top_intelligence_sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/TopListItem'
+        top_threat_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/TopListItem'
+        top_attack_origins:
+          type: array
+          items:
+            $ref: '#/components/schemas/TopListItem'
+        target_sectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/TopListItem'
+      required:
+        - overview
+        - incident_by_severity
+        - attack_time_heatmap
+        - top_intelligence_sources
+        - top_threat_types
+        - top_attack_origins
+        - target_sectors
+    SimpleSeriesPoint:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        value:
+          type: number
+      required: [timestamp, value]
+    TrendSeries:
+      type: object
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        label:
+          type: string
+        color:
+          type: string
+          nullable: true
+        buckets:
+          type: array
+          items:
+            type: string
+        points:
+          type: array
+          items:
+            type: integer
+        total:
+          type: integer
+        direction:
+          type: string
+        change_percent:
+          type: number
+      required: [label, points]
+    SourceSeverityDistributionRow:
+      type: object
+      properties:
+        label:
+          type: string
+        critical:
+          type: integer
+        high:
+          type: integer
+        medium:
+          type: integer
+        low:
+          type: integer
+        clean:
+          type: integer
+          nullable: true
+      required: [label, critical, high, medium, low]
+    RankingItem:
+      type: object
+      properties:
+        rank:
+          type: integer
+        label:
+          type: string
+        group_type:
+          type: string
+          nullable: true
+        change_direction:
+          type: string
+        change_percent:
+          type: number
+        main_threat_type:
+          type: string
+          nullable: true
+        severity_distribution:
+          type: object
+          additionalProperties:
+            type: integer
+        total_events:
+          type: integer
+        share_percent:
+          type: number
+        sources:
+          type: array
+          items:
+            type: string
+        sample_iocs:
+          type: array
+          items:
+            type: string
+        last_seen:
+          type: string
+          format: date-time
+          nullable: true
+      required: [rank, label, total_events, share_percent]
+    OperationsReportPayload:
+      type: object
+      properties:
+        report_key:
+          type: string
+        title:
+          type: string
+        summary:
+          type: object
+          additionalProperties: true
+        filters:
+          type: object
+          additionalProperties: true
+        top_chart:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/TopListItem'
+          required: [items]
+        severity_distribution:
+          type: object
+          properties:
+            rows:
+              type: array
+              items:
+                $ref: '#/components/schemas/SourceSeverityDistributionRow'
+          required: [rows]
+        trend_comparison:
+          type: object
+          properties:
+            series:
+              type: array
+              items:
+                $ref: '#/components/schemas/TrendSeries'
+          required: [series]
+        ranking:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/RankingItem'
+            total:
+              type: integer
+            page:
+              type: integer
+            page_size:
+              type: integer
+          required: [items, total, page, page_size]
+      required: [report_key, title, top_chart, severity_distribution, trend_comparison, ranking]
+    PeriodDescriptor:
+      type: object
+      properties:
+        day:
+          type: string
+        time_range:
+          type: string
+      required: [day, time_range]
+    AttackTimeSummary:
+      type: object
+      properties:
+        peak_attack_time:
+          $ref: '#/components/schemas/PeriodDescriptor'
+        quietest_period:
+          $ref: '#/components/schemas/PeriodDescriptor'
+        avg_attack_rate:
+          type: number
+        highest_day:
+          type: string
+        total_events:
+          type: integer
+      required: [peak_attack_time, quietest_period, avg_attack_rate, highest_day, total_events]
+    AttackEvent:
+      type: object
+      properties:
+        event_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        severity:
+          type: string
+        threat_types:
+          type: array
+          items:
+            type: string
+        ioc_value:
+          type: string
+        source_attacker:
+          type: string
+          nullable: true
+        target_victim:
+          type: string
+          nullable: true
+        source_name:
+          type: string
+        description:
+          type: string
+          nullable: true
+      required: [event_id, timestamp, severity, threat_types, ioc_value, source_name]
+    AttackTimeReportPayload:
+      type: object
+      properties:
+        summary:
+          $ref: '#/components/schemas/AttackTimeSummary'
+        filters:
+          type: object
+          additionalProperties: true
+        heatmap:
+          $ref: '#/components/schemas/HeatmapMatrix'
+        events:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AttackEvent'
+            total:
+              type: integer
+          required: [items, total]
+      required: [summary, heatmap, events]
+    AttackEventDetail:
+      type: object
+      properties:
+        event_id:
+          type: string
+        formatted:
+          $ref: '#/components/schemas/AttackEvent'
+        raw_json:
+          type: object
+          additionalProperties: true
+      required: [event_id, formatted, raw_json]
+    FacetItem:
+      type: object
+      properties:
+        value:
+          type: string
+        label:
+          type: string
+        count:
+          type: integer
+      required: [value, label, count]
+    ActionSummaryCounters:
+      type: object
+      properties:
+        total:
+          type: integer
+        open:
+          type: integer
+        in_progress:
+          type: integer
+        closed:
+          type: integer
+      required: [total, open, in_progress, closed]
+    ActionFacetSet:
+      type: object
+      properties:
+        threat_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+        severities:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+        statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+      required: [threat_types, sources, severities, statuses]
+    ActionTicket:
+      type: object
+      properties:
+        action_id:
+          type: string
+        status:
+          type: string
+        severity:
+          type: string
+        title:
+          type: string
+        ioc_type:
+          type: string
+        ioc_type_label:
+          type: string
+          nullable: true
+        context:
+          type: string
+        sources:
+          type: array
+          items:
+            type: string
+        sla:
+          type: string
+        event_time:
+          type: string
+          format: date-time
+        owner_name:
+          type: string
+          nullable: true
+      required: [action_id, status, severity, title, ioc_type, context, sources, sla, event_time]
+    ActionOwner:
+      type: object
+      properties:
+        user_id:
+          type: string
+        name:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+      required: [user_id, name]
+    ActionContext:
+      type: object
+      properties:
+        target:
+          type: string
+        source:
+          type: string
+        source_name:
+          type: string
+          nullable: true
+        target_victim:
+          type: string
+          nullable: true
+        sector:
+          type: string
+          nullable: true
+        threat_type:
+          type: string
+        country:
+          type: string
+          nullable: true
+        description:
+          type: string
+      required: [target, source, threat_type, description]
+    GraphNode:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        label:
+          type: string
+      required: [id, type, label]
+    GraphEdge:
+      type: object
+      properties:
+        source:
+          type: string
+        target:
+          type: string
+        relation:
+          type: string
+      required: [source, target, relation]
+    EvidenceGraph:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GraphNode'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/GraphEdge'
+      required: [nodes, edges]
+    ActivityLogEntry:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        message:
+          type: string
+      required: [timestamp, message]
+    NoteEntry:
+      type: object
+      properties:
+        note_id:
+          type: string
+        author_name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        content:
+          type: string
+      required: [note_id, author_name, created_at, content]
+    ActionDetailPayload:
+      type: object
+      properties:
+        action:
+          $ref: '#/components/schemas/ActionTicket'
+        owner:
+          $ref: '#/components/schemas/ActionOwner'
+        context:
+          $ref: '#/components/schemas/ActionContext'
+        related_evidence:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        related_evidence_graph:
+          $ref: '#/components/schemas/EvidenceGraph'
+        evidence_graph:
+          $ref: '#/components/schemas/EvidenceGraph'
+        remediation_plan:
+          type: array
+          items:
+            type: string
+        activity_log:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActivityLogEntry'
+        notes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NoteEntry'
+        available_actions:
+          type: array
+          items:
+            type: string
+        related_ioc_count:
+          type: integer
+      required:
+        - action
+        - owner
+        - context
+        - related_evidence_graph
+        - remediation_plan
+        - activity_log
+        - notes
+        - available_actions
+    ActionListPayload:
+      type: object
+      properties:
+        summary:
+          $ref: '#/components/schemas/ActionSummaryCounters'
+        facets:
+          $ref: '#/components/schemas/ActionFacetSet'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionTicket'
+      required: [summary, facets, items]
+    ActionAssignRequest:
+      type: object
+      properties:
+        assignee_id:
+          type: string
+        handover_note:
+          type: string
+          nullable: true
+      required: [assignee_id]
+    FalsePositiveRequest:
+      type: object
+      properties:
+        reason_category:
+          type: string
+        justification:
+          type: string
+        evidence_file:
+          type: string
+          format: binary
+          nullable: true
+      required: [reason_category, justification]
+    BlockIpRequest:
+      type: object
+      properties:
+        target_ioc:
+          type: string
+        enforcement_point_ids:
+          type: array
+          items:
+            type: string
+        duration_mode:
+          type: string
+          enum: [temporary, permanent]
+        duration_days:
+          type: integer
+          nullable: true
+        reason:
+          type: string
+      required: [target_ioc, enforcement_point_ids, duration_mode, reason]
+    ActionMutationPayload:
+      type: object
+      properties:
+        action_id:
+          type: string
+        status:
+          type: string
+        audit_id:
+          type: string
+          nullable: true
+        message:
+          type: string
+        execution:
+          type: object
+          additionalProperties: true
+      required: [action_id, status, message]
+    IocQuickFilters:
+      type: object
+      properties:
+        ioc_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+        severities:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+      required: [ioc_types, severities]
+    IocFacetSet:
+      type: object
+      properties:
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+        threat_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+        risk_levels:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+        ioc_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+        severities:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetItem'
+      required: [sources, threat_types, risk_levels, ioc_types, severities]
+    IocSummary:
+      type: object
+      properties:
+        total_indicators:
+          type: integer
+      required: [total_indicators]
+    IOCRecord:
+      type: object
+      properties:
+        ioc_id:
+          type: string
+        rank:
+          type: integer
+        ioc_value:
+          type: string
+        ioc_type:
+          type: string
+        ioc_type_label:
+          type: string
+          nullable: true
+        severity:
+          type: string
+        risk_score:
+          type: number
+        threat_types:
+          type: array
+          items:
+            type: string
+        sources:
+          type: array
+          items:
+            type: string
+        first_seen:
+          type: string
+          format: date-time
+          nullable: true
+        last_seen:
+          type: string
+          format: date-time
+          nullable: true
+      required: [ioc_id, rank, ioc_value, ioc_type, severity, risk_score, threat_types, sources]
+    KeyIdentifiers:
+      type: object
+      properties:
+        ioc_value:
+          type: string
+        ioc_type:
+          type: string
+        ioc_type_label:
+          type: string
+          nullable: true
+        severity:
+          type: string
+        sources:
+          type: array
+          items:
+            type: string
+        first_seen:
+          type: string
+          format: date-time
+        threat_types:
+          type: array
+          items:
+            type: string
+      required: [ioc_value, ioc_type, severity, sources, first_seen, threat_types]
+    ScoreFactor:
+      type: object
+      properties:
+        factor:
+          type: string
+        score:
+          type: number
+        weight:
+          type: number
+        explanation:
+          type: string
+      required: [factor, score, weight]
+    RiskAssessment:
+      type: object
+      properties:
+        model:
+          type: string
+        risk_score:
+          type: number
+        risk_level:
+          type: string
+        severity:
+          type: string
+        summary:
+          type: string
+        contributing_factors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScoreFactor'
+      required: [model, risk_score, risk_level, severity, contributing_factors]
+    GeoLocationOwner:
+      type: object
+      properties:
+        country:
+          type: string
+        city:
+          type: string
+          nullable: true
+        asn_org:
+          type: string
+          nullable: true
+        latitude:
+          type: number
+          nullable: true
+        longitude:
+          type: number
+          nullable: true
+      required: [country]
+    NetworkOwnership:
+      type: object
+      properties:
+        organization:
+          type: string
+          nullable: true
+        net_name:
+          type: string
+          nullable: true
+        net_range:
+          type: string
+          nullable: true
+        cidr:
+          type: string
+          nullable: true
+        country:
+          type: string
+          nullable: true
+        allocation_type:
+          type: string
+          nullable: true
+        rir:
+          type: string
+          nullable: true
+        registered_on:
+          type: string
+          format: date
+          nullable: true
+        last_updated:
+          type: string
+          format: date
+          nullable: true
+    AsnInfrastructure:
+      type: object
+      properties:
+        asn:
+          type: string
+          nullable: true
+        asn_name:
+          type: string
+          nullable: true
+        asn_description:
+          type: string
+          nullable: true
+        asn_type:
+          type: string
+          nullable: true
+        hosting_type:
+          type: string
+          nullable: true
+    AbuseContact:
+      type: object
+      properties:
+        abuse_email:
+          type: string
+          nullable: true
+        abuse_contact:
+          type: string
+          nullable: true
+        noc_email:
+          type: string
+          nullable: true
+        tech_email:
+          type: string
+          nullable: true
+    RelationshipGraph:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GraphNode'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/GraphEdge'
+        capabilities:
+          type: object
+          properties:
+            campaigns:
+              type: boolean
+          required: [campaigns]
+      required: [nodes, edges, capabilities]
+    IocDetailPayload:
+      type: object
+      properties:
+        key_identifiers:
+          $ref: '#/components/schemas/KeyIdentifiers'
+        risk_assessment:
+          $ref: '#/components/schemas/RiskAssessment'
+        geo_location_owner:
+          $ref: '#/components/schemas/GeoLocationOwner'
+        network_ownership:
+          $ref: '#/components/schemas/NetworkOwnership'
+        asn_infrastructure:
+          $ref: '#/components/schemas/AsnInfrastructure'
+        abuse_contact:
+          $ref: '#/components/schemas/AbuseContact'
+        score_breakdown:
+          type: object
+          additionalProperties: true
+        target_sector:
+          type: object
+          additionalProperties: true
+        enrichment_context:
+          type: object
+          additionalProperties: true
+        history_preview:
+          type: array
+          items:
+            $ref: '#/components/schemas/IocObservation'
+        relationship:
+          $ref: '#/components/schemas/RelationshipGraph'
+      required:
+        - key_identifiers
+        - risk_assessment
+        - geo_location_owner
+        - network_ownership
+        - asn_infrastructure
+        - abuse_contact
+        - relationship
+    IocObservation:
+      type: object
+      properties:
+        observed_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+        severity:
+          type: string
+        description:
+          type: string
+      required: [observed_at, source, severity, description]
+    IocSummaryCards:
+      type: object
+      properties:
+        total_ioc:
+          type: integer
+        clean_ioc:
+          type: integer
+        active_ioc:
+          type: integer
+        risk_ioc:
+          type: integer
+      required: [total_ioc, clean_ioc, active_ioc, risk_ioc]
+    ImportStatisticsCards:
+      type: object
+      properties:
+        total_import:
+          type: integer
+        successful_import:
+          type: integer
+        failed_import:
+          type: integer
+        avg_import_per_day:
+          type: number
+      required: [total_import, successful_import, failed_import, avg_import_per_day]
+    BreakdownBySource:
+      type: object
+      properties:
+        source:
+          type: string
+        breakdown:
+          type: object
+          additionalProperties:
+            type: integer
+      required: [source, breakdown]
+    RiskBucket:
+      type: object
+      properties:
+        bucket:
+          type: string
+        value:
+          type: integer
+      required: [bucket, value]
+    ImportVolumeSeries:
+      type: object
+      properties:
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimpleSeriesPoint'
+      required: [points]
+    IocAnalyticsSummaryData:
+      type: object
+      properties:
+        tab:
+          type: string
+          enum: [ioc-summary]
+        cards:
+          $ref: '#/components/schemas/IocSummaryCards'
+        charts:
+          type: object
+          properties:
+            ioc_by_type:
+              type: array
+              items:
+                $ref: '#/components/schemas/SeveritySlice'
+            ioc_by_severity:
+              type: array
+              items:
+                $ref: '#/components/schemas/SeveritySlice'
+            severity_by_source:
+              type: array
+              items:
+                $ref: '#/components/schemas/BreakdownBySource'
+            severity_by_type:
+              type: array
+              items:
+                $ref: '#/components/schemas/BreakdownBySource'
+            risk_score_distribution:
+              type: array
+              items:
+                $ref: '#/components/schemas/RiskBucket'
+          required: [ioc_by_type, ioc_by_severity, severity_by_source, severity_by_type, risk_score_distribution]
+      required: [tab, cards, charts]
+    IocAnalyticsImportData:
+      type: object
+      properties:
+        tab:
+          type: string
+          enum: [statistics-import]
+        cards:
+          $ref: '#/components/schemas/ImportStatisticsCards'
+        charts:
+          type: object
+          properties:
+            import_volume_over_time:
+              $ref: '#/components/schemas/ImportVolumeSeries'
+            ioc_by_intelligence_source:
+              type: array
+              items:
+                $ref: '#/components/schemas/SeveritySlice'
+            ioc_by_type:
+              type: array
+              items:
+                $ref: '#/components/schemas/SeveritySlice'
+            threat_type_distribution:
+              type: array
+              items:
+                $ref: '#/components/schemas/SeveritySlice'
+            ioc_by_severity:
+              type: array
+              items:
+                $ref: '#/components/schemas/SeveritySlice'
+            import_by_source:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            import_by_type:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            import_by_severity:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+          required:
+            - import_volume_over_time
+            - ioc_by_intelligence_source
+            - ioc_by_type
+            - threat_type_distribution
+            - ioc_by_severity
+            - import_by_source
+            - import_by_type
+            - import_by_severity
+      required: [tab, cards, charts]
+    ExecutiveReportRequest:
+      type: object
+      properties:
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        threat_types:
+          type: array
+          items:
+            type: string
+        sources:
+          type: array
+          items:
+            type: string
+        severities:
+          type: array
+          items:
+            type: string
+      required: [start_date, end_date]
+    OperationsReportPreviewRequest:
+      type: object
+      properties:
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        query:
+          type: string
+          nullable: true
+        threat_types:
+          type: array
+          items:
+            type: string
+        sources:
+          type: array
+          items:
+            type: string
+        severities:
+          type: array
+          items:
+            type: string
+        page:
+          type: integer
+        page_size:
+          type: integer
+      required: [start_date, end_date]
+    ActionReportRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          nullable: true
+        start_date:
+          type: string
+          format: date
+          nullable: true
+        end_date:
+          type: string
+          format: date
+          nullable: true
+        threat_types:
+          type: array
+          items:
+            type: string
+        sources:
+          type: array
+          items:
+            type: string
+        severities:
+          type: array
+          items:
+            type: string
+        statuses:
+          type: array
+          items:
+            type: string
+        export_format:
+          type: string
+          nullable: true
+    IocReportPreviewRequest:
+      type: object
+      properties:
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        threat_types:
+          type: array
+          items:
+            type: string
+        sources:
+          type: array
+          items:
+            type: string
+        ioc_types:
+          type: array
+          items:
+            type: string
+        severities:
+          type: array
+          items:
+            type: string
+      required: [start_date, end_date]
+    IocReportExportRequest:
+      allOf:
+        - $ref: '#/components/schemas/IocReportPreviewRequest'
+        - type: object
+          properties:
+            export_format:
+              type: string
+          required: [export_format]
+    IocReportPreviewPayload:
+      type: object
+      properties:
+        summary:
+          type: object
+          properties:
+            total_rows:
+              type: integer
+            generated_for:
+              type: string
+            high_risk_count:
+              type: integer
+          required: [total_rows, generated_for]
+        filters:
+          type: object
+          additionalProperties: true
+        charts:
+          type: object
+          additionalProperties: true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/IOCRecord'
+      required: [summary, items]
+    MostFrequentThreatsPreviewRequest:
+      type: object
+      properties:
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        threat_types:
+          type: array
+          items:
+            type: string
+        severities:
+          type: array
+          items:
+            type: string
+        risk_levels:
+          type: array
+          items:
+            type: string
+      required: [start_date, end_date]
+    MostFrequentThreatsItem:
+      type: object
+      properties:
+        rank:
+          type: integer
+        ioc_value:
+          type: string
+        ioc_type:
+          type: string
+        hits:
+          type: integer
+        severity:
+          type: string
+        risk_score:
+          type: number
+        sources:
+          type: array
+          items:
+            type: string
+      required: [rank, ioc_value, ioc_type, hits, severity, risk_score, sources]
+    MostFrequentThreatsPayload:
+      type: object
+      properties:
+        summary:
+          type: object
+          additionalProperties: true
+        filters:
+          type: object
+          additionalProperties: true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MostFrequentThreatsItem'
+      required: [items]
+    ExportJob:
+      type: object
+      properties:
+        export_id:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        format:
+          type: string
+        file_name:
+          type: string
+          nullable: true
+        download_url:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        report_type:
+          type: string
+          nullable: true
+        filters:
+          type: object
+          additionalProperties: true
+      required: [export_id, status, format, created_at]
+    NewsArticle:
+      type: object
+      properties:
+        article_id:
+          type: string
+        title:
+          type: string
+        published_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+        summary:
+          type: string
+          nullable: true
+        related_ioc_count:
+          type: integer
+        related_iocs:
+          type: array
+          items:
+            type: string
+        url:
+          type: string
+          nullable: true
+        source_type:
+          type: string
+          nullable: true
+        references:
+          type: array
+          items:
+            type: string
+        snippets:
+          type: array
+          items:
+            type: string
+      required: [article_id, title, published_at, source, related_ioc_count, related_iocs]
+    NewsArticleDetail:
+      allOf:
+        - $ref: '#/components/schemas/NewsArticle'
+        - type: object
+          properties:
+            content_excerpt:
+              type: string
+              nullable: true
+            related_ioc_records:
+              type: array
+              items:
+                $ref: '#/components/schemas/IOCRecord'
+    UserProfile:
+      type: object
+      properties:
+        user_id:
+          type: string
+        username:
+          type: string
+        name:
+          type: string
+        role_name:
+          type: string
+        national_id:
+          type: string
+          nullable: true
+        phone_number:
+          type: string
+          nullable: true
+        email:
+          type: string
+          format: email
+        avatar_url:
+          type: string
+          nullable: true
+        last_password_reset_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+      required: [user_id, username, name, role_name, email, status]
+    ProfileUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        national_id:
+          type: string
+        phone_number:
+          type: string
+        email:
+          type: string
+          format: email
+        avatar_url:
+          type: string
+          nullable: true
+    PasswordResetRequest:
+      type: object
+      properties:
+        current_password:
+          type: string
+          format: password
+          nullable: true
+        reset_mode:
+          type: string
+          enum: [self-service, admin-reset]
+        new_password:
+          type: string
+          format: password
+          nullable: true
+      required: [reset_mode]
+    DeleteAccountRequest:
+      type: object
+      properties:
+        confirmation_text:
+          type: string
+        reason:
+          type: string
+          nullable: true
+      required: [confirmation_text]
+    User:
+      type: object
+      properties:
+        user_id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        user_group:
+          type: string
+        group_id:
+          type: string
+          nullable: true
+        national_id:
+          type: string
+          nullable: true
+        phone_number:
+          type: string
+          nullable: true
+        status:
+          type: string
+      required: [user_id, name, email, user_group, status]
+    UserCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+        group_id:
+          type: string
+        national_id:
+          type: string
+          nullable: true
+        phone_number:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [active, inactive]
+      required: [name, email, password, group_id, status]
+    UserUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          nullable: true
+        group_id:
+          type: string
+        national_id:
+          type: string
+          nullable: true
+        phone_number:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [active, inactive]
+    PermissionRule:
+      type: object
+      properties:
+        module:
+          type: string
+        read:
+          type: boolean
+        edit:
+          type: boolean
+      required: [module, read, edit]
+    UserGroup:
+      type: object
+      properties:
+        group_id:
+          type: string
+        name:
+          type: string
+        member_count:
+          type: integer
+          nullable: true
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionRule'
+      required: [group_id, name, permissions]
+    UserGroupCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionRule'
+      required: [name, permissions]
+    UserGroupUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionRule'
+    Notification:
+      type: object
+      properties:
+        notification_id:
+          type: string
+        title:
+          type: string
+        message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        relative_time:
+          type: string
+        type:
+          type: string
+        unread:
+          type: boolean
+        linked_resource_type:
+          type: string
+          nullable: true
+        linked_resource_id:
+          type: string
+          nullable: true
+        ioc_summary:
+          type: object
+          properties:
+            ioc_value:
+              type: string
+            ioc_type:
+              type: string
+            severity:
+              type: string
+            risk_score:
+              type: number
+            threat_types:
+              type: array
+              items:
+                type: string
+      required: [notification_id, title, message, created_at, relative_time, type, unread]
+    SimpleActionPayload:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required: [success, message]
+    BulkMarkReadPayload:
+      type: object
+      properties:
+        marked_count:
+          type: integer
+        unread_count:
+          type: integer
+      required: [marked_count, unread_count]
+
+    LoginResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/LoginPayload'
+          required: [data]
+    MeResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/UserSummary'
+          required: [data]
+    LogoutResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/LogoutPayload'
+          required: [data]
+    LookupListResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/LookupListPayload'
+          required: [data]
+    LookupAssigneeResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/LookupAssigneePayload'
+          required: [data]
+    EnforcementPointListResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/EnforcementPointListPayload'
+          required: [data]
+    ExecutiveDashboardResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExecutiveDashboardPayload'
+          required: [data]
+    OperationsDashboardResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/OperationsDashboardPayload'
+          required: [data]
+    OperationsReportResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/OperationsReportPayload'
+          required: [data]
+    AttackTimeReportResponse:
+      allOf:
+        - $ref: '#/components/schemas/PagedResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/AttackTimeReportPayload'
+          required: [data]
+    AttackEventDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/AttackEventDetail'
+          required: [data]
+    ActionListResponse:
+      allOf:
+        - $ref: '#/components/schemas/PagedResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ActionListPayload'
+          required: [data]
+    ActionDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ActionDetailPayload'
+          required: [data]
+    RelatedIocsResponse:
+      allOf:
+        - $ref: '#/components/schemas/PagedResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/IOCRecord'
+              required: [items]
+          required: [data]
+    ActionMutationResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ActionMutationPayload'
+          required: [data]
+    IocListResponse:
+      allOf:
+        - $ref: '#/components/schemas/PagedResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                summary:
+                  $ref: '#/components/schemas/IocSummary'
+                quick_filters:
+                  $ref: '#/components/schemas/IocQuickFilters'
+                facets:
+                  $ref: '#/components/schemas/IocFacetSet'
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/IOCRecord'
+              required: [summary, quick_filters, facets, items]
+          required: [data]
+    IocDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/IocDetailPayload'
+          required: [data]
+    IocEventsResponse:
+      allOf:
+        - $ref: '#/components/schemas/PagedResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/IocObservation'
+              required: [items]
+          required: [data]
+    IocAnalyticsResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              oneOf:
+                - $ref: '#/components/schemas/IocAnalyticsSummaryData'
+                - $ref: '#/components/schemas/IocAnalyticsImportData'
+          required: [data]
+    IocReportPreviewResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/IocReportPreviewPayload'
+          required: [data]
+    ExportJobResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExportJob'
+          required: [data]
+    MostFrequentThreatsPreviewResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MostFrequentThreatsPayload'
+          required: [data]
+    NewsListResponse:
+      allOf:
+        - $ref: '#/components/schemas/PagedResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/NewsArticle'
+              required: [items]
+          required: [data]
+    NewsDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/NewsArticleDetail'
+          required: [data]
+    ProfileResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/UserProfile'
+          required: [data]
+    UserListResponse:
+      allOf:
+        - $ref: '#/components/schemas/PagedResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/User'
+              required: [items]
+          required: [data]
+    UserResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/User'
+          required: [data]
+    UserGroupListResponse:
+      allOf:
+        - $ref: '#/components/schemas/PagedResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/UserGroup'
+              required: [items]
+          required: [data]
+    UserGroupResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/UserGroup'
+          required: [data]
+    NotificationListResponse:
+      allOf:
+        - $ref: '#/components/schemas/PagedResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                unread_count:
+                  type: integer
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Notification'
+              required: [unread_count, items]
+          required: [data]
+    NotificationResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Notification'
+          required: [data]
+    BulkMarkReadResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/BulkMarkReadPayload'
+          required: [data]
+    SimpleActionResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SimpleActionPayload'
+          required: [data]

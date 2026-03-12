@@ -5,14 +5,20 @@
 
 # Node
 node_modules/
+.next/
+.vercel/
+*.tsbuildinfo
 npm-debug.log
 yarn-error.log
 
 # Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 venv/
+ai-service/venv/
+.pytest_cache/
 .env
 .env.remote
 
@@ -21,6 +27,7 @@ data_lake/
 ai-service/data/
 .data/
 *.log
+tmp/
 
 # Docker
 .docker/
@@ -28,3 +35,6 @@ ai-service/data/
 # Agent
 .agent/
 brain/
+
+# Separate repos
+ncsa-dashboard-web/

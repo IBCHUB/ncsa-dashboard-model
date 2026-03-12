@@ -259,14 +259,10 @@ def calculate_cross_source_score(source_count: int, source_diversity: int = 1) -
     else:
         points = 100  # 5+ sources
     
-    # Apply independence factor (penalizes single-class echo chamber)
+    # Apply independence factor (penalizes single-class echo chamber).
+    # PDF 01 defines corroboration as base step score multiplied by source-class independence.
     independence = _calculate_source_independence(source_diversity, source_count)
-    adjusted = int(points * independence)
-    
-    # Diversity bonus (only if truly diverse)
-    diversity_bonus = max(0, source_diversity - 1) * 10
-    
-    return min(adjusted + diversity_bonus, 100)
+    return min(int(points * independence), 100)
 
 
 def calculate_geo_risk(country_code: Optional[str]) -> Dict[str, Any]:
@@ -571,6 +567,7 @@ def calculate_mitre_score(mitre_techniques: List[str]) -> Dict[str, Any]:
     """
     Calculate score based on MITRE ATT&CK techniques.
     More techniques = more sophisticated attack.
+    PDF spec assigns 20 raw points per confirmed technique, capped at 100.
     
     Returns:
         Dict with score, matched techniques
@@ -584,29 +581,29 @@ def calculate_mitre_score(mitre_techniques: List[str]) -> Dict[str, Any]:
         }
     
     matched_tactics = []
-    total_score = 0
-    
+    normalized_techniques: List[str] = []
+
     for technique in mitre_techniques:
+        normalized = str(technique).strip()
+        if not normalized or normalized in normalized_techniques:
+            continue
+        normalized_techniques.append(normalized)
+
         # Check if it matches any known tactic
         for tactic_name, tactic_info in MITRE_TACTICS.items():
-            if tactic_name.lower() in technique.lower() or tactic_info["id"].lower() in technique.lower():
+            if tactic_name.lower() in normalized.lower() or tactic_info["id"].lower() in normalized.lower():
                 if tactic_name not in [m["name"] for m in matched_tactics]:
                     matched_tactics.append({
                         "name": tactic_name,
                         "id": tactic_info["id"],
-                        "score": tactic_info["score"]
+                        "score": 20
                     })
-                    total_score += tactic_info["score"]
                 break
-        else:
-            # Generic technique score
-            total_score += 15
     
-    # Cap at 100
-    total_score = min(total_score, 100)
+    total_score = min(len(normalized_techniques) * 20, 100)
     
     # Determine sophistication level
-    tactic_count = len(matched_tactics)
+    tactic_count = len(normalized_techniques)
     if tactic_count >= 5:
         sophistication = "advanced"
     elif tactic_count >= 3:
@@ -618,7 +615,7 @@ def calculate_mitre_score(mitre_techniques: List[str]) -> Dict[str, Any]:
     
     return {
         "score": total_score,
-        "techniques": mitre_techniques,
+        "techniques": normalized_techniques,
         "matched_tactics": matched_tactics,
         "sophistication": sophistication
     }
@@ -732,9 +729,9 @@ def calculate_risk_score(
         "description": f"พบจาก {source_count} แหล่งข้อมูล (independence: {independence_factor})",
         "reason": f"พบใน {source_count} แหล่ง: {', '.join(unique_sources)} (diversity: {source_diversity}/3)" if unique_sources else "ไม่พบในแหล่งใด",
         "reasonEn": f"Found in {source_count} source(s): {', '.join(unique_sources)} (diversity: {source_diversity}/3)" if unique_sources else "Not found in any source",
-        "methodology": "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ คูณ independence factor ตามความหลากหลายของประเภทแหล่ง",
-        "methodologyEn": "Count unique sources × independence factor based on source class diversity.",
-        "scoringRules": "Raw: 1=20, 2=40, 3=60, 4=80, 5+=100 × independence(1class=0.5, 2class=0.8, 3class=1.0) + diversity bonus"
+        "methodology": "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ แล้วคูณ independence factor ตามความหลากหลายของประเภทแหล่ง",
+        "methodologyEn": "Count unique sources, then multiply by an independence factor based on source class diversity.",
+        "scoringRules": "Raw: 1=20, 2=40, 3=60, 4=80, 5+=100 × independence(1class=0.5, 2class=0.8, 3class=1.0)"
     }
 
     # 3. Source reliability score
@@ -984,7 +981,7 @@ def calculate_risk_score(
         "reasonEn": f"AI Conf {int(ai_confidence*100)}% found {len(mitre_techniques)} tactics" if mitre_techniques else "No MITRE tactics found",
         "methodology": "MITRE Score x AI Confidence",
         "methodologyEn": "MITRE Score x AI Confidence",
-        "scoringRules": "Raw: (Technique Score) * (AI Confidence %)"
+        "scoringRules": "Raw: 20 points per confirmed technique × AI Confidence % (cap 100)"
     }
     
     # REMOVED: Separate AI Confidence Bonus (now integrated as multiplier)
@@ -1067,11 +1064,12 @@ def calculate_risk_score(
         "matched_actors": sector_result["matched_actors"],
         "risk_bonus": sector_result["risk_bonus"],
         "score": sector_result["risk_bonus"],
-        "maxScore": 15,
+        "maxScore": max(SECTOR_RISK_BONUS.values()) if SECTOR_RISK_BONUS else 0,
         "reason": f"เป้าหมาย: {sector_result['sector_name_th']}" if sector_result["confidence"] > 0 else "ไม่ระบุเซกเตอร์เป้าหมาย",
         "reasonEn": f"Target: {sector_result['sector_name']}" if sector_result["confidence"] > 0 else "No specific sector identified",
         "methodology": "วิเคราะห์จากคำสำคัญ โดเมน และกลุ่มผู้โจมตีที่เกี่ยวข้อง",
-        "methodologyEn": "Analyzed from keywords, domain patterns, and associated threat actors"
+        "methodologyEn": "Analyzed from keywords, domain patterns, and associated threat actors",
+        "scoringRules": "Multiplier: critical_infrastructure=1.15, government=1.12, healthcare=1.10, financial=1.10, technology=1.05"
     }
     
     # Apply sector bonus as MULTIPLIER (not additive) to prevent threshold jumps
@@ -1085,9 +1083,11 @@ def calculate_risk_score(
     pre_sector_total = total
     sector_multiplier = 1.0 + (sector_bonus / 100.0)
     total = min(int(total * sector_multiplier), 100)
+    sector_total_before_policy = total
 
     # Update breakdown with actual capped sector bonus (after policy guardrails)
-    breakdown["target_sector"]["score"] = total - pre_sector_total  # Actual points added
+    breakdown["target_sector"]["score_before_policy"] = sector_total_before_policy - pre_sector_total
+    breakdown["target_sector"]["score"] = sector_total_before_policy - pre_sector_total
     breakdown["target_sector"]["risk_bonus_original"] = sector_result["risk_bonus"]
     breakdown["target_sector"]["multiplier_used"] = round(sector_multiplier, 3)
 
@@ -1112,6 +1112,8 @@ def calculate_risk_score(
         "triggered": len(policy_adjustments) > 0,
         "adjustments": policy_adjustments
     }
+
+    breakdown["target_sector"]["score"] = total - pre_sector_total
 
     # Recalculate severity after sector bonus and policy gates
     if total >= 75:

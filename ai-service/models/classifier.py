@@ -32,6 +32,11 @@ _en_classifier = None
 _multi_classifier = None
 
 
+def models_loaded() -> bool:
+    """Return whether either runtime classifier has been initialized."""
+    return _en_classifier is not None or _multi_classifier is not None
+
+
 def get_detector():
     """Get or create Language Detector (singleton)"""
     global _detector

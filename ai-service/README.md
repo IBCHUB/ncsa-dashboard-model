@@ -1,81 +1,105 @@
-# Thailand Cyber Threat Intelligence - AI Service
+# คู่มือ AI Service
 
-Python-based AI service for threat classification and risk scoring using NLP.
+`ai-service` คือ service หลักของระบบสำหรับงาน `AI / ML`, `Threat Scoring`, `Validation`, และ `Threat Data Warehouse Pipeline`
 
-## Features
+## หน้าที่ของ service นี้
 
-- **Zero-shot Threat Classification**: Uses DistilBERT-MNLI for classifying threats without training data
-- **Intelligent Risk Scoring**: Multi-factor scoring based on cross-source validation, keywords, entropy, and more
-- **Threat Actor Extraction**: Identifies known threat actors from descriptions
-- **MITRE ATT&CK Detection**: Extracts technique IDs from text
-- **Trend Prediction**: Linear Regression forecasting for threat trends
+- จัดหมวดหมู่ภัยคุกคามจากข้อความ (`classify`)
+- คำนวณคะแนนความเสี่ยง (`score`)
+- รวมผลลัพธ์เป็นเอกสาร enrich (`enrich`, `enrich/batch`)
+- แปลข้อความด้วย OpenAI (`translate`)
+- รัน pipeline จาก `Data Lake` ไป `Warehouse`
+- จัดการ review queue สำหรับรายการที่ไม่ควรเข้า warehouse อัตโนมัติ
+- เชื่อมต่อ HelpDesk แบบ mock หรือ API จริง
 
-## Documentation
+## คุณสมบัติหลัก
 
-| เอกสาร | เนื้อหา |
-|--------|---------|
-| [AI Scoring](docs/AI-SCORING.md) | เกณฑ์การให้คะแนน 10 ปัจจัย, น้ำหนัก, Threat Actors, MITRE |
-| [Trend Prediction](docs/TREND-PREDICTION.md) | วิธีคำนวณแนวโน้มด้วย Linear Regression |
+- Hybrid zero-shot classification รองรับภาษาอังกฤษและหลายภาษา
+- Risk scoring ตามน้ำหนักจาก source quality, cross-source, threat type, threat actor, keyword, entropy, MITRE, domain age
+- Sanitization ก่อนเข้า AI และก่อน persist ลง Elasticsearch
+- Validation policy แยก `validated_auto`, `validated_manual`, `needs_review`, `rejected`
+- Elasticsearch client รองรับการใช้ API key แยกตาม index
 
+## เริ่มต้นใช้งาน
 
-### Local Development
+### Local development
 
 ```bash
-# Create virtual environment
 python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
+source venv/bin/activate
 pip install -r requirements.txt
-
-# Run server
 python main.py
 ```
-
-Server will start at `http://localhost:8000`
 
 ### Docker
 
 ```bash
-# Build and run
 docker build -t tcti-ai-service .
 docker run -p 8000:8000 tcti-ai-service
+```
 
-# Or use Docker Compose (from parent directory)
-cd ..
+หรือจาก root repo
+
+```bash
 docker-compose up ai-service
 ```
 
-## API Endpoints
+## ตัวแปรแวดล้อมที่ใช้บ่อย
 
-### Health Check
+| ตัวแปร | ค่าเริ่มต้น | ความหมาย |
+|--------|-------------|-----------|
+| `AI_SERVICE_HOST` | `0.0.0.0` | host ของ service |
+| `AI_SERVICE_PORT` | `8000` | port ของ service |
+| `AI_SERVICE_DEBUG` | `false` | เปิด log/debug mode |
+| `AI_SERVICE_API_KEYS` | ว่าง | รายการ API key ที่อนุญาต |
+| `AI_SERVICE_REQUIRE_AUTH` | `true` | บังคับ auth หรือไม่ |
+| `AI_SERVICE_CORS_ORIGINS` | `http://localhost:3000,http://localhost:3001` | รายการ origin ที่อนุญาต |
+| `AI_SERVICE_AUTO_CREATE_INDEXES` | ว่าง | ถ้า `true` จะพยายาม create index ตอน startup |
+| `MODEL_EN` | `MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli` | โมเดลภาษาอังกฤษ |
+| `MODEL_MULTI` | `MoritzLaurer/bge-m3-zeroshot-v2.0` | โมเดล multilingual |
+| `DEVICE` | `cpu` | `cpu` หรือ `cuda` |
+| `ELASTICSEARCH_URL` | ดูที่ `elastic_client.py` | URL ของ Elasticsearch |
+| `DATALAKE_INDEX` | `cyber-logs-datalake` | Data Lake index |
+| `WAREHOUSE_INDEX` | `cyber-logs-datawarehouse` | Warehouse index |
+| `DATALAKE_API_KEY` | ว่าง | API key ฝั่ง datalake |
+| `WAREHOUSE_API_KEY` | ว่าง | API key ฝั่ง warehouse |
+| `OPENAI_API_KEY` | ว่าง | ใช้สำหรับ translation |
+| `HELPDESK_API_URL` | `https://helpdesk.thcert.go.th/api` | URL ของ HelpDesk |
+| `HELPDESK_API_KEY` | ว่าง | token ฝั่ง HelpDesk |
+| `HELPDESK_MOCK_MODE` | `true` | ใช้ mock mode หรือไม่ |
+
+## สรุป API
+
+ทุก endpoint ที่ป้องกันไว้ต้องส่ง header
+
 ```bash
-curl http://localhost:8000/health
+X-API-Key: <your-api-key>
 ```
 
-### Classify Threat
-```bash
-curl -X POST http://localhost:8000/classify \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Ransomware attack encrypts files and demands Bitcoin"}'
-```
+รายการ endpoint หลัก
 
-### Calculate Risk Score
-```bash
-curl -X POST http://localhost:8000/score \
-  -H "Content-Type: application/json" \
-  -d '{
-    "ioc_value": "malicious.domain.com",
-    "ioc_type": "domain",
-    "description": "Known phishing domain",
-    "sources": ["VirusTotal", "AbuseIPDB"]
-  }'
-```
+| Method | Path | คำอธิบาย |
+|--------|------|----------|
+| `GET` | `/health` | ตรวจสถานะ service |
+| `POST` | `/classify` | วิเคราะห์ประเภทภัยคุกคามจากข้อความ |
+| `POST` | `/score` | คำนวณความเสี่ยงของ IOC |
+| `POST` | `/enrich` | classifiy + score พร้อม metadata |
+| `POST` | `/enrich/batch` | enrich หลายรายการพร้อมกัน |
+| `POST` | `/translate` | แปลข้อความด้วย OpenAI |
+| `POST` | `/helpdesk/ticket` | เปิด ticket ไป HelpDesk |
+| `POST` | `/pipeline/run` | อ่าน datalake แล้วประมวลผล |
+| `GET` | `/pipeline/review-queue` | ดูรายการรอ review |
+| `POST` | `/pipeline/review/{doc_id}/approve` | อนุมัติรายการ |
+| `POST` | `/pipeline/review/{doc_id}/reject` | ปฏิเสธรายการ |
+| `GET` | `/pipeline/status` | ดูจำนวนเอกสารในแต่ละ index |
+| `POST` | `/elasticsearch/setup` | สร้าง mapping ของ index |
 
-### Full Enrichment (Classification + Scoring)
+ตัวอย่าง enrich
+
 ```bash
 curl -X POST http://localhost:8000/enrich \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: tcti-dev-key-2024" \
   -d '{
     "ioc_value": "malicious.domain.com",
     "ioc_type": "domain",
@@ -86,76 +110,66 @@ curl -X POST http://localhost:8000/enrich \
   }'
 ```
 
-## Response Example
-
-```json
-{
-  "ioc_value": "malicious.domain.com",
-  "ioc_type": "domain",
-  "ai_threat_types": ["Phishing", "Credential Theft"],
-  "ai_threat_actors": ["Lazarus"],
-  "ai_mitre_techniques": [],
-  "ai_classification_confidence": 0.95,
-  "ai_risk_score": 85,
-  "ai_severity": "high",
-  "ai_score_breakdown": {
-    "cross_source": {"score": 25, "count": 2},
-    "keywords": {"score": 20, "keywords": ["phishing", "lazarus"]},
-    "geo_risk": {"score": 15, "country": "KP"}
-  },
-  "processing_time_ms": 250
-}
-```
-
-## Configuration
-
-Environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AI_SERVICE_HOST` | 0.0.0.0 | Server host |
-| `AI_SERVICE_PORT` | 8000 | Server port |
-| `DEVICE` | cpu | Device for inference (cpu/cuda) |
-| `CLASSIFIER_MODEL` | typeform/distilbert-base-uncased-mnli | HuggingFace model |
-
-## Integration with Dashboard
-
-The AI Service integrates with the Next.js dashboard through `normalize-data.ts`:
+ตัวอย่างเรียก pipeline
 
 ```bash
-# Ensure AI Service is running, then run normalization
-cd ../dashboard
-npx tsx src/scripts/normalize-data.ts
+curl -X POST http://localhost:8000/pipeline/run \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: tcti-dev-key-2024" \
+  -d '{"limit": 100}'
 ```
 
-This will:
-1. Check if AI Service is healthy
-2. Call `/enrich` for each IOC with sufficient description
-3. Store AI-enriched fields in `normalized_iocs.json`
+ตัวอย่างอนุมัติรายการใน review queue
 
-## Threat Categories
+```bash
+curl -X POST http://localhost:8000/pipeline/review/<doc_id>/approve \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: tcti-dev-key-2024" \
+  -d '{"reviewer":"analyst-01","notes":"validated by analyst"}'
+```
 
-The classifier recognizes these threat types:
-- Ransomware
-- Phishing
-- Malware
-- Data Breach
-- DDoS
-- APT
-- Defacement
-- Vulnerability
-- Botnet
-- C2
-- Credential Theft
+## Validation workflow
 
-## Known Threat Actors
+ผลจาก pipeline จะถูกจัดสถานะดังนี้
 
-The service can identify:
-- Lazarus, APT28, APT29, Fancy Bear, Cozy Bear
-- LockBit, Conti, REvil, BlackCat, ALPHV
-- Emotet, TrickBot, Qakbot
-- And more...
+- `validated_auto` หมายถึงผ่านเกณฑ์และสามารถบันทึกเข้า warehouse ได้ทันที
+- `validated_manual` หมายถึงผ่านการอนุมัติจากผู้ตรวจ
+- `needs_review` หมายถึงต้องเข้า review queue
+- `rejected` หรือ `rejected_manual` หมายถึงไม่ควรเข้า warehouse
 
-## License
+รายการทุกตัวจะถูกบันทึกลง `Warehouse` พร้อม review metadata เสมอ โดยใช้ฟิลด์ `validation_status`, `review_required`, `review_state` และ `warehouse_eligible` เพื่อแยกผลลัพธ์ที่พร้อมใช้งานออกจากรายการที่รอ review หรือถูก reject
 
-Internal use only - Thailand Cyber Threat Intelligence Platform
+หมายเหตุ:
+- `validation_*` เป็น workflow ภายในของ AI/warehouse เพื่อให้ตรง TOR
+- dashboard API ภายนอก โดยเฉพาะ `Action Center` ใช้ `action_status = open / in_progress / closed` และ `action_required` เป็นหลัก ไม่ expose คำว่า `validated_*` เป็น contract หลัก
+
+## Script layout
+
+- `scripts/ops/` สำหรับ import, backfill, และงานปฏิบัติการจริง
+- `scripts/dev/` สำหรับ local verification
+- `legacy/` สำหรับโค้ดเก่าที่ไม่อยู่ใน active runtime path
+
+ตัวอย่างคำสั่งที่ใช้จริง
+
+```bash
+python scripts/ops/import_to_datalake.py --dry-run
+python scripts/ops/rebuild_warehouse.py --limit 100
+python scripts/ops/rebuild_warehouse.py --date-from 2026-02-04T00:00:00+07:00 --date-to 2026-02-05T23:59:59+07:00 --summary-file ../docs/api-spec/backfill-dry-run.json
+python scripts/ops/rebuild_warehouse.py --write --date-from 2026-02-04T00:00:00+07:00 --date-to 2026-02-05T23:59:59+07:00
+```
+
+หมายเหตุ: ถ้า dry-run พบว่า `validated_auto = 0` สคริปต์จะ block การเขียนจริงไว้ก่อน เว้นแต่ใส่ `--allow-zero-eligible-write`
+
+## เอกสารที่เกี่ยวข้อง
+
+- [ดัชนีเอกสาร](../docs/README.md)
+- [คู่มือภาพรวมระบบ](../docs/SYSTEM_GUIDE_TH.md)
+- [คู่มือ AI Service และการปฏิบัติงาน](../docs/AI_SERVICE_OPERATIONS_TH.md)
+- [TOR AI/Warehouse Gap Checklist](../docs/TOR_AI_WAREHOUSE_GAP_CHECKLIST.md)
+
+## ข้อควรรู้
+
+- startup ครั้งแรกจะ pre-load classifier และอาจใช้เวลาหลายนาที
+- translation endpoint จะคืนข้อความเดิมหากไม่ได้ตั้ง `OPENAI_API_KEY`
+- HelpDesk integration ทำงานแบบ mock เป็นค่าเริ่มต้น
+- external dashboard/threat search ไม่ได้อยู่ใน active code path ของรีโปนี้

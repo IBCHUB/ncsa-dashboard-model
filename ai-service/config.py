@@ -3,7 +3,11 @@ Configuration for AI Service
 """
 
 import os
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional during lightweight test runs
+    def load_dotenv() -> bool:
+        return False
 
 load_dotenv()
 
@@ -322,11 +326,11 @@ SECTORS = {
 
 # Sector impact on scoring
 SECTOR_RISK_BONUS = {
-    "critical_infrastructure": 15,
     "government": 12,
+    "critical_infrastructure": 15,
     "healthcare": 10,
     "financial": 10,
     "technology": 5,
-    "education": 3,
+    "education": 0,
     "general": 0
 }

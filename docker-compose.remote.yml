@@ -31,36 +31,6 @@ services:
     networks:
       - tcti-network
 
-  # Next.js Dashboard
-  dashboard:
-    build:
-      context: ./dashboard
-      dockerfile: Dockerfile
-    container_name: tcti-dashboard
-    restart: unless-stopped
-    ports:
-      - "9001:3000"
-    environment:
-      - NODE_ENV=production
-      - AI_SERVICE_URL=http://ai-service:8000
-      # Internal Dashboard API Key
-      - AI_SERVICE_API_KEY=tcti-dashboard-key
-      # Remote ELK
-      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
-      - WAREHOUSE_INDEX=${WAREHOUSE_INDEX}
-      - ELASTICSEARCH_API_KEY=${ELASTICSEARCH_API_KEY}
-      # Authentication
-      - DASHBOARD_AUTH_USER=admin
-      - DASHBOARD_AUTH_PASSWORD=TCTI_Admin_2026!
-      - DASHBOARD_2FA_SECRET=JBSWY3DPEHPK3PXP
-      - DASHBOARD_REQUIRE_2FA=false
-      - DASHBOARD_SESSION_SECRET=super_secret_session_key_2026_CHANGE_ME_IN_PROD
-      - COOKIE_SECURE=false
-    depends_on:
-      - ai-service
-    networks:
-      - tcti-network
-
 volumes:
   ai-model-cache:
 
