@@ -82,6 +82,7 @@ def test_executive_and_operations_dashboards(client):
     )
     assert executive_preview.status_code == 200
     assert executive_preview.json()["data"]["filters"]["start_date"] == "2026-03-10"
+    assert executive_preview.json()["data"]["threat_level"]["date"] == "2026-03-11"
 
     executive_export = test_client.post(
         "/api/v1/reports/executive/export",

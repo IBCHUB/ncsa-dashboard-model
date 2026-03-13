@@ -50,7 +50,15 @@ app = FastAPI(
 cors_origins = [
     origin.strip() for origin in os.getenv(
         "AI_SERVICE_CORS_ORIGINS",
-        "http://localhost:3000,http://localhost:3001"
+        ",".join([
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://localhost:3011",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:3001",
+            "http://127.0.0.1:3011",
+            "http://192.168.1.20:9001",
+        ])
     ).split(",")
     if origin.strip()
 ]

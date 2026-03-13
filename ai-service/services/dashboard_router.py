@@ -290,6 +290,15 @@ def _date_query_range(start_date: Optional[str], end_date: Optional[str]) -> Opt
     return range_query
 
 
+def _resolve_anchor_end(end_date: Optional[str]) -> datetime:
+    if end_date:
+        normalized = end_date if "T" in end_date else f"{end_date}T23:59:59+07:00"
+        parsed = _parse_dt(normalized)
+        if parsed:
+            return parsed.astimezone(UTC)
+    return datetime.now(UTC)
+
+
 def _date_filter(range_query: Optional[Dict[str, str]], fields: Sequence[str]) -> Optional[Dict[str, Any]]:
     if not range_query:
         return None
@@ -1497,7 +1506,7 @@ def _build_news_articles(docs: List[Dict[str, Any]], query_text: Optional[str] =
         source_name = doc.get("source_name") or "unknown"
         title_source = str(doc.get("title") or doc.get("description") or doc.get("reference") or doc.get("ioc_value") or "Threat intelligence article").strip()
         title = title_source.split(".")[0][:120] or "Threat intelligence article"
-        published_at = (_pick_event_time(doc) or datetime.now(UTC)).isoformat().replace("+00:00", "Z")
+        published_at = (_pick_event_time(doc) or datetime.now(UTC)).astimezone(UTC).isoformat().replace("+00:00", "Z")
         article_key = _hash_id(source_name, str(doc.get("reference") or title), _to_bangkok_date(_pick_event_time(doc) or datetime.now(UTC)))
         article = articles.setdefault(
             article_key,
@@ -1625,7 +1634,7 @@ def executive_dashboard(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    now = datetime.now(UTC)
+    now = _resolve_anchor_end(end_date)
     if not end_date:
         end_date = _to_bangkok_date(now)
     if not start_date:
@@ -2429,9 +2438,20 @@ def list_news(
     if sort_by == "title":
         items = sorted(items, key=lambda item: str(item.get("title") or "").lower())
     elif sort_by == "source":
-        items = sorted(items, key=lambda item: (str(item.get("source") or "").lower(), str(item.get("published_at") or "")), reverse=True)
+        items = sorted(
+            items,
+            key=lambda item: (
+                str(item.get("source") or "").lower(),
+                _parse_dt(item.get("published_at")) or datetime.min.replace(tzinfo=UTC),
+            ),
+            reverse=True,
+        )
     else:
-        items = sorted(items, key=lambda item: item.get("published_at") or "", reverse=True)
+        items = sorted(
+            items,
+            key=lambda item: _parse_dt(item.get("published_at")) or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
     return _paged({"items": _page_slice(items, page, page_size)}, page=page, page_size=page_size, total=len(items))
 
 
