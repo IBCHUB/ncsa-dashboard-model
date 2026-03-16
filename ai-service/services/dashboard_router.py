@@ -72,6 +72,40 @@ REPORT_KEY_ALIASES = {
     "sectors": "target-sectors",
 }
 HTTP_BEARER = HTTPBearer(auto_error=False)
+COUNTRY_CODE_MAP = {
+    "thailand": "TH",
+    "china": "CN",
+    "india": "IN",
+    "indonesia": "ID",
+    "austria": "AT",
+    "russia": "RU",
+    "vietnam": "VN",
+    "netherlands": "NL",
+    "united states": "US",
+    "singapore": "SG",
+    "germany": "DE",
+    "united kingdom": "GB",
+    "france": "FR",
+    "australia": "AU",
+    "japan": "JP",
+    "south korea": "KR",
+    "iran": "IR",
+    "poland": "PL",
+}
+HIGH_CONFIDENCE_SOURCE_NAMES = {
+    "VirusTotal",
+    "AbuseIPDB",
+    "ThreatFox",
+    "URLhaus",
+    "MalwareBazaar",
+    "Recorded Future",
+    "Cyberint",
+    "AlienVault",
+    "MITRE",
+    "Sandbox",
+    "Suricata",
+    "Snort",
+}
 
 
 class LoginRequest(BaseModel):
@@ -343,6 +377,13 @@ def _country_from_doc(doc: Dict[str, Any]) -> Optional[str]:
         or geo_info.get("country")
         or doc.get("geo_country")
     )
+
+
+def _country_code_from_name(country_name: Optional[str]) -> Optional[str]:
+    if not country_name:
+        return None
+    normalized = str(country_name).strip().lower()
+    return COUNTRY_CODE_MAP.get(normalized)
 
 
 def _indicator_id(ioc_type: str, ioc_value: str) -> str:
@@ -779,6 +820,33 @@ def _build_severity_distribution(docs: List[Dict[str, Any]]) -> List[Dict[str, A
     return items
 
 
+def _build_threat_volume_nodes(docs: Sequence[Dict[str, Any]], limit: int = 12) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for doc in docs:
+        threat_values = doc.get("ai_threat_types") or doc.get("threat_type") or ["Unknown"]
+        for threat in threat_values:
+            label = str(threat or "Unknown").strip() or "Unknown"
+            grouped[label].append(doc)
+
+    nodes: List[Dict[str, Any]] = []
+    sorted_groups = sorted(grouped.items(), key=lambda item: len(item[1]), reverse=True)
+    for index, (label, threat_docs) in enumerate(sorted_groups[:limit]):
+        severity_counts = Counter(
+            _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+            for doc in threat_docs
+        )
+        severity = "Critical" if severity_counts.get("critical", 0) >= max(1, severity_counts.get("high", 0)) else "High"
+        nodes.append(
+            {
+                "id": f"{_slugify_text(label)}:{index}",
+                "label": label,
+                "severity": severity,
+                "value": len(threat_docs),
+            }
+        )
+    return nodes
+
+
 def _build_heatmap(docs: List[Dict[str, Any]]) -> Dict[str, Any]:
     x_axis = [f"{hour:02d}:00" for hour in range(24)]
     y_axis = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -793,7 +861,23 @@ def _build_heatmap(docs: List[Dict[str, Any]]) -> Dict[str, Any]:
     for day_index, day_label in enumerate(y_axis):
         for hour, hour_label in enumerate(x_axis):
             cells.append({"x": hour_label, "y": day_label, "value": counts[(day_index, hour)]})
-    return {"mode": "day-hour", "x_axis": x_axis, "y_axis": y_axis, "cells": cells}
+    peak_day, peak_hour = max(counts.items(), key=lambda item: item[1]) if counts else ((0, 0), 0)
+    peak_value = counts.get(peak_day, 0) if isinstance(peak_day, tuple) else 0
+    peak_day_index, peak_hour_index = peak_day if isinstance(peak_day, tuple) else (0, 0)
+    peak_label = f"{y_axis[peak_day_index]}, {x_axis[peak_hour_index]} - {(peak_hour_index + 1) % 24:02d}:00"
+    return {
+        "mode": "day-hour",
+        "x_axis": x_axis,
+        "y_axis": y_axis,
+        "cells": cells,
+        "peak": {
+            "day": y_axis[peak_day_index],
+            "hour": x_axis[peak_hour_index],
+            "end_hour": f"{peak_hour_index + 1:02d}:00",
+            "label": peak_label,
+            "value": peak_value,
+        },
+    }
 
 
 def _build_top_list(counter: Counter, labels: Optional[Dict[str, str]] = None, limit: int = 5) -> List[Dict[str, Any]]:
@@ -808,6 +892,11 @@ def _build_top_list(counter: Counter, labels: Optional[Dict[str, str]] = None, l
             "color": None,
         })
     return output
+
+
+def _slugify_text(value: str) -> str:
+    text = str(value or "").strip().lower()
+    return "".join(character if character.isalnum() else "-" for character in text).strip("-") or "unknown"
 
 
 def _normalize_report_key(report_key: str) -> str:
@@ -868,6 +957,89 @@ def _coordinates_from_doc(doc: Dict[str, Any]) -> Tuple[Optional[float], Optiona
         latitude_text, longitude_text = coordinates.split(",", 1)
         return _safe_float(latitude_text.strip(), None), _safe_float(longitude_text.strip(), None)
     return None, None
+
+
+def _origin_display_severity(severity_counts: Counter) -> str:
+    critical = int(severity_counts.get("critical", 0))
+    high = int(severity_counts.get("high", 0))
+    if critical > 0 and critical >= high:
+        return "critical"
+    return "high"
+
+
+def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_docs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    origin_docs: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    country_counts: Counter = Counter()
+
+    for doc in list(visible_docs) + list(related_docs):
+        country = _country_from_doc(doc)
+        if not country:
+            continue
+        country_counts[country] += 1
+        origin_docs[country].append(doc)
+
+    origins: List[Dict[str, Any]] = []
+    trusted_source_union = set()
+    for country, value in country_counts.most_common(10):
+        docs = origin_docs[country]
+        severity_counts = Counter(
+            _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+            for doc in docs
+        )
+        sector_counts = Counter(
+            _sector_info(doc)["sector_name"]
+            for doc in docs
+            if isinstance(doc.get("ai_score_breakdown"), dict)
+        )
+        latitude = None
+        longitude = None
+        for doc in docs:
+            candidate_latitude, candidate_longitude = _coordinates_from_doc(doc)
+            if candidate_latitude is not None and candidate_longitude is not None:
+                latitude, longitude = candidate_latitude, candidate_longitude
+                break
+        source_counter = Counter(
+            source
+            for doc in docs
+            for source in _normalize_sources(doc)
+            if source in HIGH_CONFIDENCE_SOURCE_NAMES or _safe_float(doc.get("confidence"), 0.0) >= 9.0
+        )
+        trusted_sources = [
+            source
+            for source, count in source_counter.most_common(4)
+            if count >= 5
+        ]
+        trusted_source_union.update(trusted_sources)
+        origins.append(
+            {
+                "country_code": _country_code_from_name(country),
+                "country_name": country,
+                "value": value,
+                "latitude": latitude,
+                "longitude": longitude,
+                "severity": _origin_display_severity(severity_counts),
+                "critical_count": int(severity_counts.get("critical", 0)),
+                "high_count": int(severity_counts.get("high", 0)),
+                "primary_sector": sector_counts.most_common(1)[0][0] if sector_counts else "General/Multiple",
+                "high_confidence_sources": len(trusted_sources),
+                "trusted_sources": trusted_sources,
+            }
+        )
+
+    return {
+        "target_country": "Thailand",
+        "high_confidence_sources": len(trusted_source_union),
+        "origins": origins,
+        "connections": [
+            {
+                "origin_country": origin["country_name"],
+                "target_country": "Thailand",
+                "count": origin["value"],
+                "severity": origin["severity"],
+            }
+            for origin in origins
+        ],
+    }
 
 
 def _severity_breakdown_counts(docs: Sequence[Dict[str, Any]], severity_field: str = "ai_severity") -> Dict[str, int]:
@@ -1192,6 +1364,77 @@ def _build_trend_analytics(
             "historical": historical,
             "forecast": forecast,
         },
+    }
+
+
+def _build_executive_attack_volume_trend(
+    docs: List[Dict[str, Any]],
+    now: datetime,
+    start_date: str,
+    end_date: str,
+) -> Dict[str, Any]:
+    start_day = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_day = datetime.strptime(end_date, "%Y-%m-%d").date()
+    day_span = max(0, (end_day - start_day).days)
+
+    if day_span == 0:
+        trend_training_docs = _hits_to_docs(
+            _search_warehouse_docs(
+                start_date=(now - timedelta(hours=72)).isoformat(),
+                end_date=now.isoformat(),
+                sort_by="time",
+                limit=5000,
+            )
+        )
+        trend_datalake_docs = _fetch_datalake_by_indicators(
+            [(doc.get("ioc_type", ""), doc.get("ioc_value", "")) for doc in trend_training_docs],
+            limit=5000,
+        )
+        trend = _build_trend_analytics(trend_training_docs, trend_datalake_docs, now=now)
+        return {
+            "points": [
+                {**point, "timestamp": point["hour"], "point_type": "historical"}
+                for point in trend["attack_volume_trend"]["historical"]
+            ] + [
+                {**point, "timestamp": point["hour"], "point_type": "forecast"}
+                for point in trend["attack_volume_trend"]["forecast"]
+            ],
+            "forecast_start_index": len(trend["attack_volume_trend"]["historical"]),
+        }
+
+    buckets: Dict[str, Dict[str, Any]] = {}
+    current_day = start_day
+    while current_day <= end_day:
+        key = current_day.strftime("%Y-%m-%d")
+        buckets[key] = {
+            "timestamp": f"{key}T00:00:00+07:00",
+            "label": current_day.strftime("%d-%m-%y"),
+            "total": 0,
+            "critical": 0,
+            "high": 0,
+            "point_type": "historical",
+        }
+        current_day += timedelta(days=1)
+
+    for doc in docs:
+        event_time = _pick_event_time(doc)
+        if not event_time:
+            continue
+        day_key = _to_bangkok_date(event_time)
+        bucket = buckets.get(day_key)
+        if not bucket:
+            continue
+        severity = _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+        bucket["total"] += 1
+        if severity == "critical":
+            bucket["critical"] += 1
+        if severity in {"critical", "high"}:
+            bucket["high"] += 1
+
+    points = [buckets[key] for key in sorted(buckets.keys())]
+    return {
+        "points": points,
+        "forecast_start_index": len(points),
     }
 
 
@@ -1641,35 +1884,14 @@ def executive_dashboard(
         start_date = _to_bangkok_date(now - timedelta(hours=24))
 
     visible_docs = _hits_to_docs(_search_warehouse_docs(start_date=start_date, end_date=end_date, sort_by="time", limit=5000))
+    visible_datalake_docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
     threat_level_docs = _hits_to_docs(_search_warehouse_docs(start_date=_to_bangkok_date(now - timedelta(days=14)), end_date=end_date, sort_by="time", limit=5000))
-    trend_training_docs = _hits_to_docs(_search_warehouse_docs(start_date=(now - timedelta(hours=72)).isoformat(), end_date=now.isoformat(), sort_by="time", limit=5000))
-    datalake_docs = _fetch_datalake_by_indicators([(doc.get("ioc_type", ""), doc.get("ioc_value", "")) for doc in trend_training_docs], limit=5000)
-    trend = _build_trend_analytics(trend_training_docs, datalake_docs, now=now)
     severity_distribution = _build_severity_distribution(visible_docs)
-    top_threats = Counter(
-        threat
-        for doc in visible_docs
-        for threat in (doc.get("ai_threat_types") or doc.get("threat_type") or [])
-    )
-    treemap_nodes = [
-        {
-            "id": f"{key}:{index}",
-            "label": key,
-            "severity": "Critical" if index % 2 == 0 else "High",
-            "value": value,
-        }
-        for index, (key, value) in enumerate(top_threats.most_common(12))
-    ]
-    country_counts = Counter(
-        value
-        for value in (_country_from_doc(doc) for doc in datalake_docs + visible_docs)
-        if value
-    )
-    origins = []
-    for country, value in country_counts.most_common(10):
-        origins.append({"country_code": None, "country_name": country, "value": value, "latitude": 0.0, "longitude": 0.0})
+    treemap_nodes = _build_threat_volume_nodes(visible_docs)
     threat_level = _build_threat_level(threat_level_docs, now=now)
     primary_sector = threat_level["top_sectors"][0] if threat_level["top_sectors"] else {"sector_name": "General/Multiple"}
+    attack_origin_map = _build_attack_origin_map(visible_docs, visible_datalake_docs)
+    attack_volume_trend = _build_executive_attack_volume_trend(visible_docs, now=now, start_date=start_date, end_date=end_date)
     payload = {
         "threat_level": {
             "date": threat_level["date"],
@@ -1690,24 +1912,8 @@ def executive_dashboard(
         },
         "severity_distribution": severity_distribution,
         "threat_volume_severity": {"nodes": treemap_nodes},
-        "attack_volume_trend": {
-            "points": [
-                {**point, "timestamp": point["hour"], "point_type": "historical"}
-                for point in trend["attack_volume_trend"]["historical"]
-            ] + [
-                {**point, "timestamp": point["hour"], "point_type": "forecast"}
-                for point in trend["attack_volume_trend"]["forecast"]
-            ],
-            "forecast_start_index": len(trend["attack_volume_trend"]["historical"]),
-        },
-        "attack_origin_map": {
-            "target_country": "Thailand",
-            "origins": origins,
-            "connections": [
-                {"origin_country": origin["country_name"], "target_country": "Thailand", "count": origin["value"]}
-                for origin in origins
-            ],
-        },
+        "attack_volume_trend": attack_volume_trend,
+        "attack_origin_map": attack_origin_map,
     }
     return _success(payload)
 
@@ -1753,15 +1959,16 @@ def operations_dashboard(
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
     docs = _hits_to_docs(_search_warehouse_docs(start_date=start_date, end_date=end_date, sort_by="time", limit=5000))
-    datalake_docs = _fetch_datalake_by_indicators([(doc.get("ioc_type", ""), doc.get("ioc_value", "")) for doc in docs], limit=5000)
+    datalake_docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
     source_counts = Counter(source for doc in docs for source in _normalize_sources(doc))
     threat_counts = Counter(threat for doc in docs for threat in (doc.get("ai_threat_types") or doc.get("threat_type") or []))
     country_counts = Counter(country for country in (_country_from_doc(doc) for doc in datalake_docs + docs) if country)
     sector_counts = Counter(_sector_info(doc)["sector_name_th"] for doc in docs)
+    heatmap_docs = datalake_docs or docs
     payload = {
         "overview": _operations_overview(docs),
         "incident_by_severity": _build_severity_distribution(docs),
-        "attack_time_heatmap": _build_heatmap(docs),
+        "attack_time_heatmap": _build_heatmap(heatmap_docs),
         "top_intelligence_sources": _build_top_list(source_counts),
         "top_threat_types": _build_top_list(threat_counts),
         "top_attack_origins": _build_top_list(country_counts),

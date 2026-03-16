@@ -31,7 +31,7 @@ DEFAULT_CHUNK_SIZE = 500
 DEFAULT_SMALL_WAREHOUSE_TARGET = 36
 DEFAULT_LARGE_WAREHOUSE_TARGET = 12000
 DEFAULT_SMALL_DATE_SPAN_DAYS = 1
-DEFAULT_LARGE_DATE_SPAN_DAYS = 13
+DEFAULT_LARGE_DATE_SPAN_DAYS = 30
 
 LEGACY_FIXTURE_DOCS = (
     (WAREHOUSE_INDEX, "fixture-action-review-20260205", WAREHOUSE_API_KEY),
@@ -101,6 +101,86 @@ SOURCE_CATALOG: Dict[str, Dict[str, Any]] = {
 
 ALL_SOURCES: Sequence[str] = tuple(SOURCE_CATALOG.keys())
 NEWS_SOURCES: Sequence[str] = tuple(name for name, meta in SOURCE_CATALOG.items() if meta["category"] == "news")
+PROFILE_PREVALENCE: Dict[str, float] = {
+    "phishing": 1.45,
+    "malware": 1.28,
+    "vulnerability": 0.94,
+    "defacement": 0.62,
+    "ddos": 0.74,
+    "breach": 1.02,
+    "c2": 0.96,
+    "supply_chain": 0.88,
+}
+SECTOR_PREVALENCE: Dict[str, float] = {
+    "government": 1.24,
+    "financial": 1.16,
+    "healthcare": 1.08,
+    "critical_infrastructure": 1.02,
+    "telecom": 0.96,
+    "manufacturing": 0.9,
+    "technology": 0.84,
+    "energy": 0.82,
+    "retail": 0.76,
+    "education": 0.68,
+}
+SEVERITY_PREVALENCE: Dict[str, float] = {
+    "critical": 1.18,
+    "high": 1.0,
+    "medium": 0.82,
+    "low": 0.58,
+    "clean": 0.4,
+}
+
+CAMPAIGN_PATTERNS: Dict[str, Dict[str, Any]] = {
+    "phishing": {
+        "weekday_weights": [0.08, 0.12, 0.19, 0.23, 0.24, 0.09, 0.05],
+        "peak_hours": [8, 9, 10, 13, 14],
+        "peak_weights": [0.16, 0.26, 0.22, 0.22, 0.14],
+        "spread_hours": [-1, 0, 0, 1],
+    },
+    "malware": {
+        "weekday_weights": [0.09, 0.14, 0.18, 0.2, 0.19, 0.12, 0.08],
+        "peak_hours": [1, 2, 3, 11, 14, 20],
+        "peak_weights": [0.08, 0.14, 0.14, 0.2, 0.24, 0.2],
+        "spread_hours": [-2, -1, 0, 0, 1],
+    },
+    "vulnerability": {
+        "weekday_weights": [0.11, 0.19, 0.24, 0.2, 0.14, 0.07, 0.05],
+        "peak_hours": [9, 10, 13, 15],
+        "peak_weights": [0.2, 0.28, 0.28, 0.24],
+        "spread_hours": [-1, 0, 0, 1],
+    },
+    "defacement": {
+        "weekday_weights": [0.06, 0.08, 0.1, 0.21, 0.29, 0.18, 0.08],
+        "peak_hours": [0, 1, 2, 20, 21, 22],
+        "peak_weights": [0.08, 0.14, 0.18, 0.16, 0.24, 0.2],
+        "spread_hours": [-1, 0, 0, 1, 2],
+    },
+    "ddos": {
+        "weekday_weights": [0.07, 0.11, 0.18, 0.21, 0.22, 0.13, 0.08],
+        "peak_hours": [10, 11, 14, 15, 18, 19],
+        "peak_weights": [0.08, 0.14, 0.22, 0.24, 0.16, 0.16],
+        "spread_hours": [-1, 0, 0, 1],
+    },
+    "breach": {
+        "weekday_weights": [0.1, 0.15, 0.22, 0.2, 0.17, 0.09, 0.07],
+        "peak_hours": [8, 9, 12, 13, 16],
+        "peak_weights": [0.16, 0.22, 0.18, 0.24, 0.2],
+        "spread_hours": [-1, 0, 0, 1],
+    },
+    "c2": {
+        "weekday_weights": [0.08, 0.12, 0.18, 0.19, 0.18, 0.14, 0.11],
+        "peak_hours": [0, 1, 2, 13, 14, 21],
+        "peak_weights": [0.14, 0.16, 0.12, 0.18, 0.2, 0.2],
+        "spread_hours": [-2, -1, 0, 0, 1],
+    },
+    "supply_chain": {
+        "weekday_weights": [0.12, 0.17, 0.24, 0.18, 0.14, 0.09, 0.06],
+        "peak_hours": [9, 10, 13, 14],
+        "peak_weights": [0.18, 0.28, 0.28, 0.26],
+        "spread_hours": [-1, 0, 0, 1],
+    },
+}
 
 SOURCE_BUNDLES: Dict[str, Dict[str, Sequence[str]]] = {
     "phishing": {
@@ -163,6 +243,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "Lazarus",
         "sector": "government",
         "country_pool": ("China", "India", "Indonesia"),
+        "country_weights": (0.58, 0.25, 0.17),
         "source_profile": "phishing",
         "malware": "AgentTesla",
         "headline": "Government credential harvesting campaign targets Thai agencies",
@@ -177,6 +258,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "APT28",
         "sector": "financial",
         "country_pool": ("India", "Russia", "China"),
+        "country_weights": (0.56, 0.27, 0.17),
         "source_profile": "malware",
         "malware": "Qakbot",
         "headline": "Banking malware callback infrastructure observed in regional hosting provider",
@@ -191,6 +273,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "Cl0p",
         "sector": "healthcare",
         "country_pool": ("United States", "Germany", "Singapore"),
+        "country_weights": (0.5, 0.28, 0.22),
         "source_profile": "vulnerability",
         "malware": "ExploitKit",
         "headline": "Healthcare VPN zero-day under active exploitation",
@@ -205,6 +288,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "Anonymous",
         "sector": "energy",
         "country_pool": ("Indonesia", "China", "Iran"),
+        "country_weights": (0.49, 0.31, 0.2),
         "source_profile": "defacement",
         "malware": "WebShell",
         "headline": "Utility customer portal defaced and mirrored on threat channels",
@@ -219,6 +303,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "Anonymous",
         "sector": "education",
         "country_pool": ("Indonesia", "Thailand", "Singapore"),
+        "country_weights": (0.45, 0.35, 0.2),
         "source_profile": "ddos",
         "malware": "Botnet",
         "headline": "Volumetric probes against university edge services intensify",
@@ -233,6 +318,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "APT29",
         "sector": "telecom",
         "country_pool": ("China", "India", "United States"),
+        "country_weights": (0.42, 0.34, 0.24),
         "source_profile": "breach",
         "malware": "StealerX",
         "headline": "Leaked telecom credentials surfaced with exfiltration URL",
@@ -247,6 +333,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "LockBit",
         "sector": "manufacturing",
         "country_pool": ("India", "Russia", "Poland"),
+        "country_weights": (0.46, 0.34, 0.2),
         "source_profile": "malware",
         "malware": "LockBit",
         "headline": "Manufacturing ransomware sample linked to lateral movement toolkit",
@@ -261,6 +348,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "APT41",
         "sector": "government",
         "country_pool": ("China", "South Korea", "Japan"),
+        "country_weights": (0.57, 0.24, 0.19),
         "source_profile": "supply_chain",
         "malware": "BackdoorLoader",
         "headline": "Compromised package repository references staged update domain",
@@ -275,6 +363,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "FIN7",
         "sector": "healthcare",
         "country_pool": ("India", "United States", "Singapore"),
+        "country_weights": (0.42, 0.34, 0.24),
         "source_profile": "c2",
         "malware": "InfoStealer",
         "headline": "Healthcare credential harvesting pages mimic appointment workflows",
@@ -289,6 +378,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "OilRig",
         "sector": "technology",
         "country_pool": ("France", "United Kingdom", "United States"),
+        "country_weights": (0.3, 0.26, 0.44),
         "source_profile": "vulnerability",
         "malware": "ExploitChain",
         "headline": "Public cloud panel vulnerability discussed across editorial feeds",
@@ -303,6 +393,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "MuddyWater",
         "sector": "financial",
         "country_pool": ("Indonesia", "Thailand", "India"),
+        "country_weights": (0.42, 0.24, 0.34),
         "source_profile": "phishing",
         "malware": "BrowserStealer",
         "headline": "Financial alert phishing workflow abuses cloned banking login pages",
@@ -317,6 +408,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "Emotet",
         "sector": "retail",
         "country_pool": ("China", "India", "Russia"),
+        "country_weights": (0.45, 0.27, 0.28),
         "source_profile": "malware",
         "malware": "Emotet",
         "headline": "Retail botnet relay infrastructure observed in recurring malware sessions",
@@ -331,6 +423,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "APT29",
         "sector": "telecom",
         "country_pool": ("Netherlands", "Germany", "France"),
+        "country_weights": (0.4, 0.34, 0.26),
         "source_profile": "c2",
         "malware": "BeaconX",
         "headline": "Regional telecom beacons connect to rotating command infrastructure",
@@ -345,6 +438,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "APT41",
         "sector": "government",
         "country_pool": ("China", "Russia", "Iran"),
+        "country_weights": (0.44, 0.32, 0.24),
         "source_profile": "malware",
         "malware": "LoaderX",
         "headline": "Public-sector malware sample linked to loader reuse",
@@ -359,6 +453,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "FIN7",
         "sector": "retail",
         "country_pool": ("United States", "Netherlands", "Singapore"),
+        "country_weights": (0.45, 0.31, 0.24),
         "source_profile": "breach",
         "malware": "CardSkimmer",
         "headline": "Retail storefront skimmer domain appears in breach telemetry",
@@ -373,6 +468,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "Anonymous",
         "sector": "education",
         "country_pool": ("Thailand", "Singapore", "Indonesia"),
+        "country_weights": (0.52, 0.2, 0.28),
         "source_profile": "ddos",
         "malware": "Scanner",
         "headline": "Automated reconnaissance continues against university perimeter services",
@@ -387,6 +483,7 @@ ARCHETYPES: Sequence[Dict[str, Any]] = (
         "threat_actor": "APT41",
         "sector": "critical_infrastructure",
         "country_pool": ("United States", "Germany", "Japan"),
+        "country_weights": (0.48, 0.31, 0.21),
         "source_profile": "supply_chain",
         "malware": "ExploitKit",
         "headline": "Critical infrastructure vendor patch advisory tied to active exploitation",
@@ -601,7 +698,28 @@ def _weighted_date(rng: random.Random, dates: Sequence[date]) -> date:
 
 
 def _choose_country(archetype: Dict[str, Any], rng: random.Random) -> str:
+    weights = archetype.get("country_weights")
+    if weights and len(weights) == len(archetype["country_pool"]):
+        return _weighted_choice(rng, list(archetype["country_pool"]), list(weights))
     return rng.choice(list(archetype["country_pool"]))
+
+
+def _archetype_weight(archetype: Dict[str, Any]) -> float:
+    profile_weight = PROFILE_PREVALENCE.get(str(archetype.get("source_profile")), 1.0)
+    sector_weight = SECTOR_PREVALENCE.get(str(archetype.get("sector")), 1.0)
+    severity_weight = SEVERITY_PREVALENCE.get(str(archetype.get("severity")), 1.0)
+    threat_type_count = max(1, len(archetype.get("threat_types") or []))
+    return round(profile_weight * sector_weight * severity_weight * (1 + ((threat_type_count - 1) * 0.08)), 3)
+
+
+def _choose_archetype(rng: random.Random, doc_index: int) -> Dict[str, Any]:
+    # Guarantee every archetype appears at least once before switching to
+    # weighted sampling. This keeps coverage while avoiding unrealistically
+    # uniform volume across all campaigns.
+    if doc_index < len(ARCHETYPES):
+        return ARCHETYPES[doc_index]
+    weights = [_archetype_weight(archetype) for archetype in ARCHETYPES]
+    return _weighted_choice(rng, list(ARCHETYPES), weights)
 
 
 def _choose_sources(archetype: Dict[str, Any], rng: random.Random, doc_index: int) -> List[str]:
@@ -609,9 +727,9 @@ def _choose_sources(archetype: Dict[str, Any], rng: random.Random, doc_index: in
     selected: List[str] = []
 
     intel_count = rng.randint(2, 3)
-    sensor_count = 1 if rng.random() < 0.4 else 0
-    news_count = 1 if rng.random() < 0.65 else 0
-    internal_count = 1 if rng.random() < 0.35 else 0
+    sensor_count = 1 if rng.random() < 0.48 else 0
+    news_count = 1 if rng.random() < 0.62 else 0
+    internal_count = 1 if rng.random() < 0.28 else 0
 
     selected.extend(rng.sample(list(bundle["intel"]), k=min(intel_count, len(bundle["intel"]))))
     if sensor_count:
@@ -620,10 +738,6 @@ def _choose_sources(archetype: Dict[str, Any], rng: random.Random, doc_index: in
         selected.extend(rng.sample(list(bundle["news"]), k=min(news_count, len(bundle["news"]))))
     if internal_count:
         selected.extend(rng.sample(list(bundle["internal"]), k=min(internal_count, len(bundle["internal"]))))
-
-    coverage_source = ALL_SOURCES[doc_index % len(ALL_SOURCES)]
-    if coverage_source not in selected:
-        selected.append(coverage_source)
 
     if not any(SOURCE_CATALOG[source]["category"] == "news" for source in selected) and rng.random() < 0.45:
         selected.append(rng.choice(list(bundle["news"])))
@@ -665,12 +779,59 @@ def _ioc_value(archetype: Dict[str, Any], serial: int) -> str:
     return _hash_hex(f"{archetype['slug']}-{serial}", 64)
 
 
-def _event_times(target_date: date, rng: random.Random, event_count: int) -> List[datetime]:
-    peak_hour = rng.choice([1, 3, 5, 8, 10, 12, 14, 16, 18, 20, 22])
+def _pattern_date(archetype: Dict[str, Any], dates: Sequence[date], rng: random.Random) -> date:
+    pattern = CAMPAIGN_PATTERNS[archetype["source_profile"]]
+    weekday_weights = list(pattern["weekday_weights"])
+    weights = []
+    for current in dates:
+        weekday_weight = weekday_weights[current.weekday()]
+        dispersion_jitter = 0.92 + (rng.random() * 0.16)
+        weights.append(weekday_weight * dispersion_jitter)
+    return _weighted_choice(rng, dates, weights)
+
+
+def _current_bangkok_time() -> datetime:
+    return datetime.now(BANGKOK_TZ)
+
+
+def _allowed_peak_hours(pattern: Dict[str, Any], target_date: date) -> Tuple[List[int], List[float], int]:
+    peak_hours = list(pattern["peak_hours"])
+    peak_weights = list(pattern["peak_weights"])
+    if target_date != _current_bangkok_time().date():
+        return peak_hours, peak_weights, 23
+
+    current_hour = _current_bangkok_time().hour
+    allowed_pairs = [
+        (hour, weight)
+        for hour, weight in zip(peak_hours, peak_weights)
+        if hour <= current_hour
+    ]
+    if not allowed_pairs:
+        fallback_hour = min(current_hour, min(peak_hours)) if peak_hours else current_hour
+        return [fallback_hour], [1.0], current_hour
+    allowed_hours = [hour for hour, _ in allowed_pairs]
+    allowed_weights = [weight for _, weight in allowed_pairs]
+    return allowed_hours, allowed_weights, current_hour
+
+
+def _event_times(archetype: Dict[str, Any], target_date: date, rng: random.Random, event_count: int) -> List[datetime]:
+    pattern = CAMPAIGN_PATTERNS[archetype["source_profile"]]
+    peak_hours, peak_weights, max_hour = _allowed_peak_hours(pattern, target_date)
+    peak_hour = _weighted_choice(rng, peak_hours, peak_weights)
+    secondary_candidates = [hour for hour in peak_hours if abs(hour - peak_hour) >= 3]
+    secondary_hour = _weighted_choice(rng, secondary_candidates, [1.0] * len(secondary_candidates)) if secondary_candidates else peak_hour
+    spread_hours = list(pattern["spread_hours"])
+    center_index = max(0, len(spread_hours) // 2)
+    spread_weights = [max(1, len(spread_hours) - abs(index - center_index) * 2) for index, _ in enumerate(spread_hours)]
     times: List[datetime] = []
     for index in range(event_count):
-        hour = (peak_hour + index * rng.choice([1, 2, 3])) % 24
-        minute = (7 + (index * 13) + rng.randint(0, 18)) % 60
+        use_secondary = secondary_candidates and index > 0 and rng.random() < 0.26
+        anchor_hour = secondary_hour if use_secondary else peak_hour
+        offset = _weighted_choice(rng, spread_hours, spread_weights)
+        hour = max(0, min(max_hour, anchor_hour + offset))
+        if rng.random() < 0.07:
+            hour = max(0, min(max_hour, hour + rng.choice([-4, -3, 3, 4])))
+        minute = (5 + (index * 11) + rng.randint(0, 10)) % 60
         second = rng.randint(0, 50)
         times.append(
             datetime(
@@ -807,7 +968,8 @@ def _reference(base_slug: str, serial: int, source_name: str) -> str:
 
 
 def _headline(archetype: Dict[str, Any], serial: int, country: str) -> str:
-    return f"{archetype['headline']} #{serial} ({country})"
+    headline_variant = ((serial - 1) % 7) + 1
+    return f"{archetype['headline']} #{headline_variant}"
 
 
 def _description(archetype: Dict[str, Any], sector_name: str, country: str) -> str:
@@ -828,7 +990,7 @@ def _warehouse_doc(
 ) -> Tuple[str, Dict[str, Any], List[str], List[datetime], str, str]:
     ioc_value = _ioc_value(archetype, serial)
     sources = _choose_sources(archetype, rng, doc_index)
-    event_times = _event_times(target_date, rng, len(sources))
+    event_times = _event_times(archetype, target_date, rng, len(sources))
     severity = _severity_mix(archetype, rng)
     risk_score = _risk_score(archetype, severity, len(sources), rng)
     country_name = _choose_country(archetype, rng)
@@ -842,7 +1004,7 @@ def _warehouse_doc(
     threat_types = list(archetype["threat_types"])
     if severity == "critical" and "Other" not in threat_types and rng.random() < 0.18:
         threat_types.append("Other")
-    warehouse_id = f"seed-wh-{batch}-{serial:06d}"
+    warehouse_id = f"TCTI-{target_date.strftime('%Y%m%d')}-{serial:05d}"
     payload = {
         "synthetic_tag": SEED_TAG,
         "synthetic_series": SEED_SERIES,
@@ -990,8 +1152,8 @@ def _iter_seed_documents(
 
     for doc_index in range(warehouse_target):
         serial = doc_index + 1
-        archetype = ARCHETYPES[doc_index % len(ARCHETYPES)]
-        target_date = _weighted_date(rng, dates)
+        archetype = _choose_archetype(rng, doc_index)
+        target_date = _pattern_date(archetype, dates, rng)
         warehouse_id, warehouse_payload, sources, event_times, country_name, ioc_value = _warehouse_doc(
             batch=batch,
             archetype=archetype,
