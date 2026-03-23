@@ -46,27 +46,21 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware (allow local UI clients)
-cors_origins = [
-    origin.strip() for origin in os.getenv(
-        "AI_SERVICE_CORS_ORIGINS",
-        ",".join([
-            "http://localhost:3000",
-            "http://localhost:3001",
-            "http://localhost:3011",
-            "http://127.0.0.1:3000",
-            "http://127.0.0.1:3001",
-            "http://127.0.0.1:3011",
-            "http://192.168.1.20:9001",
-        ])
-    ).split(",")
-    if origin.strip()
-]
+# CORS middleware
+cors_origin_setting = os.getenv("AI_SERVICE_CORS_ORIGINS", "*").strip()
+if cors_origin_setting == "*" or not cors_origin_setting:
+    cors_origins = ["*"]
+else:
+    cors_origins = [
+        origin.strip()
+        for origin in cors_origin_setting.split(",")
+        if origin.strip()
+    ]
 allow_credentials = "*" not in cors_origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins or ["http://localhost:3000"],
+    allow_origins=cors_origins or ["*"],
     allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
