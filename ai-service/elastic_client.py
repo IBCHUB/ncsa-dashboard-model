@@ -9,18 +9,18 @@ Supports external ELK stack with per-index API key authentication.
 """
 
 import os
+import copy
 import logging
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
 # Configuration
-ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "https://pluto-elk.ibusiness.co.th")
+ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
 DATALAKE_INDEX = os.getenv("DATALAKE_INDEX", "cyber-logs-datalake")
-PROCESSED_INDEX = os.getenv("PROCESSED_INDEX", "cyber-logs-processed")
 WAREHOUSE_INDEX = os.getenv("WAREHOUSE_INDEX", "cyber-logs-datawarehouse")
 
 # API Keys (Per-index access)
@@ -29,7 +29,7 @@ WAREHOUSE_API_KEY = os.getenv("WAREHOUSE_API_KEY", "")
 
 # Try to import elasticsearch, fallback to httpx if not available
 try:
-    from elasticsearch import Elasticsearch, helpers
+    from elasticsearch import Elasticsearch
     ES_CLIENT_AVAILABLE = True
 except ImportError:
     ES_CLIENT_AVAILABLE = False
@@ -48,7 +48,6 @@ class ElasticClient:
     def __init__(self, url: str = ELASTICSEARCH_URL):
         self.url = url
         self.datalake_index = DATALAKE_INDEX
-        self.processed_index = PROCESSED_INDEX
         self.warehouse_index = WAREHOUSE_INDEX
         
         self.datalake_api_key = DATALAKE_API_KEY
@@ -66,10 +65,6 @@ class ElasticClient:
         if index == self.datalake_index:
             return self.datalake_api_key
         elif index == self.warehouse_index:
-            return self.warehouse_api_key
-        elif index == self.processed_index:
-            # Use warehouse key for processed layer (output side) OR datalake key?
-            # Prefer Warehouse key as it is 'enriched' data
             return self.warehouse_api_key
         return None
 
@@ -170,7 +165,8 @@ class ElasticClient:
                 statuses[index] = "available"
                 available += 1
             except Exception as e:
-                statuses[index] = f"error: {e}"
+                logger.error(f"Health check failed for {index}: {e}")
+                statuses[index] = "error"
 
         if available == 2:
             status = "green"
@@ -194,18 +190,7 @@ class ElasticClient:
         ioc_type = str(ioc_data.get("ioc_type", "unknown")).strip().lower()
         ioc_value = str(ioc_data.get("ioc_value", "")).strip().lower()
         payload = f"{ioc_type}:{ioc_value}".encode("utf-8")
-        digest = hashlib.sha1(payload).hexdigest()[:24]
-        return f"{ioc_type}:{digest}"
-
-    @staticmethod
-    def _build_processed_doc_id(ioc_data: Dict[str, Any]) -> str:
-        ioc_type = str(ioc_data.get("ioc_type", "unknown")).strip().lower()
-        ioc_value = str(ioc_data.get("ioc_value", "")).strip().lower()
-        first_seen = str(ioc_data.get("first_seen", "")).strip()
-        last_seen = str(ioc_data.get("last_seen", "")).strip()
-        sources = ",".join(sorted(ioc_data.get("sources", []) or []))
-        payload = f"{ioc_type}:{ioc_value}|{first_seen}|{last_seen}|{sources}".encode("utf-8")
-        digest = hashlib.sha1(payload).hexdigest()[:24]
+        digest = hashlib.sha256(payload).hexdigest()[:24]
         return f"{ioc_type}:{digest}"
 
     @staticmethod
@@ -221,7 +206,7 @@ class ElasticClient:
             f"{source}|{source_type}|{event_time}|{collect_time}|"
             f"{reference}|{str(doc.get('description', ''))[:256]}"
         )
-        digest = hashlib.sha1(fingerprint_src.encode("utf-8")).hexdigest()[:24]
+        digest = hashlib.sha256(fingerprint_src.encode("utf-8")).hexdigest()[:24]
         return f"{ioc_type}:{ioc_value}:{digest}"
     
     def create_indexes(self) -> Dict[str, bool]:
@@ -250,8 +235,17 @@ class ElasticClient:
                     "geo_country": {"type": "keyword"},
                     "ai_processed": {"type": "boolean"},
                     "created_at": {"type": "date"},
-                    # catch-all for other fields if needed, or rely on _source
-                    "enrichment": {"type": "object", "enabled": False} 
+                    # Source confidence & traceability
+                    "confidence": {"type": "integer"},
+                    "source_url": {"type": "keyword"},
+                    "source_id": {"type": "keyword"},
+                    # IOC relationships
+                    "related_hash": {"type": "keyword"},
+                    "related_domain": {"type": "keyword"},
+                    # Computed from enrichment
+                    "domain_age_days": {"type": "integer"},
+                    # Enrichment blob (stored in _source, not indexed)
+                    "enrichment": {"type": "object", "enabled": False}
                 }
             }
         }
@@ -267,6 +261,7 @@ class ElasticClient:
                     "sources": {"type": "keyword"},
                     "source_types": {"type": "keyword"},
                     "source_count": {"type": "integer"},
+                    "source_urls": {"type": "keyword"},
                     "description": {"type": "text"},
                     "threat_type": {"type": "keyword"},
                     "severity": {"type": "keyword"},
@@ -309,6 +304,8 @@ class ElasticClient:
                     "action_closed_reason": {"type": "keyword"},
                     "cleaning_flags": {"type": "keyword"},
                     "sanitization_summary": {"type": "object", "enabled": False},
+                    "cluster_label": {"type": "integer"},
+                    "cluster_probability": {"type": "float"},
                     "processed_at": {"type": "date"},
                     "created_at": {"type": "date"}
                 }
@@ -436,7 +433,7 @@ class ElasticClient:
                 return True
             else:
                 resp = httpx.post(
-                    f"{self.url}/{self.datalake_index}/_update/{doc_id}",
+                    f"{self.url}/{self.datalake_index}/_update/{quote(doc_id, safe='')}",
                     json={"doc": {"ai_processed": True}},
                     timeout=10,
                     headers=self._get_headers(self.datalake_index)
@@ -448,8 +445,9 @@ class ElasticClient:
     
     @staticmethod
     def _prepare_warehouse_document(ioc_data: Dict[str, Any]) -> Dict[str, Any]:
-        document = dict(ioc_data)
-        processed_at = document.get("processed_at") or datetime.utcnow().isoformat() + "Z"
+        document = copy.deepcopy(ioc_data)
+        now = datetime.now(timezone.utc).isoformat()
+        processed_at = document.get("processed_at") or now
         document["processed_at"] = processed_at
         if "created_at" not in document:
             document["created_at"] = processed_at
@@ -471,6 +469,8 @@ class ElasticClient:
         document["validation_reasons"] = document.get("validation_reasons", [])
         document["cleaning_flags"] = document.get("cleaning_flags", [])
         document["sanitization_summary"] = document.get("sanitization_summary", {})
+        document["cluster_label"] = document.get("cluster_label")
+        document["cluster_probability"] = document.get("cluster_probability")
         return document
 
     def save_to_warehouse(self, ioc_data: Dict[str, Any]) -> Optional[str]:
@@ -499,20 +499,15 @@ class ElasticClient:
             logger.error(f"Failed to save to warehouse: {e}")
             return None
 
-    def save_to_processed(self, ioc_data: Dict[str, Any]) -> Optional[str]:
-        logger.warning("save_to_processed() is deprecated; writing to warehouse instead")
-        return self.save_to_warehouse(ioc_data)
-    
     def bulk_index_datalake(self, documents: List[Dict]) -> Dict[str, int]:
         success = 0
         failed = 0
         
         client = self._get_client(self.datalake_index)
         
-        for doc in documents:
-            doc["ai_processed"] = False
-            doc["created_at"] = datetime.utcnow().isoformat() + "Z"
-            
+        now = datetime.now(timezone.utc).isoformat()
+        for original_doc in documents:
+            doc = {**original_doc, "ai_processed": False, "created_at": now}
             try:
                 ioc_id = self._build_datalake_doc_id(doc)
                 if ES_CLIENT_AVAILABLE and client:
@@ -572,29 +567,7 @@ class ElasticClient:
             }
         except Exception as e:
             logger.error(f"Review queue search failed: {e}")
-            return {"total": 0, "data": [], "error": str(e)}
-
-    def search_processed_documents(
-        self,
-        validation_status: Optional[str] = None,
-        review_state: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0
-    ) -> Dict[str, Any]:
-        logger.warning("search_processed_documents() is deprecated; querying warehouse instead")
-        return self.search_review_documents(
-            validation_status=validation_status,
-            review_state=review_state,
-            limit=limit,
-            offset=offset,
-        )
-
-    def get_review_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        try:
-            return self._get_document(self.warehouse_index, doc_id)
-        except Exception as e:
-            logger.error(f"Failed to get review document {doc_id}: {e}")
-            return None
+            return {"total": 0, "data": [], "error": "Search failed"}
 
     def get_warehouse_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
         try:
@@ -603,10 +576,6 @@ class ElasticClient:
             logger.error(f"Failed to get warehouse document {doc_id}: {e}")
             return None
 
-    def get_processed_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        logger.warning("get_processed_document() is deprecated; reading from warehouse instead")
-        return self.get_review_document(doc_id)
-
     def update_warehouse_document(self, doc_id: str, fields: Dict[str, Any]) -> bool:
         try:
             return self._update_document(self.warehouse_index, doc_id, fields)
@@ -614,95 +583,6 @@ class ElasticClient:
             logger.error(f"Failed to update warehouse document {doc_id}: {e}")
             return False
 
-    def update_processed_document(self, doc_id: str, fields: Dict[str, Any]) -> bool:
-        logger.warning("update_processed_document() is deprecated; updating warehouse instead")
-        return self.update_warehouse_document(doc_id, fields)
-    
-    def search_warehouse(
-        self,
-        query: str = "*",
-        ioc_type: Optional[str] = None,
-        severity: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0
-    ) -> Dict[str, Any]:
-        must_clauses = []
-        
-        if query and query != "*":
-            must_clauses.append({
-                "multi_match": {
-                    "query": query,
-                    "fields": ["ioc_value^3", "description", "tags"]
-                }
-            })
-        
-        if ioc_type:
-            must_clauses.append({"term": {"ioc_type": ioc_type}})
-        
-        if severity:
-            must_clauses.append({"term": {"ai_severity": severity}})
-        
-        search_body = {
-            "query": {"bool": {"must": must_clauses if must_clauses else [{"match_all": {}}]}},
-            "sort": [{"ai_risk_score": "desc"}, {"processed_at": "desc"}],
-            "from": offset,
-            "size": limit
-        }
-        
-        try:
-            client = self._get_client(self.warehouse_index)
-            if ES_CLIENT_AVAILABLE and client:
-                result = client.search(index=self.warehouse_index, body=search_body)
-            else:
-                resp = httpx.post(
-                    f"{self.url}/{self.warehouse_index}/_search",
-                    json=search_body,
-                    timeout=30,
-                    headers=self._get_headers(self.warehouse_index)
-                )
-                result = resp.json()
-            
-            return {
-                "total": result["hits"]["total"]["value"],
-                "data": [hit["_source"] for hit in result["hits"]["hits"]]
-            }
-        except Exception as e:
-            logger.error(f"Warehouse search failed: {e}")
-            return {"total": 0, "data": [], "error": str(e)}
-    
-    def get_warehouse_stats(self) -> Dict[str, Any]:
-        aggs_body = {
-            "size": 0,
-            "aggs": {
-                "by_severity": {"terms": {"field": "ai_severity"}},
-                "by_type": {"terms": {"field": "ioc_type"}},
-                "avg_score": {"avg": {"field": "ai_risk_score"}},
-                "by_threat_type": {"terms": {"field": "ai_threat_types", "size": 20}}
-            }
-        }
-        
-        try:
-            client = self._get_client(self.warehouse_index)
-            if ES_CLIENT_AVAILABLE and client:
-                result = client.search(index=self.warehouse_index, body=aggs_body)
-            else:
-                resp = httpx.post(
-                    f"{self.url}/{self.warehouse_index}/_search",
-                    json=aggs_body,
-                    timeout=30,
-                    headers=self._get_headers(self.warehouse_index)
-                )
-                result = resp.json()
-            
-            return {
-                "by_severity": result["aggregations"]["by_severity"]["buckets"],
-                "by_type": result["aggregations"]["by_type"]["buckets"],
-                "avg_score": result["aggregations"]["avg_score"]["value"],
-                "by_threat_type": result["aggregations"]["by_threat_type"]["buckets"]
-            }
-        except Exception as e:
-            logger.error(f"Failed to get warehouse stats: {e}")
-            return {}
 
 
 # Singleton instance

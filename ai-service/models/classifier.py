@@ -15,12 +15,11 @@ from transformers import pipeline
 from lingua import Language, LanguageDetectorBuilder
 
 from config import (
-    MODEL_EN, 
-    MODEL_MULTI, 
-    DEVICE, 
-    THREAT_LABELS, 
-    LABEL_MAPPING, 
-    THREAT_CATEGORIES,
+    MODEL_EN,
+    MODEL_MULTI,
+    DEVICE,
+    THREAT_LABELS,
+    LABEL_MAPPING,
     MITRE_TACTICS
 )
 
@@ -156,24 +155,8 @@ def classify_threat(
             "scores": [],
             "threat_types": [],
             "confidence": 0.0,
-            "error": str(e)
+            "error": "Classification failed. See server logs for details."
         }
-
-
-def classify_batch(
-    texts: List[str],
-    threshold: float = 0.3,
-    batch_size: int = 16
-) -> List[Dict]:
-    """
-    Classify multiple texts.
-    For hybrid pipeline, we process sequentially (or simple loop) to handle dynamic routing.
-    True batching would require grouping by language vs model which is complex.
-    """
-    results = []
-    for text in texts:
-        results.append(classify_threat(text, threshold=threshold))
-    return results
 
 
 def _load_threat_actors_config() -> dict:

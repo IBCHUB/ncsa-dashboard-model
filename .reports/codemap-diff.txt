@@ -1,0 +1,23 @@
+Codemap Diff Report
+==================
+Date: 2026-03-24
+Status: INITIAL CREATION (no previous version)
+
+Files Created:
+  docs/CODEMAPS/architecture.md  — System overview, module graph, design decisions
+  docs/CODEMAPS/backend.md       — API endpoints, models, utils, services
+  docs/CODEMAPS/data.md          — ES index schemas, Pydantic models, config data
+
+Note: No frontend codemap generated (backend-only Python project).
+
+Change Summary:
+  - New files: 3
+  - Modified files: 0
+  - Deleted files: 0
+  - Diff percentage: N/A (first generation)
+
+Coverage:
+  - Modules documented: 15/15
+  - API endpoints mapped: 83 routes
+  - ES index schemas: 2 (datalake + warehouse)
+  - Config structures: scoring weights, threat actors, sectors, validation rules

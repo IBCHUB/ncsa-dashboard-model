@@ -17,7 +17,6 @@ class FakeElasticClient:
     def __init__(self):
         self.datalake_index = "test-datalake"
         self.warehouse_index = "test-warehouse"
-        self.processed_index = "test-processed"
         self.index_docs = {
             self.warehouse_index: {
                 "wh-1": {
@@ -168,7 +167,6 @@ class FakeElasticClient:
                     "enrichment": {"ip_info": {"country": "Thailand"}},
                 },
             },
-            self.processed_index: {},
         }
 
     def _extract_field(self, doc, field):

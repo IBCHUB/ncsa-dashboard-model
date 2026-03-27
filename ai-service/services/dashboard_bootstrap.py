@@ -74,9 +74,24 @@ def _default_groups() -> Dict[str, Dict[str, Any]]:
     }
 
 
+def _require_env_password(env_var: str) -> str:
+    """Load password from env var. Generates an unusable random value if unset, preventing silent default login."""
+    import logging as _logging
+    value = os.getenv(env_var, "")
+    if not value:
+        random_value = secrets.token_urlsafe(32)
+        _logging.getLogger(__name__).warning(
+            "%s is not set. Account will be inaccessible until the env var is configured.", env_var
+        )
+        return random_value
+    return value
+
+
 def _default_users() -> Dict[str, Dict[str, Any]]:
     admin_username = os.getenv("DASHBOARD_BOOTSTRAP_USERNAME", "admin")
-    admin_password = os.getenv("DASHBOARD_BOOTSTRAP_PASSWORD", "admin123!")
+    admin_password = _require_env_password("DASHBOARD_BOOTSTRAP_PASSWORD")
+    superadmin_password = _require_env_password("DASHBOARD_SUPERADMIN_PASSWORD")
+    analyst_password = _require_env_password("DASHBOARD_ANALYST_PASSWORD")
     now = _utcnow()
     return {
         "usr-admin": {
@@ -97,7 +112,7 @@ def _default_users() -> Dict[str, Dict[str, Any]]:
         "usr-super-admin": {
             "user_id": "usr-super-admin",
             "username": "superadmin",
-            "password": "superadmin123!",
+            "password": superadmin_password,
             "name": "Napat Pongpai",
             "role_name": "Super Admin",
             "email": "napat@example.com",
@@ -112,7 +127,7 @@ def _default_users() -> Dict[str, Dict[str, Any]]:
         "usr-general": {
             "user_id": "usr-general",
             "username": "analyst",
-            "password": "analyst123!",
+            "password": analyst_password,
             "name": "Kenika Krajangwong",
             "role_name": "General",
             "email": "kenika@example.com",
@@ -262,6 +277,13 @@ class DashboardState:
                 if field in payload and payload[field] is not None:
                     user[field] = payload[field]
             return self.profile(user_id)
+
+    def verify_password(self, user_id: str, password: str) -> bool:
+        with self.lock:
+            user = self.users.get(user_id)
+            if not user or not password:
+                return False
+            return user.get("password") == password
 
     def reset_password(self, user_id: str, new_password: Optional[str] = None) -> bool:
         with self.lock:

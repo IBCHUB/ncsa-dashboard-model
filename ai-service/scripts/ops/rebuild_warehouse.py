@@ -24,6 +24,8 @@ if str(AI_SERVICE_ROOT) not in sys.path:
 
 from elastic_client import ElasticClient  # noqa: E402
 from models.validation import NEEDS_REVIEW, REJECTED, VALIDATED_AUTO  # noqa: E402
+from models.campaign_clusterer import cluster_iocs, build_cluster_summary  # noqa: E402
+from models.relationship_graph import build_relationship_graph  # noqa: E402
 from utils.pipeline_documents import build_enriched_ioc_document  # noqa: E402
 
 
@@ -264,6 +266,84 @@ def main() -> int:
                 failed += 1
         summary["written"] = written
         summary["failed"] = failed
+
+        # --- Phase 2: HDBSCAN Clustering ---
+        if written > 0:
+            try:
+                print(f"\n=== HDBSCAN Campaign Clustering ({written} documents) ===")
+                written_docs = [item["document"] for item in built_documents]
+                cluster_results = cluster_iocs(written_docs)
+                clustered_count = sum(1 for r in cluster_results if r["cluster_label"] >= 0)
+                noise_count = sum(1 for r in cluster_results if r["cluster_label"] < 0)
+                print(f"  Clustered: {clustered_count}, Noise: {noise_count}")
+
+                # Update warehouse documents with cluster labels (create new dicts, no mutation)
+                cluster_updates = 0
+                cluster_lookup = {r["ioc_value"]: r for r in cluster_results}
+                for item in built_documents:
+                    doc = item["document"]
+                    cr = cluster_lookup.get(doc.get("ioc_value"))
+                    if cr and cr["cluster_label"] >= 0:
+                        item["document"] = {
+                            **doc,
+                            "cluster_label": cr["cluster_label"],
+                            "cluster_probability": round(cr["cluster_probability"], 4),
+                        }
+                        update_body = {
+                            "cluster_label": cr["cluster_label"],
+                            "cluster_probability": round(cr["cluster_probability"], 4),
+                        }
+                        if client.update_warehouse_document(item["doc_id"], update_body):
+                            cluster_updates += 1
+                print(f"  Warehouse updated with cluster labels: {cluster_updates}")
+
+                cluster_summary = build_cluster_summary(written_docs, cluster_results)
+                summary["clustering"] = {
+                    "clustered": clustered_count,
+                    "noise": noise_count,
+                    "clusters": len([c for c in cluster_summary.values() if isinstance(c, dict)]),
+                    "updated": cluster_updates,
+                }
+            except Exception as exc:
+                print(f"  [ERROR] Clustering phase failed: {exc}")
+                summary["clustering"] = {"error": str(exc)}
+
+            # --- Phase 3: Relationship Graph ---
+            try:
+                # Merge enrichment from datalake into docs for infrastructure links
+                enrichment_by_ioc = defaultdict(dict)
+                for ioc_docs in grouped.values():
+                    for dl_doc in ioc_docs:
+                        ioc_val = str(dl_doc.get("ioc_value", "")).strip().lower()
+                        enrich = dl_doc.get("enrichment")
+                        if isinstance(enrich, dict) and enrich and ioc_val:
+                            existing = enrichment_by_ioc[ioc_val]
+                            for k, v in enrich.items():
+                                if k not in existing or not existing[k]:
+                                    existing[k] = v
+
+                graph_docs = []
+                for item in built_documents:
+                    doc = {**item["document"]}
+                    ioc_val = str(doc.get("ioc_value", "")).strip().lower()
+                    if ioc_val in enrichment_by_ioc:
+                        doc["enrichment"] = enrichment_by_ioc[ioc_val]
+                    graph_docs.append(doc)
+
+                print(f"\n=== Relationship Graph ({len(graph_docs)} documents) ===")
+                graph = build_relationship_graph(graph_docs)
+                print(f"  Nodes: {graph['meta']['node_count']}, Links: {graph['meta']['link_count']}")
+
+                # Save graph to file
+                graph_path = AI_SERVICE_ROOT / ".reports" / "relationship_graph.json"
+                graph_path.parent.mkdir(parents=True, exist_ok=True)
+                graph_path.write_text(json.dumps(graph, ensure_ascii=False, indent=2))
+                print(f"  Graph saved to: {graph_path}")
+
+                summary["graph"] = graph["meta"]
+            except Exception as exc:
+                print(f"  [ERROR] Graph build phase failed: {exc}")
+                summary["graph"] = {"error": str(exc)}
 
     if args.write and eligible_count == 0 and not args.allow_zero_eligible_write:
         summary["guardrail"] = {

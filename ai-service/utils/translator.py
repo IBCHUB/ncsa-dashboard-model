@@ -5,9 +5,9 @@ Provides context-aware translation for cybersecurity threat intelligence content
 Optimized for technical terms and Thai language output.
 """
 
+import hashlib
 import os
 import logging
-from functools import lru_cache
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,8 @@ def get_openai_client():
         return None
 
 
-# Cache to avoid re-translating same content
+# Cache to avoid re-translating same content (capped to prevent unbounded memory growth)
+_CACHE_MAX_SIZE = 1000
 _translation_cache: dict[str, str] = {}
 
 
@@ -61,12 +62,12 @@ def translate_content(
     if not text or len(text.strip()) < 5:
         return text
     
-    # Truncate very long text
+    # Truncate very long text (work on a local copy to avoid mutating the caller's string key)
     if len(text) > MAX_TEXT_LENGTH:
         text = text[:MAX_TEXT_LENGTH] + "..."
-    
-    # Check cache first
-    cache_key = f"{target_lang}:{hash(text)}"
+
+    # Check cache first (deterministic SHA-256 key, safe across workers/restarts)
+    cache_key = f"{target_lang}:{hashlib.sha256(text.encode()).hexdigest()[:32]}"
     if cache_key in _translation_cache:
         return _translation_cache[cache_key]
     
@@ -109,7 +110,9 @@ Important guidelines:
         
         translated = response.choices[0].message.content.strip()
         
-        # Cache the result
+        # Cache the result (evict oldest entry if at capacity)
+        if len(_translation_cache) >= _CACHE_MAX_SIZE:
+            _translation_cache.pop(next(iter(_translation_cache)))
         _translation_cache[cache_key] = translated
         
         logger.debug(f"Translated text ({len(text)} chars) to {target_lang}")
@@ -120,42 +123,3 @@ Important guidelines:
         return text
 
 
-def translate_batch(
-    texts: list[str],
-    target_lang: str = "th",
-    context: str = "cybersecurity threat intelligence"
-) -> list[str]:
-    """
-    Translate multiple texts.
-    
-    Args:
-        texts: List of texts to translate
-        target_lang: Target language code
-        context: Domain context
-        
-    Returns:
-        List of translated texts
-    """
-    return [translate_content(text, target_lang, context) for text in texts]
-
-
-def clear_cache():
-    """Clear translation cache."""
-    global _translation_cache
-    _translation_cache.clear()
-    logger.info("Translation cache cleared")
-
-
-# Optional: Pre-translate common threat terms
-THREAT_TERM_TRANSLATIONS = {
-    "lateral movement": "การแพร่กระจายในเครือข่าย",
-    "command and control": "เซิร์ฟเวอร์ควบคุมและสั่งการ",
-    "C2 beacon": "สัญญาณ C2",
-    "ransomware": "มัลแวร์เรียกค่าไถ่",
-    "phishing": "ฟิชชิง",
-    "data exfiltration": "การขโมยข้อมูลออก",
-    "privilege escalation": "การยกระดับสิทธิ์",
-    "initial access": "การเข้าถึงระบบครั้งแรก",
-    "persistence": "การคงอยู่ในระบบ",
-    "defense evasion": "การหลบเลี่ยงการตรวจจับ",
-}

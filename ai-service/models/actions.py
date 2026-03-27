@@ -38,11 +38,6 @@ def normalize_severity(value: Optional[str]) -> str:
     return "low"
 
 
-def severity_label(value: Optional[str]) -> str:
-    normalized = normalize_severity(value)
-    return normalized.capitalize() if normalized else "Low"
-
-
 def normalize_action_status(value: Optional[str]) -> Optional[str]:
     text = str(value or "").strip().lower()
     if text in {ACTION_OPEN, ACTION_IN_PROGRESS, ACTION_CLOSED}:

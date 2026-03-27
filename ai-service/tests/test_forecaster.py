@@ -1,0 +1,126 @@
+"""Tests for models.forecaster – Holt-Winters triple exponential smoothing."""
+
+from __future__ import annotations
+
+import pytest
+
+from models.forecaster import holt_winters_forecast, seasonal_average
+
+
+# ---------------------------------------------------------------------------
+# 1. Constant series -> forecast ~ same value
+# ---------------------------------------------------------------------------
+
+def test_holt_winters_constant_series():
+    constant_value = 10
+    series = [constant_value] * 72  # 3 full seasons of 24
+    forecast = holt_winters_forecast(series, horizon=24)
+
+    assert len(forecast) == 24
+    for value in forecast:
+        assert abs(value - constant_value) <= 1, (
+            f"Expected ~{constant_value}, got {value}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 2. Trending up -> forecast continues upward
+# ---------------------------------------------------------------------------
+
+def test_holt_winters_trending_up():
+    # Build 72 points with a clear upward trend + seasonal noise
+    series = [i + (i % 24) for i in range(72)]
+    forecast = holt_winters_forecast(series, horizon=24)
+
+    assert len(forecast) == 24
+    last_observed = series[-1]
+    # At least the tail of the forecast should exceed the last observation
+    assert max(forecast) > last_observed, (
+        "Forecast should continue the upward trend"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. 24-hour repeating pattern preserved in forecast
+# ---------------------------------------------------------------------------
+
+def test_holt_winters_seasonal_24h():
+    pattern = list(range(24))  # 0, 1, 2, ... 23
+    series = pattern * 4       # 96 points = 4 full seasons
+    forecast = holt_winters_forecast(series, horizon=24)
+
+    assert len(forecast) == 24
+    # The seasonal shape should be roughly preserved.
+    # Check the forecast is not flat (std-dev > 0) and correlates with pattern.
+    assert max(forecast) > min(forecast), (
+        "Forecast should preserve seasonal variation"
+    )
+    # The high-hour forecasts should be larger than the low-hour forecasts
+    low_quarter_avg = sum(forecast[:6]) / 6
+    high_quarter_avg = sum(forecast[18:]) / 6
+    assert high_quarter_avg > low_quarter_avg, (
+        "Seasonal shape should place higher values in the later hours"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. Fallback for short input (< 2 * season_length)
+# ---------------------------------------------------------------------------
+
+def test_holt_winters_fallback_short_input():
+    series = [5, 10, 15]  # way fewer than 48
+    forecast = holt_winters_forecast(series, horizon=6)
+
+    # Should fall back to seasonal_average
+    expected = seasonal_average(series, horizon=6)
+    assert forecast == expected
+
+
+# ---------------------------------------------------------------------------
+# 5. Empty input -> list of zeros
+# ---------------------------------------------------------------------------
+
+def test_holt_winters_empty_input():
+    forecast = holt_winters_forecast([], horizon=12)
+    assert forecast == [0] * 12
+
+
+# ---------------------------------------------------------------------------
+# 6. All forecasts are non-negative
+# ---------------------------------------------------------------------------
+
+def test_holt_winters_non_negative():
+    # Series that dips, potentially producing negative raw forecasts
+    series = [100] * 24 + [0] * 24 + [50] * 24
+    forecast = holt_winters_forecast(series, horizon=48)
+
+    for value in forecast:
+        assert value >= 0, f"Forecast must be non-negative, got {value}"
+
+
+# ---------------------------------------------------------------------------
+# 7. Output length == horizon
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("horizon", [1, 12, 24, 48, 100])
+def test_holt_winters_correct_length(horizon: int):
+    series = [7] * 72
+    forecast = holt_winters_forecast(series, horizon=horizon)
+    assert len(forecast) == horizon
+
+
+# ---------------------------------------------------------------------------
+# seasonal_average standalone
+# ---------------------------------------------------------------------------
+
+def test_seasonal_average_empty():
+    assert seasonal_average([], horizon=5) == [0] * 5
+
+
+def test_seasonal_average_repeats_last_season():
+    values = list(range(30))  # 30 values, season_length=24
+    result = seasonal_average(values, horizon=48, season_length=24)
+    # Should repeat last 24 values twice
+    last_season = values[-24:]
+    expected = [max(0, round(last_season[i % 24])) for i in range(48)]
+    assert result == expected

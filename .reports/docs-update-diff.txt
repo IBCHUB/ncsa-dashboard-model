@@ -1,0 +1,48 @@
+Documentation Update Report
+===========================
+Date: 2026-03-24
+
+FILES CREATED:
+  docs/CONTRIB.md    — Development workflow, env vars, scripts reference, project structure
+  docs/RUNBOOK.md    — Deployment, monitoring, troubleshooting, rollback procedures
+
+FILES RESTORED (were missing from disk, restored from git):
+  docs/AI_SERVICE_OPERATIONS_TH.md
+  docs/SYSTEM_GUIDE_TH.md
+  docs/TOR_AI_WAREHOUSE_GAP_CHECKLIST.md
+  docs/README.md
+  docs/api-spec/README.md
+  docs/api-spec/ncsa-dashboard-api-inventory-th.md
+  docs/api-spec/ncsa-dashboard-backend-gap-map-th.md
+  docs/api-spec/ncsa-dashboard-compat-map-th.md
+  docs/api-spec/ncsa-dashboard-openapi.yaml
+  docs/api-spec/postman/*.json
+  docs/01-04 TOR PDFs
+
+FRESHNESS AUDIT:
+  All existing docs last modified 2026-03-12 (12 days ago) — FRESH
+  No stale documentation found (>90 days threshold)
+
+ENVIRONMENT VARIABLES DOCUMENTED:
+  24 env vars extracted from codebase (config.py, main.py, elastic_client.py,
+  models/scorer.py, models/actions.py, integrations/helpdesk.py, scripts/ops/)
+
+COVERAGE:
+  CONTRIB.md:
+    - Prerequisites & setup
+    - Environment variable reference (24 vars)
+    - Dev scripts reference (8 scripts)
+    - Ops scripts reference (3 scripts)
+    - Project structure
+    - Commit conventions
+
+  RUNBOOK.md:
+    - Local & remote deployment
+    - Health check procedures
+    - Monitoring metrics
+    - 6 common issues with fixes
+    - Rollback procedures (service, data, git)
+    - Ports reference
+
+NOTE: No .env.example or package.json exists (Python project).
+      Source of truth: config.py os.getenv() calls + docker-compose.yml

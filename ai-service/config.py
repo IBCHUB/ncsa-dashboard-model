@@ -54,7 +54,6 @@ LABEL_MAPPING = {
 }
 
 THREAT_LABELS = list(LABEL_MAPPING.keys())
-THREAT_CATEGORIES = list(LABEL_MAPPING.values())
 
 # ============================================
 # ENHANCED SCORING CONFIGURATION
@@ -192,11 +191,6 @@ HIGH_RISK_KEYWORDS_TIERED = {
         ]
     }
 }
-
-# Backward-compatible flat list (auto-generated from tiered)
-HIGH_RISK_KEYWORDS = []
-for tier_info in HIGH_RISK_KEYWORDS_TIERED.values():
-    HIGH_RISK_KEYWORDS.extend(tier_info["keywords"])
 
 # High Risk Countries (ISO Alpha-2)
 HIGH_RISK_COUNTRIES = ["RU", "CN", "KP", "IR", "BY", "SY", "VE"]

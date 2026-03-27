@@ -52,13 +52,12 @@ services:
       - AI_SERVICE_HOST=0.0.0.0
       - AI_SERVICE_PORT=8000
       # Comma-separated API keys accepted by AI Service (X-API-Key)
-      - AI_SERVICE_API_KEYS=${AI_SERVICE_API_KEYS:-tcti-dashboard-key,tcti-dev-key-2024}
+      # Set AI_SERVICE_API_KEYS in your .env file (see .env.example)
+      - AI_SERVICE_API_KEYS=${AI_SERVICE_API_KEYS:?Set AI_SERVICE_API_KEYS in .env file}
       - AI_SERVICE_REQUIRE_AUTH=${AI_SERVICE_REQUIRE_AUTH:-true}
       - DEVICE=cpu
-      - CLASSIFIER_MODEL=facebook/bart-large-mnli
       - ELASTICSEARCH_URL=http://elasticsearch:9200
       - DATALAKE_INDEX=tcti-datalake
-      - PROCESSED_INDEX=tcti-processed
       - WAREHOUSE_INDEX=tcti-warehouse
       # OpenAI API Key for translation (loaded from host environment)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}

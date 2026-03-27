@@ -82,12 +82,69 @@ def parse_date(date_str: str) -> str:
     return date_str
 
 
+def _compute_domain_age_days(enrichment: dict) -> int | None:
+    """Compute domain age in days from WHOIS or enrichment events."""
+    whois = enrichment.get("whois", {}) if isinstance(enrichment, dict) else {}
+    events = enrichment.get("events", {}) if isinstance(enrichment, dict) else {}
+
+    creation_str = (
+        whois.get("creation_date")
+        or events.get("registration")
+    )
+    if not creation_str:
+        return None
+
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+    ):
+        try:
+            creation_dt = datetime.strptime(creation_str.strip(), fmt)
+            return max(0, (datetime.now(tz=None) - creation_dt.replace(tzinfo=None)).days)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _resolve_geo_country(geo: dict, enrichment: dict) -> str:
+    """Extract country code with enrichment fallbacks."""
+    country = geo.get("country", "") if isinstance(geo, dict) else ""
+    if country:
+        return country
+
+    if not isinstance(enrichment, dict):
+        return ""
+
+    ip_info = enrichment.get("ip_info", {})
+    if isinstance(ip_info, dict):
+        country = ip_info.get("country", "") or ip_info.get("country_code", "")
+        if country:
+            return country
+
+    whois = enrichment.get("whois", {})
+    if isinstance(whois, dict):
+        country = whois.get("registrant_country", "")
+        if country:
+            return country
+
+    return ""
+
+
 def normalize_ioc(raw_event: dict) -> dict:
-    """Convert raw event to Data Lake document format."""
+    """Convert raw event to Data Lake document format.
+
+    Preserves enrichment data, confidence, source traceability,
+    and IOC relationships for downstream pipeline consumption.
+    """
     ioc = raw_event.get("ioc", {})
     geo = raw_event.get("geo_info", {})
-    
+    enrichment = raw_event.get("enrichment", {}) if isinstance(raw_event.get("enrichment"), dict) else {}
+
     return {
+        # Core IOC fields
         "ioc_value": ioc.get("value", ""),
         "ioc_type": ioc.get("type", "unknown"),
         "source_name": raw_event.get("source_name", "unknown"),
@@ -99,8 +156,19 @@ def normalize_ioc(raw_event: dict) -> dict:
         "reference": raw_event.get("reference", ""),
         "collect_time": parse_date(raw_event.get("collect_time")),
         "event_time": parse_date(raw_event.get("event_time")),
-        "geo_country": geo.get("country", ""),
-        "ai_processed": False
+        "geo_country": _resolve_geo_country(geo, enrichment),
+        "ai_processed": False,
+        # Source confidence & traceability
+        "confidence": int(raw_event.get("confidence", 0) or 0),
+        "source_url": raw_event.get("source_url", ""),
+        "source_id": raw_event.get("source_id", ""),
+        # IOC relationships
+        "related_hash": ioc.get("related_hash", ""),
+        "related_domain": ioc.get("related_domain", ""),
+        # Enrichment blob (stored as opaque object in ES)
+        "enrichment": enrichment,
+        # Computed from enrichment
+        "domain_age_days": _compute_domain_age_days(enrichment),
     }
 
 
@@ -189,8 +257,8 @@ def import_to_elasticsearch(
         
         try:
             httpx.put(f"{elasticsearch_url}/{datalake_index}", json=mapping, timeout=30)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Index creation failed (may already exist): {e}")
         
         for doc in documents:
             try:
@@ -298,9 +366,9 @@ def main(argv: list[str] | None = None):
     logger.info("")
     logger.info("Next Steps:")
     logger.info("  1. Run AI Pipeline to process imported IOCs:")
-    logger.info("     curl -X POST http://localhost:8000/pipeline/run -H 'X-API-Key: tcti-dev-key-2024'")
+    logger.info("     curl -X POST http://localhost:8000/pipeline/run -H 'X-API-Key: $AI_SERVICE_API_KEY'")
     logger.info("  2. Check pipeline status:")
-    logger.info("     curl http://localhost:8000/pipeline/status -H 'X-API-Key: tcti-dev-key-2024'")
+    logger.info("     curl http://localhost:8000/pipeline/status -H 'X-API-Key: $AI_SERVICE_API_KEY'")
 
 
 if __name__ == "__main__":

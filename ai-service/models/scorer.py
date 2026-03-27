@@ -19,15 +19,12 @@ import logging
 
 from config import (
     SCORING_WEIGHTS,
-    HIGH_RISK_KEYWORDS,
     HIGH_RISK_KEYWORDS_TIERED,
-    HIGH_RISK_COUNTRIES,
     TRUSTED_SOURCES,
     NEWS_SOURCES,
     THREAT_TYPE_SEVERITY,
     KNOWN_THREAT_ACTORS,
     MITRE_TACTICS,
-    CONFIDENCE_THRESHOLDS,
     SECTOR_RISK_BONUS
 )
 from models.sector_classifier import classify_sector
@@ -263,23 +260,6 @@ def calculate_cross_source_score(source_count: int, source_diversity: int = 1) -
     # PDF 01 defines corroboration as base step score multiplied by source-class independence.
     independence = _calculate_source_independence(source_diversity, source_count)
     return min(int(points * independence), 100)
-
-
-def calculate_geo_risk(country_code: Optional[str]) -> Dict[str, Any]:
-    """
-    Calculate risk based on geolocation.
-    """
-    if not country_code:
-        return {"score": 0, "country": None, "is_high_risk": False}
-    
-    is_high_risk = country_code.upper() in HIGH_RISK_COUNTRIES
-    score = 15 if is_high_risk else 0
-    
-    return {
-        "score": score,
-        "country": country_code.upper(),
-        "is_high_risk": is_high_risk
-    }
 
 
 def calculate_domain_age_score(
@@ -618,34 +598,6 @@ def calculate_mitre_score(mitre_techniques: List[str]) -> Dict[str, Any]:
         "techniques": normalized_techniques,
         "matched_tactics": matched_tactics,
         "sophistication": sophistication
-    }
-
-
-def calculate_confidence_bonus(confidence: float) -> Dict[str, Any]:
-    """
-    Calculate bonus score based on AI classification confidence.
-    Higher confidence = more reliable classification.
-    
-    Returns:
-        Dict with bonus score and confidence level
-    """
-    if confidence >= CONFIDENCE_THRESHOLDS["very_high"]:
-        bonus = 8
-        level = "very_high"
-    elif confidence >= CONFIDENCE_THRESHOLDS["high"]:
-        bonus = 5
-        level = "high"
-    elif confidence >= CONFIDENCE_THRESHOLDS["medium"]:
-        bonus = 2
-        level = "medium"
-    else:
-        bonus = 0
-        level = "low"
-    
-    return {
-        "score": bonus,
-        "confidence": round(confidence, 3),
-        "level": level
     }
 
 
@@ -1212,19 +1164,6 @@ def calculate_risk_score(
             "target_sector": sector_result["sector"]  # NEW
         }
     }
-
-
-def get_severity_level(score: int) -> str:
-    """Convert numeric score to severity level."""
-    if score >= 75:
-        return "critical"
-    elif score >= 50:
-        return "high"
-    elif score >= 25:
-        return "medium"
-    elif score > 0:
-        return "low"
-    return "clean"
 
 
 # For testing

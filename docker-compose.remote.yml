@@ -14,18 +14,17 @@ services:
       - AI_SERVICE_HOST=0.0.0.0
       - AI_SERVICE_PORT=8000
       - DEVICE=cpu
-      - CLASSIFIER_MODEL=facebook/bart-large-mnli
       # Remote ELK Configuration
       - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
       - DATALAKE_INDEX=${DATALAKE_INDEX}
-      - PROCESSED_INDEX=${PROCESSED_INDEX}
       - WAREHOUSE_INDEX=${WAREHOUSE_INDEX}
       # API Keys
       - DATALAKE_API_KEY=${DATALAKE_API_KEY}
       - WAREHOUSE_API_KEY=${WAREHOUSE_API_KEY}
       # OpenAI
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - AI_SERVICE_API_KEYS=tcti-dashboard-key,admin-key
+      # Set AI_SERVICE_API_KEYS in your deployment environment (never hardcode)
+      - AI_SERVICE_API_KEYS=${AI_SERVICE_API_KEYS:?Set AI_SERVICE_API_KEYS in deployment environment}
     volumes:
       - ai-model-cache:/root/.cache/huggingface
     networks:

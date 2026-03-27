@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from config import NEWS_SOURCES
 from elastic_client import get_elastic_client
 from models.actions import ACTION_CLOSED, ACTION_IN_PROGRESS, ACTION_OPEN, derive_action_metadata
+from models.forecaster import holt_winters_forecast
 from services.dashboard_bootstrap import get_dashboard_state
 
 logger = logging.getLogger(__name__)
@@ -956,6 +957,11 @@ def _coordinates_from_doc(doc: Dict[str, Any]) -> Tuple[Optional[float], Optiona
     if isinstance(coordinates, str) and "," in coordinates:
         latitude_text, longitude_text = coordinates.split(",", 1)
         return _safe_float(latitude_text.strip(), None), _safe_float(longitude_text.strip(), None)
+    enrichment_ip = (doc.get("enrichment") or {}).get("ip_info") or {}
+    enrichment_loc = enrichment_ip.get("loc") if isinstance(enrichment_ip, dict) else None
+    if isinstance(enrichment_loc, str) and "," in enrichment_loc:
+        lat_text, lon_text = enrichment_loc.split(",", 1)
+        return _safe_float(lat_text.strip(), None), _safe_float(lon_text.strip(), None)
     return None, None
 
 
@@ -1283,16 +1289,10 @@ def _build_trend_analytics(
     historical = [visible_buckets.get(bucket, {"hour": bucket, "label": bucket[5:], "total": 0, "critical": 0, "high": 0}) for bucket in visible_keys]
     training_list = [training_buckets.get(_to_bangkok_hour(item), {"hour": _to_bangkok_hour(item), "label": _to_bangkok_hour(item)[5:], "total": 0, "critical": 0, "high": 0}) for item in training_hours]
 
-    def seasonal_average(values: List[int], horizon: int, season_length: int = 24) -> List[int]:
-        if not values:
-            return [0 for _ in range(horizon)]
-        season = values[-season_length:] if len(values) >= season_length else values
-        return [max(0, round(season[index % len(season)])) for index in range(horizon)]
-
     forecast_hours_list = [current_hour + timedelta(hours=index + 1) for index in range(forecast_hours)]
-    total_forecast = seasonal_average([point["total"] for point in training_list], forecast_hours)
-    critical_forecast = seasonal_average([point["critical"] for point in training_list], forecast_hours)
-    high_forecast = seasonal_average([point["high"] for point in training_list], forecast_hours)
+    total_forecast = holt_winters_forecast([point["total"] for point in training_list], forecast_hours)
+    critical_forecast = holt_winters_forecast([point["critical"] for point in training_list], forecast_hours)
+    high_forecast = holt_winters_forecast([point["high"] for point in training_list], forecast_hours)
     forecast = [
         {
             "hour": _to_bangkok_hour(hour),
@@ -1360,7 +1360,7 @@ def _build_trend_analytics(
         },
         "threat_volume_trend": historical,
         "attack_volume_trend": {
-            "model": "seasonal_average_fallback",
+            "model": "holt_winters_additive",
             "historical": historical,
             "forecast": forecast,
         },
@@ -1633,8 +1633,15 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
     sector = _sector_info(warehouse_doc)
     country = next((value for value in (_country_from_doc(item) for item in datalake_docs) if value), None) or _country_from_doc(warehouse_doc)
     first_enrichment = datalake_docs[0] if datalake_docs else {}
-    asn_data = first_enrichment.get("asn_data") or ((first_enrichment.get("ip_info") or {}).get("asn_data") if isinstance(first_enrichment.get("ip_info"), dict) else {}) or {}
-    whois = first_enrichment.get("whois") or {}
+    _fe_enrich = (first_enrichment.get("enrichment") or {}) if isinstance(first_enrichment.get("enrichment"), dict) else {}
+    _fe_ip_info = (_fe_enrich.get("ip_info") or {}) if isinstance(_fe_enrich.get("ip_info"), dict) else {}
+    asn_data = (
+        first_enrichment.get("asn_data")
+        or ((first_enrichment.get("ip_info") or {}).get("asn_data") if isinstance(first_enrichment.get("ip_info"), dict) else {})
+        or _fe_ip_info.get("asn_data")
+        or {}
+    )
+    whois = first_enrichment.get("whois") or _fe_enrich.get("whois") or {}
     latitude, longitude = _coordinates_from_doc(first_enrichment)
     history_preview = []
     for doc in datalake_docs[:5]:
@@ -1668,34 +1675,37 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
         },
         "geo_location_owner": {
             "country": country or "Unknown",
-            "city": ((first_enrichment.get("geo_info") or {}) if isinstance(first_enrichment.get("geo_info"), dict) else {}).get("city"),
+            "city": (
+                ((first_enrichment.get("geo_info") or {}) if isinstance(first_enrichment.get("geo_info"), dict) else {}).get("city")
+                or _fe_ip_info.get("city")
+            ),
             "asn_org": asn_data.get("org"),
             "latitude": latitude,
             "longitude": longitude,
         },
         "network_ownership": {
             "organization": whois.get("org") or asn_data.get("org"),
-            "net_name": first_enrichment.get("net_name"),
-            "net_range": first_enrichment.get("net_range"),
-            "cidr": first_enrichment.get("cidr"),
+            "net_name": first_enrichment.get("net_name") or whois.get("net_name"),
+            "net_range": first_enrichment.get("net_range") or whois.get("net_range"),
+            "cidr": first_enrichment.get("cidr") or whois.get("cidr") or _fe_ip_info.get("cidr"),
             "country": country,
-            "allocation_type": first_enrichment.get("allocation_type"),
-            "rir": first_enrichment.get("rir"),
-            "registered_on": first_enrichment.get("registered_on"),
-            "last_updated": first_enrichment.get("last_updated"),
+            "allocation_type": first_enrichment.get("allocation_type") or whois.get("allocation_type"),
+            "rir": first_enrichment.get("rir") or whois.get("rir"),
+            "registered_on": first_enrichment.get("registered_on") or whois.get("registered_on"),
+            "last_updated": first_enrichment.get("last_updated") or whois.get("last_updated"),
         },
         "asn_infrastructure": {
             "asn": asn_data.get("asn"),
             "asn_name": asn_data.get("org"),
             "asn_description": asn_data.get("org"),
-            "asn_type": first_enrichment.get("asn_type"),
-            "hosting_type": first_enrichment.get("hosting_type"),
+            "asn_type": first_enrichment.get("asn_type") or _fe_ip_info.get("asn_type"),
+            "hosting_type": first_enrichment.get("hosting_type") or _fe_ip_info.get("hosting_type"),
         },
         "abuse_contact": {
-            "abuse_email": whois.get("registrant_email"),
-            "abuse_contact": first_enrichment.get("abuse_contact"),
-            "noc_email": first_enrichment.get("noc_email"),
-            "tech_email": first_enrichment.get("tech_email"),
+            "abuse_email": whois.get("registrant_email") or _fe_ip_info.get("abuse_email"),
+            "abuse_contact": first_enrichment.get("abuse_contact") or _fe_ip_info.get("abuse_contact"),
+            "noc_email": first_enrichment.get("noc_email") or _fe_ip_info.get("noc_email"),
+            "tech_email": first_enrichment.get("tech_email") or _fe_ip_info.get("tech_email"),
         },
         "score_breakdown": warehouse_doc.get("ai_score_breakdown") or {},
         "target_sector": sector,
@@ -1790,7 +1800,7 @@ def dashboard_login(request: LoginRequest):
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid username or password")
     response = JSONResponse(_success(payload))
-    response.set_cookie("token", payload["access_token"], httponly=False, samesite="strict")
+    response.set_cookie("token", payload["access_token"], httponly=True, samesite="strict")
     return response
 
 
@@ -2711,7 +2721,13 @@ def update_profile(request: ProfileUpdateRequest, current_user: Dict[str, Any] =
 
 @router.post("/account/password/reset", tags=["Account"])
 def reset_password(request: PasswordResetRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    updated = get_dashboard_state().reset_password(current_user["user_id"], request.new_password)
+    state = get_dashboard_state()
+    if request.reset_mode == "user_change":
+        if not request.current_password:
+            raise HTTPException(status_code=400, detail="current_password is required for user_change mode")
+        if not state.verify_password(current_user["user_id"], request.current_password):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+    updated = state.reset_password(current_user["user_id"], request.new_password)
     if not updated:
         raise HTTPException(status_code=404, detail="Profile not found")
     return _success({"success": True, "message": "Password reset completed"})
