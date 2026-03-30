@@ -60,7 +60,6 @@ services:
       - DATALAKE_INDEX=tcti-datalake
       - WAREHOUSE_INDEX=tcti-warehouse
       # OpenAI API Key for translation (loaded from host environment)
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     volumes:
       # Cache HuggingFace models to avoid re-downloading
       - ai-model-cache:/root/.cache/huggingface

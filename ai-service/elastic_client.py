@@ -451,7 +451,7 @@ class ElasticClient:
         document["processed_at"] = processed_at
         if "created_at" not in document:
             document["created_at"] = processed_at
-        document["validation_status"] = document.get("validation_status", "validated_auto")
+        document["validation_status"] = document.get("validation_status", "validated")
         document["warehouse_eligible"] = bool(document.get("warehouse_eligible", True))
         document["review_required"] = bool(document.get("review_required", False))
         document["review_state"] = document.get("review_state", "not_required")

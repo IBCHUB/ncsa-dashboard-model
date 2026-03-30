@@ -23,13 +23,13 @@ if str(AI_SERVICE_ROOT) not in sys.path:
     sys.path.insert(0, str(AI_SERVICE_ROOT))
 
 from elastic_client import ElasticClient  # noqa: E402
-from models.validation import NEEDS_REVIEW, REJECTED, VALIDATED_AUTO  # noqa: E402
+from models.validation import REJECTED, VALIDATED  # noqa: E402
 from models.campaign_clusterer import cluster_iocs, build_cluster_summary  # noqa: E402
 from models.relationship_graph import build_relationship_graph  # noqa: E402
 from utils.pipeline_documents import build_enriched_ioc_document  # noqa: E402
 
 
-REVIEW_METADATA_FIELDS = ("validation_status", "review_state", "review_required", "warehouse_eligible")
+REVIEW_METADATA_FIELDS = ("validation_status", "warehouse_eligible")
 
 
 def is_synthetic_document(document: Dict[str, Any]) -> bool:
@@ -63,7 +63,6 @@ def build_summary(
     status_counts: Counter[str],
     reason_counts: Counter[str],
     eligible_count: int,
-    review_required_count: int,
     skipped_existing_metadata: int,
     write_candidates: int,
     written: int,
@@ -80,13 +79,11 @@ def build_summary(
         "filtered_raw_documents": max(loaded_raw_documents - synthetic_skipped, 0),
         "aggregated_iocs": aggregated_iocs,
         "status_counts": {
-            VALIDATED_AUTO: int(status_counts.get(VALIDATED_AUTO, 0)),
-            NEEDS_REVIEW: int(status_counts.get(NEEDS_REVIEW, 0)),
+            VALIDATED: int(status_counts.get(VALIDATED, 0)),
             REJECTED: int(status_counts.get(REJECTED, 0)),
         },
         "reason_counts": dict(reason_counts.most_common()),
         "warehouse_eligible": eligible_count,
-        "review_required": review_required_count,
         "skipped_existing_review_metadata": skipped_existing_metadata,
         "write_candidates": write_candidates,
         "written": written,
@@ -191,7 +188,6 @@ def main() -> int:
     reason_counts: Counter[str] = Counter()
     samples: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     eligible_count = 0
-    review_required_count = 0
     skipped_existing_metadata = 0
     failed = 0
     built_documents: List[Dict[str, Any]] = []
@@ -208,8 +204,6 @@ def main() -> int:
             )
             if pipeline_doc["warehouse_eligible"]:
                 eligible_count += 1
-            if pipeline_doc["review_required"]:
-                review_required_count += 1
 
             sample_bucket = samples[status]
             if len(sample_bucket) < max(args.sample_size, 0):
@@ -249,7 +243,6 @@ def main() -> int:
         status_counts=status_counts,
         reason_counts=reason_counts,
         eligible_count=eligible_count,
-        review_required_count=review_required_count,
         skipped_existing_metadata=skipped_existing_metadata,
         write_candidates=write_candidates,
         written=0,

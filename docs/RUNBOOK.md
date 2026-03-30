@@ -1,298 +1,268 @@
-# Operations Runbook
+# คัมภีร์หน้างาน (Operations Runbook)
 
-> Auto-generated: 2026-03-24
+> อัปเดตล่าสุด: 2026-03-30 (อิงตาม Source of Truth ล่าสุด)
 
-## Deployment
+## การติดตั้งและเดินเครื่อง (Deployment)
 
-### Local Development
+### รันบนเครื่องนักพัฒนา (Local Development)
 
 ```bash
 docker-compose up -d
 # Elasticsearch: http://localhost:9200
-# Kibana:        http://localhost:5601
 # AI Service:    http://localhost:8000
 # API Docs:      http://localhost:8000/docs
 ```
 
-### Remote ELK (Production)
+### รันบน Production Server (Remote ELK)
 
 ```bash
-# Set required env vars
+# กำหนด Environment Variables ที่จำเป็น
 export ELASTICSEARCH_URL=https://your-elk.example.com
 export DATALAKE_INDEX=tcti-datalake
 export WAREHOUSE_INDEX=tcti-warehouse
 export DATALAKE_API_KEY=your-key
 export WAREHOUSE_API_KEY=your-key
-export OPENAI_API_KEY=sk-...
+export AI_SERVICE_API_KEYS=your-secure-key
 
 docker-compose -f docker-compose.remote.yml up -d
-# AI Service: http://localhost:9000
+# AI Service จะรันที่: http://localhost:9000
 ```
 
-### Docker Build & Deploy
+### Build Image และ Restart (Docker Build & Deploy)
 
 ```bash
-# Build
+# Build Image ใหม่
 docker-compose build ai-service
 
-# Deploy with rebuild
+# Deploy พร้อม Build
 docker-compose up -d --build ai-service
 
-# View logs
+# ดู Log แบบ Real-time
 docker-compose logs -f ai-service
 ```
 
-## Health Checks
+## การตรวจสอบสุขภาพระบบ (Health Checks)
 
-### Service Health
+### ตรวจสอบสถานะ Service
 
 ```bash
 curl http://localhost:8000/health
-# Expected: {"status": "ok", "version": "1.0.0", "classifier_loaded": true}
+# ผลลัพธ์ที่ถูกต้อง: {"status": "healthy", "version": "1.0.0", "classifier_loaded": true}
 ```
 
-### Elasticsearch Status
+### ตรวจสอบการเชื่อมต่อ Elasticsearch
 
 ```bash
-curl -H "X-API-Key: tcti-dashboard-key" http://localhost:8000/pipeline/status
-# Returns: index counts, connection status
+curl -H "X-API-Key: <your-api-key>" http://localhost:8000/pipeline/status
+# ผลลัพธ์ที่ถูกต้อง: รายงานยอด Document Count และสถานะการเชื่อมต่อ
 ```
 
-### Model Loading
-
-First request after startup takes 30-120s (model download). Subsequent requests are fast.
+### ตรวจสอบ Dashboard Endpoints
 
 ```bash
-# Check if models loaded
-curl http://localhost:8000/health | jq .classifier_loaded
+# Executive Dashboard
+curl -H "Authorization: Bearer <JWT_TOKEN>" http://localhost:8000/api/v1/executive/dashboard
+
+# Operations Dashboard
+curl -H "Authorization: Bearer <JWT_TOKEN>" http://localhost:8000/api/v1/operations/dashboard
 ```
 
-## Monitoring
+### ตรวจสอบสถานะการโหลดโมเดล (Model Loading)
 
-### Key Metrics to Watch
+การบูตระบบครั้งแรกจะใช้เวลา 30-120 วินาทีสำหรับการโหลดโมเดล AI หลังจากนั้น Request จะประมวลผลได้ทันที
 
-| Metric | Check | Alert Threshold |
-|--------|-------|-----------------|
-| `/health` response | Should return `status: ok` | Any non-200 |
-| `classifier_loaded` | Should be `true` after startup | `false` after 5 min |
-| Pipeline processing time | `/pipeline/run` response time | > 30s per IOC |
-| ES connection | `/pipeline/status` | `unavailable` status |
-| Model cache disk | `/root/.cache/huggingface` | > 10 GB |
+```bash
+# ตรวจสอบว่าโมเดลโหลดสำเร็จหรือไม่
+curl http://localhost:8000/health | python3 -c "import sys,json; print(json.load(sys.stdin)['classifier_loaded'])"
+```
+
+## การเฝ้าระวังระบบ (Monitoring)
+
+### Key Metrics
+
+| Metric | จุดตรวจสอบ | เงื่อนไข Alert |
+|--------|-------|-----------------| 
+| Service Health | `GET /health` → `status: healthy` | HTTP Status ไม่ใช่ 200 |
+| Model Status | `GET /health` → `classifier_loaded` | ค่าเป็น `false` นานเกิน 5 นาที |
+| Pipeline Processing Time | `POST /pipeline/run` | ใช้เวลาเกิน 30 วินาทีต่อ 1 รายการ |
+| Elasticsearch Connectivity | `GET /pipeline/status` | สถานะเป็น `unavailable` |
+| HuggingFace Cache Disk | `/root/.cache/huggingface` | ใช้พื้นที่เกิน 10 GB |
+| Dashboard Response Time | `GET /api/v1/executive/dashboard` | ใช้เวลาตอบสนองเกิน 5 วินาที |
 
 ### Log Locations
 
-| Component | Location |
-|-----------|----------|
+| Component | วิธีเข้าถึง |
+|-----------|----------| 
 | AI Service | `docker-compose logs ai-service` |
 | Elasticsearch | `docker-compose logs elasticsearch` |
-| HelpDesk tickets | `/tmp/helpdesk_tickets.jsonl` (mock mode) |
 
-## Common Operations
+## งานประจำ (Common Operations)
 
-### Run AI Pipeline
+### รัน AI Pipeline
 
 ```bash
-# Process 100 unprocessed IOCs from datalake
+# ประมวลผล 100 เอกสารจาก Data Lake
 curl -X POST http://localhost:8000/pipeline/run \
-  -H "X-API-Key: tcti-dashboard-key" \
+  -H "X-API-Key: <your-api-key>" \
   -H "Content-Type: application/json" \
   -d '{"limit": 100}'
 ```
 
-### Import Data to Datalake
+### นำเข้าข้อมูลลง Data Lake
 
 ```bash
-# Place JSON files in data_lake/ directory
+# วางไฟล์ JSON ไว้ในโฟลเดอร์ data_lake/ แล้วรัน
 cd ai-service
 python scripts/ops/import_to_datalake.py
 ```
 
-### Rebuild Warehouse (Backfill)
+### Rebuild Data Warehouse
+
+ดึงข้อมูลจาก Data Lake กลับมาประมวลผลใหม่ทั้งหมด เพื่ออัปเดตผล AI Scoring, HDBSCAN Campaign Clustering และ Relationship Graph
 
 ```bash
 cd ai-service
 
-# Dry run first
+# Dry run — ตรวจสอบจำนวนรายการก่อนเขียนจริง
 python scripts/ops/rebuild_warehouse.py \
   --date-from 2026-03-01T00:00:00+07:00 \
-  --date-to 2026-03-24T23:59:59+07:00 \
+  --date-to 2026-03-27T23:59:59+07:00 \
   --limit 500
 
-# Write to warehouse (after reviewing dry-run)
+# Write mode — เขียนลงฐานข้อมูลจริง
 python scripts/ops/rebuild_warehouse.py \
   --write \
   --date-from 2026-03-01T00:00:00+07:00 \
-  --date-to 2026-03-24T23:59:59+07:00
+  --date-to 2026-03-27T23:59:59+07:00
 ```
 
-### Review Queue
+### นำเข้า Mock Data สำหรับ UAT
 
 ```bash
-# List items needing review
-curl -H "X-API-Key: tcti-dashboard-key" \
-  "http://localhost:8000/pipeline/review-queue?limit=20"
-
-# Approve
-curl -X POST http://localhost:8000/pipeline/review/DOC_ID/approve \
-  -H "X-API-Key: tcti-dashboard-key" \
-  -H "Content-Type: application/json" \
-  -d '{"reviewer": "admin", "notes": "Verified"}'
-
-# Reject
-curl -X POST http://localhost:8000/pipeline/review/DOC_ID/reject \
-  -H "X-API-Key: tcti-dashboard-key" \
-  -H "Content-Type: application/json" \
-  -d '{"reviewer": "admin", "notes": "False positive"}'
+cd ai-service
+python scripts/dev/seed_dashboard_fixture.py
+# สร้างข้อมูลจำลองลง Datalake + Warehouse พร้อมกระจาย Timestamp สำหรับแสดงกราฟ
 ```
 
-## Common Issues & Fixes
+### เข้าสู่ระบบ Dashboard
 
-### 1. Model Download Fails
-
-**Symptom:** `/health` returns `classifier_loaded: false`
-
-**Fix:**
 ```bash
-# Check disk space
+# ขอ JWT Token
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin"}'
+
+# ใช้ Token เรียก Protected Endpoint
+curl -H "Authorization: Bearer <JWT_TOKEN>" \
+  http://localhost:8000/api/v1/iocs?page=1&page_size=20
+```
+
+## การแก้ไขปัญหาที่พบบ่อย (Common Issues & Fixes)
+
+### 1. โหลดโมเดล AI ไม่สำเร็จ (Model Download Fails)
+
+**อาการ:** `/health` ส่งคืน `classifier_loaded: false`
+
+**วิธีแก้ไข:**
+```bash
+# ตรวจสอบพื้นที่ Disk บน HuggingFace Cache
 df -h /root/.cache/huggingface
 
-# Clear cache and restart
+# ล้าง Cache และ Restart
 docker exec tcti-ai-service rm -rf /root/.cache/huggingface/*
 docker-compose restart ai-service
 
-# Or skip preload and load on first request
+# หรือข้ามการ Preload ตอน Startup และให้โหลดเมื่อมี Request แรก
 AI_SERVICE_SKIP_STARTUP_PRELOAD=true docker-compose up -d ai-service
 ```
 
-### 2. Elasticsearch Connection Failed
+### 2. ไม่สามารถเชื่อมต่อ Elasticsearch (Elasticsearch Connection Failed)
 
-**Symptom:** `/pipeline/status` shows `unavailable`
+**อาการ:** `/pipeline/status` ส่งคืนสถานะ `unavailable`
 
-**Fix:**
+**วิธีแก้ไข:**
 ```bash
-# Check ES health
+# ตรวจสอบ Cluster Health โดยตรง
 curl http://localhost:9200/_cluster/health
 
-# Check container
+# ตรวจสอบสถานะ Container
 docker-compose ps elasticsearch
 docker-compose logs elasticsearch | tail -20
 
-# Restart ES
+# Restart Container
 docker-compose restart elasticsearch
 ```
 
-### 3. Out of Memory (OOM)
+### 3. Container ใช้ Memory เกินกำหนด (Out of Memory)
 
-**Symptom:** Container killed, restart loop
+**อาการ:** Container ถูกหยุดและ Restart วนซ้ำ
 
-**Fix:**
+**วิธีแก้ไข:**
 ```bash
-# Increase ES heap
-# In docker-compose.yml: ES_JAVA_OPTS=-Xms1g -Xmx1g
+# เพิ่ม Heap Memory สำหรับ Elasticsearch
+# แก้ไขใน docker-compose.yml: ES_JAVA_OPTS=-Xms1g -Xmx1g ให้สูงขึ้น
 
-# Use CPU device (less memory than CUDA)
-# DEVICE=cpu
+# บังคับใช้ CPU (ใช้ RAM น้อยกว่า CUDA)
+# ตั้งค่า DEVICE=cpu
 
-# Reduce batch size in pipeline
+# ลด Batch Size ต่อรอบ
 curl -X POST .../pipeline/run -d '{"limit": 10}'
 ```
 
-### 4. Translation Not Working
+### 4. CORS Error จาก Dashboard Frontend
 
-**Symptom:** `/translate` returns original text
+**อาการ:** Browser Console แสดง CORS Error
 
-**Fix:**
+**วิธีแก้ไข:**
 ```bash
-# Check API key
-echo $OPENAI_API_KEY | head -c 10
+# อนุญาต Domain ที่ต้องการ (คั่นด้วย comma)
+AI_SERVICE_CORS_ORIGINS=http://localhost:3000,http://localhost:5173
 
-# Test directly
-curl -X POST http://localhost:8000/translate \
-  -H "X-API-Key: tcti-dashboard-key" \
-  -H "Content-Type: application/json" \
-  -d '{"text": "test", "target_lang": "th"}'
+# หรือเปิด Wildcard (สำหรับ Development เท่านั้น ห้ามใช้บน Production)
+AI_SERVICE_CORS_ORIGINS=*
 ```
 
-### 5. Index Not Found
-
-**Symptom:** Pipeline returns errors about missing index
-
-**Fix:**
-```bash
-# Create indexes
-curl -X POST http://localhost:8000/elasticsearch/setup \
-  -H "X-API-Key: tcti-dashboard-key"
-
-# Or set auto-create
-AI_SERVICE_AUTO_CREATE_INDEXES=true
-```
-
-### 6. High Risk Score Discrepancy
-
-**Symptom:** Scores don't match expectations
-
-**Check:**
-```bash
-# Get score breakdown
-curl -X POST http://localhost:8000/score \
-  -H "X-API-Key: tcti-dashboard-key" \
-  -H "Content-Type: application/json" \
-  -d '{"ioc_value": "...", "ioc_type": "domain", "description": "...", "sources": ["VirusTotal"]}' \
-  | jq '.breakdown, .top_factors'
-
-# Check scoring model version
-echo $SCORE_MODEL_VERSION   # Default: scoring-v2.0.0
-echo $SCORE_CONFIG_VERSION  # Default: weights-v1
-```
-
-## Rollback Procedures
+## ขั้นตอน Rollback
 
 ### Rollback AI Service
 
 ```bash
-# Tag current version before deploy
+# Tag Image ปัจจุบันก่อน Deploy
 docker tag tcti-ai-service:latest tcti-ai-service:backup-$(date +%Y%m%d)
 
-# Rollback to previous image
+# หาก Deployment ใหม่มีปัญหา — คืน Image เดิม
 docker-compose down ai-service
 docker tag tcti-ai-service:backup-YYYYMMDD tcti-ai-service:latest
 docker-compose up -d ai-service
 ```
 
-### Rollback Warehouse Data
+### Rollback Data Warehouse
 
 ```bash
-# Warehouse is append-only with validation_status tracking
-# To "rollback" bad data: mark as rejected
-curl -X POST http://localhost:8000/pipeline/review/DOC_ID/reject \
-  -H "X-API-Key: tcti-dashboard-key" \
-  -d '{"reviewer": "ops", "notes": "Rollback: bad scoring model"}'
+# Data Warehouse เป็น Append-only
+# หากต้องการยกเลิกข้อมูลที่ผิดพลาด ให้ Mark เป็น rejected ผ่าน Elasticsearch โดยตรง
+# หรือ Rebuild Warehouse ด้วยช่วงเวลาที่ต้องการ
 
-# For bulk rollback: rebuild warehouse from datalake
 python scripts/ops/rebuild_warehouse.py \
   --write \
   --date-from START \
   --date-to END
 ```
 
-### Rollback Git
+### Rollback Source Code (Git)
 
 ```bash
-# View recent commits
+# ดู Commit History 10 รายการล่าสุด
 git log --oneline -10
 
-# Revert specific commit
-git revert COMMIT_HASH
-
-# Reset to previous state (destructive)
-# git reset --hard COMMIT_HASH  # Use with caution
+# Revert Commit ที่มีปัญหา
+git revert <commit-hash>
 ```
 
-## Ports Reference
+## Port Reference
 
-| Service | Local | Remote | Purpose |
-|---------|-------|--------|---------|
-| AI Service | 8000 | 9000 | FastAPI API |
+| Service | Local Port | Remote Port | คำอธิบาย |
+|---------|-------|--------|---------| 
+| AI Service | 8000 | 9000 | FastAPI Application |
 | Elasticsearch | 9200 | - | REST API |
-| Elasticsearch | 9300 | - | Node communication |
-| Kibana | 5601 | - | Web UI |
+| Elasticsearch | 9300 | - | Inter-node Transport (Cluster Communication) |

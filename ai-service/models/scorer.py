@@ -25,9 +25,10 @@ from config import (
     THREAT_TYPE_SEVERITY,
     KNOWN_THREAT_ACTORS,
     MITRE_TACTICS,
-    SECTOR_RISK_BONUS
+    SECTOR_RISK_BONUS,
+    SECTORS,
 )
-from models.sector_classifier import classify_sector
+from models.sector_classifier import classify_sector as classify_sector_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -993,35 +994,85 @@ def calculate_risk_score(
     }
     
     # ==========================================
-    # SECTOR CLASSIFICATION (NEW)
+    # SECTOR CLASSIFICATION (NLP zero-shot + keyword fallback)
     # ==========================================
-    
-    sector_result = classify_sector(
-        description=description,
-        title="",  # Title passed separately if available
-        ioc_value=ioc_value,
-        ioc_type=ioc_type,
-        threat_actors=threat_actors,
-        tags=[]
-    )
-    
+
+    nlp_sectors = threat_classification.get("sector_classifications", [])
+    classification_method = "nlp"
+
+    if nlp_sectors:
+        top = nlp_sectors[0]
+        sector_key = top["sector"]
+        sector_config = SECTORS.get(sector_key, SECTORS["general"])
+        nlp_confidence = top["confidence"]
+
+        # Scale risk_bonus by confidence tier
+        base_bonus = SECTOR_RISK_BONUS.get(sector_key, 0)
+        if nlp_confidence >= 0.70:
+            scaled_bonus = base_bonus
+        elif nlp_confidence >= 0.50:
+            scaled_bonus = int(base_bonus * 0.7)
+        else:
+            scaled_bonus = min(base_bonus, 5)
+
+        sector_result = {
+            "sector": sector_key,
+            "sector_name": sector_config["name"],
+            "sector_name_th": sector_config["name_th"],
+            "icon": sector_config["icon"],
+            "confidence": nlp_confidence,
+            "matched_keywords": [],
+            "matched_actors": [],
+            "risk_bonus": scaled_bonus,
+            "weight": sector_config.get("weight", 1.0),
+        }
+
+        # Hybrid boost: if NLP confidence is moderate, check keyword agreement
+        if nlp_confidence < 0.50:
+            kw_result = classify_sector_keywords(
+                description=description, title="",
+                ioc_value=ioc_value, ioc_type=ioc_type,
+                threat_actors=threat_actors, tags=[],
+            )
+            if kw_result["sector"] == sector_key and kw_result["confidence"] > 0:
+                sector_result["confidence"] = min(nlp_confidence + 0.15, 1.0)
+                sector_result["matched_keywords"] = kw_result["matched_keywords"]
+                sector_result["matched_actors"] = kw_result["matched_actors"]
+                classification_method = "nlp+keyword"
+    else:
+        # Fallback to keyword-based classification
+        sector_result = classify_sector_keywords(
+            description=description, title="",
+            ioc_value=ioc_value, ioc_type=ioc_type,
+            threat_actors=threat_actors, tags=[],
+        )
+        classification_method = "keyword_fallback"
+
     # Add sector to breakdown
+    methodology_map = {
+        "nlp": ("วิเคราะห์ด้วย AI zero-shot classification", "Classified by AI zero-shot NLP model"),
+        "nlp+keyword": ("AI zero-shot ร่วมกับ keyword matching", "AI zero-shot corroborated by keyword matching"),
+        "keyword_fallback": ("วิเคราะห์จากคำสำคัญ โดเมน และกลุ่มผู้โจมตี", "Analyzed from keywords, domain patterns, and threat actors"),
+    }
+    meth_th, meth_en = methodology_map.get(classification_method, methodology_map["nlp"])
+
     breakdown["target_sector"] = {
         "sector": sector_result["sector"],
         "sector_name": sector_result["sector_name"],
         "sector_name_th": sector_result["sector_name_th"],
         "icon": sector_result["icon"],
         "confidence": sector_result["confidence"],
-        "matched_keywords": sector_result["matched_keywords"],
-        "matched_actors": sector_result["matched_actors"],
+        "matched_keywords": sector_result.get("matched_keywords", []),
+        "matched_actors": sector_result.get("matched_actors", []),
         "risk_bonus": sector_result["risk_bonus"],
         "score": sector_result["risk_bonus"],
         "maxScore": max(SECTOR_RISK_BONUS.values()) if SECTOR_RISK_BONUS else 0,
         "reason": f"เป้าหมาย: {sector_result['sector_name_th']}" if sector_result["confidence"] > 0 else "ไม่ระบุเซกเตอร์เป้าหมาย",
         "reasonEn": f"Target: {sector_result['sector_name']}" if sector_result["confidence"] > 0 else "No specific sector identified",
-        "methodology": "วิเคราะห์จากคำสำคัญ โดเมน และกลุ่มผู้โจมตีที่เกี่ยวข้อง",
-        "methodologyEn": "Analyzed from keywords, domain patterns, and associated threat actors",
-        "scoringRules": "Multiplier: critical_infrastructure=1.15, government=1.12, healthcare=1.10, financial=1.10, technology=1.05"
+        "classification_method": classification_method,
+        "methodology": meth_th,
+        "methodologyEn": meth_en,
+        "scoringRules": "Multiplier: critical_infrastructure=1.15, government=1.12, healthcare=1.10, financial=1.10, technology=1.05",
     }
     
     # Apply sector bonus as MULTIPLIER (not additive) to prevent threshold jumps

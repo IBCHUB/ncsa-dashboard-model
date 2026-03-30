@@ -1,5 +1,7 @@
 # แพลตฟอร์ม Thailand Cyber Threat Intelligence (TCTI)
 
+> อัพเดทล่าสุด: 2026-03-27
+
 รีโปนี้เป็นชุดงานหลักของระบบ `AI / ML` และ `Threat Data Warehouse` สำหรับโครงการ TCTI โดยรับข้อมูลดิบจาก `Threat Data Lake` ที่มาจากระบบภายนอก แล้วประมวลผลผ่าน AI Service ก่อนบันทึกลง `Threat Data Warehouse`
 
 ระบบ `Dashboard` และ `Threat Search` ที่ใช้งานจริงไม่ได้อยู่ในรีโปนี้แล้ว และถูกดูแลแยกในรีโปอื่น
@@ -10,19 +12,21 @@
 
 | องค์ประกอบ | เทคโนโลยี | หน้าที่ |
 |------------|-----------|---------|
-| `ai-service` | FastAPI + Python | จัดหมวดหมู่ภัยคุกคาม, คำนวณคะแนนความเสี่ยง, ตรวจสอบความถูกต้อง, และเปิด API |
-| `Elasticsearch` | Elasticsearch 8.x | เก็บ `Data Lake` และ `Data Warehouse` |
-| `Kibana` | Kibana | ใช้ตรวจสอบข้อมูลและ debug |
+| `ai-service` | FastAPI + Python 3.11 | จัดหมวดหมู่ภัยคุกคาม, คำนวณคะแนนความเสี่ยง, ตรวจสอบความถูกต้อง, clustering, forecasting, และเปิด API |
+| `Elasticsearch` | Elasticsearch 8.12 | เก็บ `Data Lake` และ `Data Warehouse` |
 
 ความสามารถหลักในปัจจุบัน
 
-- วิเคราะห์ IOC เช่น IP, domain, URL, hash
-- จัดหมวดหมู่ภัยคุกคามด้วย zero-shot models
-- คำนวณคะแนนความเสี่ยงจากหลายปัจจัย
+- วิเคราะห์ IOC เช่น IP, domain, URL, hash, CVE
+- จัดหมวดหมู่ภัยคุกคามด้วย hybrid zero-shot models (DeBERTa + BGE-M3)
+- คำนวณคะแนนความเสี่ยงจากหลายปัจจัย (8 weighted factors + sector multiplier)
 - sanitize ข้อมูลก่อนเข้า AI / Warehouse
-- แยกผลลัพธ์เป็น `validated_auto`, `needs_review`, `rejected`
-- เปิด review queue ภายในสำหรับอนุมัติหรือปฏิเสธรายการใน warehouse
-- เตรียม API สำหรับ external consumers เช่น dashboard หรือ threat search
+- แยกผลลัพธ์เป็น `validated` และ `rejected` โดย news source ผ่านได้ถ้า AI confidence ≥ 0.60
+- จัดกลุ่ม IOC เป็น campaign ด้วย HDBSCAN clustering
+- สร้าง attack relationship graph (actors, IOCs, malware, CVEs, infrastructure)
+- พยากรณ์แนวโน้มการโจมตีด้วย Holt-Winters forecasting
+- เตรียม Dashboard API สำหรับ executive/operations/IOC analytics
+- แปลข้อความภัยคุกคามด้วย Hugging Face (opus-mt-en-th)
 
 ## สถาปัตยกรรม
 
@@ -34,44 +38,63 @@ External Threat Data Lake
           |
           v
       AI Service
-  - sanitize content
-  - classify threat
-  - score risk
-  - validate / review gate
+  1. sanitize content
+  2. aggregate observations
+  3. classify context (threat, sector, actor, mitre)
+  4. score risk (multi-factor)
+  5. validation gate
+  6. cluster campaigns (HDBSCAN)
+  7. build relationship graph
           |
           +--> Data Warehouse
                     |
                     v
-     External Dashboard / Threat Search
+     Dashboard API (/api/v1) + External Consumers
 ```
 
 ลำดับการไหลของข้อมูล
 
 1. ระบบภายนอกส่งข้อมูลดิบเข้ามาที่ `Data Lake`
 2. `ai-service` อ่านเอกสารที่ยังไม่ถูกประมวลผล
-3. ระบบ sanitize ข้อมูล, รวม observation ของ IOC เดียวกัน, แล้วรัน AI/ML
-4. ผลลัพธ์ทุกตัวจะถูกบันทึกลง `Threat Data Warehouse` พร้อม metadata ของ validation และ action
-5. ระบบภายนอกจะเรียก API หรืออ่านข้อมูลต่อจาก warehouse
+3. ท่อประมวลผล **AI Service** จะทำงาน 7 ขั้นตอนอัตโนมัติ:
+   - `Sanitize` (ลบข้อมูลส่วนตัว/ข้อมูลความลับ)
+   - `Aggregate` (มัดรวมเบาะแสจากหลายแหล่ง)
+   - `Classify Context` (จัดหมวดหมู่ภัยคุกคาม, อุตสาหกรรมเป้าหมาย, กลุ่มแฮ็กเกอร์, และเทคนิค MITRE)
+   - `Score Risk` (ให้คะแนนความเสี่ยงเพื่อจัดลำดับ)
+   - `Validate` (คัดกรองทิ้งข้อมูลที่ไม่ได้มาตรฐาน)
+   - `Cluster Campaigns` (จัดกลุ่มพฤติกรรมเป็นแคมเปญ)
+   - `Build Graph` (สร้างแผนผังความสัมพันธ์หาต้นตอ)
+4. ผลลัพธ์ทุกตัวจะถูกบันทึกลง `Threat Data Warehouse` พร้อม metadata ของ validation
+5. Dashboard API อ่านจาก warehouse เพื่อแสดงผล executive/operations/IOC analytics
 
 ## โครงสร้างรีโป
 
 ```text
 Cyber/
 ├── ai-service/               # โค้ด runtime หลักของระบบ AI Service
-│   ├── main.py               # FastAPI application
-│   ├── config.py             # ค่ากำหนดโมเดลและ auth
-│   ├── elastic_client.py     # Elasticsearch access layer
-│   ├── integrations/         # HelpDesk integration
-│   ├── models/               # classifier, scorer, validation
-│   ├── services/             # service layer เช่น review queue
-│   ├── utils/                # sanitizer และ pipeline helpers
-│   ├── scripts/ops/          # import, backfill, operational scripts
-│   ├── scripts/dev/          # local verification scripts
-│   └── tests/                # unit tests
+│   ├── main.py               # FastAPI application + core AI endpoints
+│   ├── config.py             # ค่ากำหนดโมเดล, scoring weights, sectors, actors
+│   ├── elastic_client.py     # Elasticsearch dual-index client
+│   ├── models/
+│   │   ├── classifier.py     # NLP zero-shot classification
+│   │   ├── scorer.py         # Multi-factor risk scoring
+│   │   ├── validation.py     # Validation policy (validated / rejected)
+│   │   ├── sector_classifier.py  # Target sector detection
+│   │   ├── campaign_clusterer.py # HDBSCAN campaign clustering
+│   │   ├── forecaster.py     # Holt-Winters trend forecasting
+│   │   └── relationship_graph.py # Attack relationship graph builder
+│   ├── services/
+│   │   ├── dashboard_router.py       # /api/v1 dashboard
+│   │   ├── dashboard_compat_router.py # Legacy route compatibility
+│   │   └── dashboard_bootstrap.py    # In-process admin/user store
+│   ├── utils/                # sanitizer, pipeline builder, translator
+│   ├── scripts/ops/          # import, backfill, rebuild
+│   ├── scripts/dev/          # verification, seeding, smoke tests
+│   └── tests/                # pytest test suite
 ├── docs/                     # เอกสารคู่มือและเอกสารอ้างอิง
-├── data_lake/                # ตัวอย่างไฟล์ JSON สำหรับ import/local test
-├── docker-compose.yml        # local stack
-└── docker-compose.remote.yml # remote ELK stack
+├── data_lake/                # ตัวอย่างไฟล์ JSON สำหรับ import
+├── docker-compose.yml        # local stack (ES + AI Service)
+└── docker-compose.remote.yml # remote ELK stack (AI Service only)
 ```
 
 ## เริ่มต้นใช้งานเร็ว
@@ -85,9 +108,8 @@ docker-compose up -d
 
 บริการหลักที่ได้
 
-- `AI Service` ที่ `http://localhost:8000`
+- `AI Service` ที่ `http://localhost:8000` (API docs: `http://localhost:8000/docs`)
 - `Elasticsearch` ที่ `http://localhost:9200`
-- `Kibana` ที่ `http://localhost:5601`
 
 ### แบบ local development
 
@@ -108,53 +130,23 @@ python main.py
 
 | ตัวแปร | ค่าเริ่มต้น | ความหมาย |
 |--------|-------------|-----------|
-| `AI_SERVICE_HOST` | `0.0.0.0` | host ของ FastAPI |
-| `AI_SERVICE_PORT` | `8000` | port ของ FastAPI |
-| `AI_SERVICE_API_KEYS` | ว่าง | รายการ API key ที่อนุญาต |
+| `AI_SERVICE_API_KEYS` | ว่าง (ต้องตั้ง) | รายการ API key ที่อนุญาต (comma-separated) |
 | `AI_SERVICE_REQUIRE_AUTH` | `true` | บังคับตรวจ `X-API-Key` หรือไม่ |
-| `ELASTICSEARCH_URL` | ในโค้ดชี้ remote ELK | URL ของ Elasticsearch |
+| `ELASTICSEARCH_URL` | `http://localhost:9200` | URL ของ Elasticsearch |
 | `DATALAKE_INDEX` | `cyber-logs-datalake` | index ข้อมูลดิบ |
 | `WAREHOUSE_INDEX` | `cyber-logs-datawarehouse` | index ผลลัพธ์สำหรับใช้งานต่อ |
-| `DATALAKE_API_KEY` | ว่าง | API key สำหรับอ่าน/เขียน datalake |
-| `WAREHOUSE_API_KEY` | ว่าง | API key สำหรับ warehouse |
-| `OPENAI_API_KEY` | ว่าง | ใช้กับ endpoint แปลภาษา |
-| `HELPDESK_MOCK_MODE` | `true` | ใช้ mock helpdesk หรือยิง API จริง |
+| `DATALAKE_API_KEY` | ว่าง | API key สำหรับอ่าน/เขียน datalake (remote ELK) |
+| `WAREHOUSE_API_KEY` | ว่าง | API key สำหรับ warehouse (remote ELK) |
+| `DEVICE` | `cpu` | `cpu` หรือ `cuda` |
 
-หมายเหตุเรื่อง environment
-
-- `docker-compose.yml` สำหรับ local dev ตั้งค่าดัชนี local ของตัวเอง
-- โค้ด runtime มีค่าเริ่มต้นชี้ไป canonical remote indices ดังนั้น production ควรตั้ง env ให้ชัดเจนทุกครั้ง
-
-## สรุป API ที่มีในปัจจุบัน
-
-| Method | Path | หน้าที่ |
-|--------|------|---------|
-| `GET` | `/health` | ตรวจสถานะบริการ |
-| `POST` | `/classify` | จัดหมวดหมู่ภัยคุกคามจากข้อความ |
-| `POST` | `/score` | คำนวณคะแนนความเสี่ยง |
-| `POST` | `/enrich` | classify + score สำหรับ IOC เดียว |
-| `POST` | `/enrich/batch` | enrich หลาย IOC ในครั้งเดียว |
-| `POST` | `/translate` | แปลข้อความเชิงภัยคุกคาม |
-| `POST` | `/helpdesk/ticket` | สร้าง ticket ไป HelpDesk |
-| `POST` | `/pipeline/run` | รัน pipeline จาก datalake ไป processed/warehouse |
-| `GET` | `/pipeline/review-queue` | ดูรายการที่ต้อง review |
-| `POST` | `/pipeline/review/{doc_id}/approve` | อนุมัติรายการเข้า warehouse |
-| `POST` | `/pipeline/review/{doc_id}/reject` | ปฏิเสธรายการ |
-| `GET` | `/pipeline/status` | ดูสถานะดัชนีและจำนวนเอกสาร |
-| `POST` | `/elasticsearch/setup` | สร้าง index ตาม mapping ที่รองรับ |
+ดูตัวแปรแวดล้อมทั้งหมดใน [docs/CONTRIB.md](docs/CONTRIB.md)
 
 ## เอกสารที่ควรอ่านต่อ
 
-- [ดัชนีเอกสารใน docs](docs/README.md)
-- [คู่มือภาพรวมระบบ](docs/SYSTEM_GUIDE_TH.md)
-- [คู่มือ AI Service, API และการปฏิบัติงาน](docs/AI_SERVICE_OPERATIONS_TH.md)
-- [TOR AI/Warehouse Gap Checklist](docs/TOR_AI_WAREHOUSE_GAP_CHECKLIST.md)
-- [TOR_สกมช.pdf](docs/TOR_สกมช.pdf)
-
-## สถานะของ Dashboard
-
-รีโปนี้ไม่มี dashboard runtime ที่ใช้งานจริงแล้ว
-
-- UI ที่ใช้งานจริงจะถูกนำมารวมภายหลังจากอีกโครงการ
-- dashboard PoC เดิมถูกลบออกจากรีโปนี้แล้ว
-- การออกแบบ API สำหรับ dashboard/threat search ภายนอกจะนิยามเพิ่มเมื่อมี spec อย่างเป็นทางการ
+| ลำดับ | ไฟล์ | เนื้อหา |
+|-------|------|---------|
+| 1 | [docs/CODEMAPS/architecture.md](docs/CODEMAPS/architecture.md) | Module dependency graph, design decisions |
+| 2 | [docs/CONTRIB.md](docs/CONTRIB.md) | วิธี setup, env vars, scripts, project structure |
+| 3 | [docs/CODEMAPS/backend.md](docs/CODEMAPS/backend.md) | API endpoints ทั้งหมด, models/services layer |
+| 4 | [docs/CODEMAPS/data.md](docs/CODEMAPS/data.md) | ES schema, scoring config, graph schema |
+| 5 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Deploy, monitoring, troubleshooting, rollback |

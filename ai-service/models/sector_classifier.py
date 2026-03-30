@@ -1,5 +1,9 @@
 """
-Sector Classification Module for Thailand Cyber Threat Intelligence
+Sector Classification Module for Thailand Cyber Threat Intelligence (Keyword-based)
+
+DEPRECATED: Primary sector classification now uses NLP zero-shot in classifier.py.
+This module is retained as a keyword fallback when NLP confidence is low.
+The scorer calls classify_sector() as a fallback via classify_sector_keywords().
 
 Classifies IOCs into target sectors based on:
 - Keywords in description/title

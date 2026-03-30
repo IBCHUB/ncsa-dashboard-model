@@ -18,7 +18,7 @@ from models.classifier import (
 )
 from models.actions import derive_action_metadata
 from models.scorer import calculate_risk_score
-from models.validation import NEEDS_REVIEW, evaluate_validation_status
+from models.validation import evaluate_validation_status
 from utils.sanitizer import sanitize_observation_fields
 
 
@@ -315,6 +315,7 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
             "threat_actors": threat_actors,
             "mitre_techniques": mitre_techniques,
             "confidence": classification["confidence"],
+            "sector_classifications": classification.get("sector_classifications", []),
         },
     )
 
@@ -325,7 +326,6 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         ai_confidence=classification["confidence"],
         sanitization_summary=sanitization_summary,
     )
-    review_state = "pending" if validation["validation_status"] == NEEDS_REVIEW else "not_required"
 
     document = {
         "ioc_value": ioc_value,
@@ -363,11 +363,6 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "validation_status": validation["validation_status"],
         "validation_reasons": validation["validation_reasons"],
         "warehouse_eligible": validation["warehouse_eligible"],
-        "review_required": validation["review_required"],
-        "review_state": review_state,
-        "reviewed_by": None,
-        "reviewed_at": None,
-        "review_notes": None,
         "cleaning_flags": sanitization_summary.get("flags", []),
         "sanitization_summary": sanitization_summary,
         "cluster_label": None,

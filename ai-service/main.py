@@ -21,12 +21,7 @@ from models.classifier import (
     extract_mitre_techniques
 )
 from models.scorer import calculate_risk_score
-from models.validation import NEEDS_REVIEW, REJECTED
-from services.review_queue import (
-    approve_review_document,
-    build_review_queue_response,
-    reject_review_document,
-)
+from models.validation import REJECTED
 from services.dashboard_compat_router import router as dashboard_compat_router
 from services.dashboard_router import router as dashboard_router
 from utils.pipeline_documents import build_enriched_ioc_document
@@ -429,63 +424,6 @@ async def translate_endpoint(request: TranslateRequest, api_key: str = Depends(v
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================
-# HELPDESK INTEGRATION ENDPOINTS
-# ============================================
-
-class CreateTicketRequest(BaseModel):
-    ioc_value: str = Field(..., description="IOC value (IP, domain, hash)")
-    ioc_type: str = Field(..., description="Type of IOC")
-    description: str = Field(..., description="Threat description")
-    risk_score: int = Field(..., description="AI risk score (0-100)")
-    severity: str = Field(..., description="Severity level")
-    threat_types: List[str] = Field(default_factory=list)
-    threat_actors: List[str] = Field(default_factory=list)
-
-
-class CreateTicketResponse(BaseModel):
-    success: bool
-    ticket_id: Optional[str]
-    message: str
-    mock: bool = False
-
-
-@app.post("/helpdesk/ticket", response_model=CreateTicketResponse)
-async def create_helpdesk_ticket(
-    request: CreateTicketRequest,
-    api_key: str = Depends(verify_api_key)
-):
-    """
-    Create a ticket in THCert HelpDesk system.
-    
-    This endpoint allows the Dashboard to escalate threats to the HelpDesk.
-    In mock mode, tickets are logged but not sent to the real API.
-    """
-    try:
-        from integrations.helpdesk import create_incident_ticket
-        
-        result = create_incident_ticket(
-            ioc_value=request.ioc_value,
-            ioc_type=request.ioc_type,
-            description=request.description,
-            risk_score=request.risk_score,
-            severity=request.severity,
-            threat_types=request.threat_types,
-            threat_actors=request.threat_actors
-        )
-        
-        logger.info(f"HelpDesk ticket created: {result.ticket_id} (mock={result.mock})")
-        
-        return {
-            "success": result.success,
-            "ticket_id": result.ticket_id,
-            "message": result.message,
-            "mock": result.mock
-        }
-        
-    except Exception as e:
-        logger.error(f"HelpDesk ticket creation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================
@@ -498,7 +436,6 @@ class PipelineRunRequest(BaseModel):
 
 class PipelineRunResponse(BaseModel):
     processed: int
-    needs_review: int
     rejected: int
     failed: int
     observations_updated: int
@@ -513,43 +450,6 @@ class ElasticsearchStatusResponse(BaseModel):
     datalake_count: int
     warehouse_count: int
 
-
-class ReviewQueueItem(BaseModel):
-    doc_id: str
-    ioc_value: str
-    ioc_type: str
-    validation_status: str
-    review_state: str
-    warehouse_eligible: bool
-    review_required: bool
-    validation_reasons: List[str]
-    ai_risk_score: int = 0
-    ai_severity: str = "low"
-    ai_classification_confidence: float = 0.0
-    source_name: str = "unknown"
-    processed_at: Optional[str] = None
-    reviewed_by: Optional[str] = None
-    reviewed_at: Optional[str] = None
-    review_notes: Optional[str] = None
-
-
-class ReviewQueueResponse(BaseModel):
-    total: int
-    items: List[ReviewQueueItem]
-
-
-class ReviewActionRequest(BaseModel):
-    reviewer: str = Field(..., description="Reviewer identifier")
-    notes: str = Field(default="", description="Optional review notes")
-
-
-class ReviewActionResponse(BaseModel):
-    success: bool
-    doc_id: str
-    validation_status: str
-    review_state: str
-    warehouse_saved: bool
-    message: str
 
 
 @app.post("/pipeline/run", response_model=PipelineRunResponse)
@@ -577,7 +477,6 @@ async def run_pipeline(
     if not unprocessed:
         return {
             "processed": 0,
-            "needs_review": 0,
             "rejected": 0,
             "failed": 0,
             "observations_updated": 0,
@@ -596,7 +495,6 @@ async def run_pipeline(
         grouped_iocs.setdefault(key, []).append(ioc)
 
     processed = 0
-    needs_review = 0
     rejected = 0
     failed = 0
     processed_observations = 0
@@ -631,12 +529,8 @@ async def run_pipeline(
 
             if pipeline_doc["warehouse_eligible"]:
                 processed += 1
-            elif validation_status == NEEDS_REVIEW:
-                needs_review += 1
             elif validation_status == REJECTED:
                 rejected += 1
-            else:
-                needs_review += 1
             processed_observations += len(ioc_docs)
                 
         except Exception as e:
@@ -647,75 +541,17 @@ async def run_pipeline(
     
     return {
         "processed": processed,
-        "needs_review": needs_review,
         "rejected": rejected,
         "failed": failed,
         "observations_updated": processed_observations,
         "processing_time_ms": elapsed,
         "message": (
             f"Pipeline completed: {processed} auto-validated to warehouse, "
-            f"{needs_review} queued for review, {rejected} rejected, "
+            f"{rejected} rejected, "
             f"{processed_observations} observations updated, {failed} failed"
         )
     }
 
-
-@app.get("/pipeline/review-queue", response_model=ReviewQueueResponse)
-async def get_review_queue(
-    limit: int = 50,
-    offset: int = 0,
-    validation_status: str = NEEDS_REVIEW,
-    review_state: str = "pending",
-    api_key: str = Depends(verify_api_key),
-):
-    """List warehouse IOC documents that require human review."""
-    from elastic_client import get_elastic_client
-
-    es_client = get_elastic_client()
-    result = es_client.search_review_documents(
-        validation_status=validation_status,
-        review_state=review_state,
-        limit=limit,
-        offset=offset,
-    )
-
-    return build_review_queue_response(result)
-
-
-@app.post("/pipeline/review/{doc_id}/approve", response_model=ReviewActionResponse)
-async def approve_review_item(
-    doc_id: str,
-    request: ReviewActionRequest,
-    api_key: str = Depends(verify_api_key),
-):
-    """Approve a reviewed IOC and promote it to the warehouse."""
-    from elastic_client import get_elastic_client
-
-    es_client = get_elastic_client()
-    try:
-        return approve_review_document(es_client, doc_id, request.reviewer, request.notes)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.post("/pipeline/review/{doc_id}/reject", response_model=ReviewActionResponse)
-async def reject_review_item(
-    doc_id: str,
-    request: ReviewActionRequest,
-    api_key: str = Depends(verify_api_key),
-):
-    """Reject a reviewed IOC and keep it out of the warehouse."""
-    from elastic_client import get_elastic_client
-
-    es_client = get_elastic_client()
-    try:
-        return reject_review_document(es_client, doc_id, request.reviewer, request.notes)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/pipeline/status", response_model=ElasticsearchStatusResponse)

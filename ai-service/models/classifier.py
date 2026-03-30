@@ -20,7 +20,10 @@ from config import (
     DEVICE,
     THREAT_LABELS,
     LABEL_MAPPING,
-    MITRE_TACTICS
+    MITRE_TACTICS,
+    SECTOR_LABELS,
+    SECTOR_LABEL_MAPPING,
+    SECTOR_CONFIDENCE_THRESHOLD,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,60 +95,79 @@ def classify_threat(
             "scores": [],
             "threat_types": [],
             "confidence": 0.0,
-            "language": "unknown"
+            "language": "unknown",
+            "sector_classifications": [],
         }
 
     # Use configured labels if not provided
-    # NOTE: We prefer the lowercase THREAT_LABELS for the model input
-    labels = candidate_labels or THREAT_LABELS
+    threat_labels = candidate_labels or THREAT_LABELS
+
+    # When using default labels, add sector labels for combined inference
+    include_sectors = candidate_labels is None
+    all_labels = threat_labels + SECTOR_LABELS if include_sectors else threat_labels
 
     try:
         # 1. Language Detection
         detector = get_detector()
         detected_lang = detector.detect_language_of(text)
-        
+
         # 2. Model Selection
         if detected_lang == Language.ENGLISH:
             classifier = get_en_classifier()
             lang_code = "en"
         else:
             classifier = get_multi_classifier()
-            lang_code = str(detected_lang.iso_code_639_1).lower().split('.')[-1]  # e.g. TH
+            lang_code = str(detected_lang.iso_code_639_1).lower().split('.')[-1]
 
-        # 3. Inference
+        # 3. Single inference pass (threat + sector labels together)
         result = classifier(
             text,
-            candidate_labels=labels,
+            candidate_labels=all_labels,
             multi_label=multi_label
         )
 
-        # 4. Post-processing & Mapping
+        # 4. Partition results into threat vs sector
+        threat_mapped = []
+        threat_scores_all = []
         filtered_labels = []
         filtered_scores = []
-        
-        # Map ALL results to Title Case (for output consistency)
-        mapped_labels_all = []
-        
+        sector_classifications = []
+
         for label, score in zip(result["labels"], result["scores"]):
-            # Normalize label using mapping (e.g. "ransomware" -> "Ransomware")
-            # If label not in mapping (e.g. custom candidate), keep as is or title case
-            mapped_label = LABEL_MAPPING.get(label, label.title())
-            mapped_labels_all.append(mapped_label)
-            
-            if score >= threshold:
-                filtered_labels.append(mapped_label)
-                filtered_scores.append(round(score, 3))
+            if include_sectors and label in SECTOR_LABEL_MAPPING:
+                # Sector label → collect separately
+                if score >= SECTOR_CONFIDENCE_THRESHOLD:
+                    sector_classifications.append({
+                        "sector": SECTOR_LABEL_MAPPING[label],
+                        "confidence": round(score, 3),
+                        "label": label,
+                    })
+            else:
+                # Threat label → existing logic
+                mapped_label = LABEL_MAPPING.get(label, label.title())
+                threat_mapped.append(mapped_label)
+                threat_scores_all.append(round(score, 3))
+                if score >= threshold:
+                    filtered_labels.append(mapped_label)
+                    filtered_scores.append(round(score, 3))
+
+        # Sort sectors by confidence descending
+        sector_classifications.sort(key=lambda s: s["confidence"], reverse=True)
 
         top_confidence = filtered_scores[0] if filtered_scores else 0.0
 
         return {
-            "labels": mapped_labels_all,
-            "scores": [round(s, 3) for s in result["scores"]],
+            "labels": threat_mapped,
+            "scores": threat_scores_all,
             "threat_types": filtered_labels,
-            "threat_details": [{"type": l, "confidence": s} for l, s in zip(filtered_labels, filtered_scores)],
+            "threat_details": [
+                {"type": l, "confidence": s}
+                for l, s in zip(filtered_labels, filtered_scores)
+            ],
             "confidence": round(top_confidence, 3),
             "language": lang_code,
-            "model_used": "english" if detected_lang == Language.ENGLISH else "multilingual"
+            "model_used": "english" if detected_lang == Language.ENGLISH else "multilingual",
+            "sector_classifications": sector_classifications,
         }
 
     except Exception as e:
@@ -155,7 +177,8 @@ def classify_threat(
             "scores": [],
             "threat_types": [],
             "confidence": 0.0,
-            "error": "Classification failed. See server logs for details."
+            "error": "Classification failed. See server logs for details.",
+            "sector_classifications": [],
         }
 
 

@@ -1,23 +1,53 @@
 Codemap Diff Report
 ==================
-Date: 2026-03-24
-Status: INITIAL CREATION (no previous version)
+Date: 2026-03-27
+Previous: 2026-03-24
+Status: MAJOR UPDATE (+80% line growth, 300 insertions / 50 deletions)
 
-Files Created:
-  docs/CODEMAPS/architecture.md  — System overview, module graph, design decisions
-  docs/CODEMAPS/backend.md       — API endpoints, models, utils, services
-  docs/CODEMAPS/data.md          — ES index schemas, Pydantic models, config data
+Files Updated:
+  docs/CODEMAPS/architecture.md  — +56 lines (+17 insertions, -9 deletions)
+  docs/CODEMAPS/backend.md       — +209 lines (+209 insertions, -27 deletions)
+  docs/CODEMAPS/data.md          — +85 lines (+85 insertions, -14 deletions)
 
 Note: No frontend codemap generated (backend-only Python project).
 
 Change Summary:
-  - New files: 3
-  - Modified files: 0
+  - New files: 0
+  - Modified files: 3
   - Deleted files: 0
-  - Diff percentage: N/A (first generation)
+  - Previous total lines: 312
+  - New total lines: 562
+  - Diff percentage: +80% (above 30% threshold)
+
+New Modules Documented:
+  - models/campaign_clusterer.py   — HDBSCAN campaign clustering (276 lines)
+  - models/forecaster.py           — Holt-Winters trend forecasting (96 lines)
+  - models/relationship_graph.py   — Attack relationship graph builder (247 lines)
+  - scripts/ops/rebuild_warehouse.py — Warehouse rebuild with clustering + graphing (80 lines)
+  - scripts/dev/test_enrich_from_urls.py — URL-based enrichment testing (390 lines)
+
+New Test Files Documented:
+  - tests/test_campaign_clusterer.py   (221 lines)
+  - tests/test_context_builder.py      (314 lines)
+  - tests/test_e2e_pipeline.py         (250 lines)
+  - tests/test_forecaster.py           (126 lines)
+  - tests/test_relationship_graph.py   (269 lines)
+
+Dashboard Router Growth:
+  - Routes documented: 52 (up from 83 approximate — now accurately counted)
+  - New endpoint categories: Account, Users, User Groups, Notifications, Reports/Exports
+
+Elastic Client Updates:
+  - New methods: search_datalake_documents, bulk_index_datalake, search_review_documents, get_warehouse_document, update_warehouse_document
+
+Data Model Additions:
+  - Graph schema: 8 node types, 7 link types
+  - Campaign clustering: 25-dimensional feature vector
+  - New warehouse fields: cluster_label, cluster_probability, ai_sector, ai_sector_confidence
+  - New request models: AssignRequest, BlockIpRequest, ReportFilterRequest, etc.
 
 Coverage:
-  - Modules documented: 15/15
-  - API endpoints mapped: 83 routes
+  - Modules documented: 20/20 (was 15/15)
+  - API endpoints mapped: 65+ routes
   - ES index schemas: 2 (datalake + warehouse)
-  - Config structures: scoring weights, threat actors, sectors, validation rules
+  - Config structures: scoring weights, threat actors, sectors, validation rules, forecaster params

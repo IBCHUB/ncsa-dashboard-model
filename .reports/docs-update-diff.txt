@@ -1,46 +1,64 @@
 Documentation Update Report
 ===========================
-Date: 2026-03-24
+Date: 2026-03-27
+Previous: 2026-03-24
 
-FILES CREATED:
-  docs/CONTRIB.md    — Development workflow, env vars, scripts reference, project structure
-  docs/RUNBOOK.md    — Deployment, monitoring, troubleshooting, rollback procedures
+FILES UPDATED:
+  docs/CONTRIB.md  — +171 insertions, -46 deletions
+  docs/RUNBOOK.md  — +171 insertions, -46 deletions
 
-FILES RESTORED (were missing from disk, restored from git):
-  docs/AI_SERVICE_OPERATIONS_TH.md
-  docs/SYSTEM_GUIDE_TH.md
-  docs/TOR_AI_WAREHOUSE_GAP_CHECKLIST.md
-  docs/README.md
-  docs/api-spec/README.md
-  docs/api-spec/ncsa-dashboard-api-inventory-th.md
-  docs/api-spec/ncsa-dashboard-backend-gap-map-th.md
-  docs/api-spec/ncsa-dashboard-compat-map-th.md
-  docs/api-spec/ncsa-dashboard-openapi.yaml
-  docs/api-spec/postman/*.json
-  docs/01-04 TOR PDFs
+CONTRIB.md Changes:
+  - Added full environment variable reference table (17 vars documented)
+  - Added AI_SERVICE_CORS_ORIGINS env var
+  - Added test files reference table (10 test files)
+  - Added dependencies table with version constraints
+  - Updated project structure: 3 new models, test_support dir, 10 test files
+  - Added new dev script: test_enrich_from_urls.py
+  - Updated dashboard_router route count: 52 routes
+  - Updated freshness timestamp
 
-FRESHNESS AUDIT:
-  All existing docs last modified 2026-03-12 (12 days ago) — FRESH
-  No stale documentation found (>90 days threshold)
+RUNBOOK.md Changes:
+  - Added Dashboard Login section with JWT auth example
+  - Added Dashboard Health check section
+  - Added Seed Synthetic UAT Data section
+  - Added rebuild_warehouse description (clustering + graph)
+  - Added Issue #7: Dashboard Returns Empty Data
+  - Added Issue #8: CORS Errors from Dashboard Frontend
+  - Updated health check expected response (status: "healthy")
+  - Updated review queue depth monitoring metric
+  - Updated freshness timestamp
+  - Replaced hardcoded API key with YOUR_KEY placeholder
 
-ENVIRONMENT VARIABLES DOCUMENTED:
-  24 env vars extracted from codebase (config.py, main.py, elastic_client.py,
-  models/scorer.py, models/actions.py, integrations/helpdesk.py, scripts/ops/)
+OBSOLETE DOCUMENTATION CHECK:
+  All docs last modified within 90 days — none flagged for removal.
+
+  Docs by age:
+  - 0 days: CONTRIB.md, RUNBOOK.md (just updated)
+  - 3 days: AI_SERVICE_OPERATIONS_TH.md, README.md, SYSTEM_GUIDE_TH.md,
+            TOR_AI_WAREHOUSE_GAP_CHECKLIST.md, api-spec/*.md
+
+  Candidate for manual review (not obsolete, but may be stale):
+  - docs/api-spec/ncsa-dashboard-api-inventory-th.md
+    Reason: New models and expanded dashboard routes since last update
+  - docs/api-spec/ncsa-dashboard-backend-gap-map-th.md
+    Reason: campaign_clusterer, forecaster, relationship_graph not reflected
 
 COVERAGE:
   CONTRIB.md:
     - Prerequisites & setup
-    - Environment variable reference (24 vars)
-    - Dev scripts reference (8 scripts)
+    - Environment variable reference (17 vars in table)
+    - Dev scripts reference (9 scripts)
     - Ops scripts reference (3 scripts)
-    - Project structure
+    - Test files reference (10 test files)
+    - Dependencies table (12 packages)
+    - Project structure (updated)
     - Commit conventions
 
   RUNBOOK.md:
     - Local & remote deployment
-    - Health check procedures
-    - Monitoring metrics
-    - 6 common issues with fixes
+    - Health check procedures (service, ES, dashboard)
+    - Monitoring metrics (7 metrics)
+    - 8 common issues with fixes
     - Rollback procedures (service, data, git)
     - Ports reference
 

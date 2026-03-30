@@ -22,7 +22,6 @@ services:
       - DATALAKE_API_KEY=${DATALAKE_API_KEY}
       - WAREHOUSE_API_KEY=${WAREHOUSE_API_KEY}
       # OpenAI
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       # Set AI_SERVICE_API_KEYS in your deployment environment (never hardcode)
       - AI_SERVICE_API_KEYS=${AI_SERVICE_API_KEYS:?Set AI_SERVICE_API_KEYS in deployment environment}
     volumes:

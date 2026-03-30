@@ -55,6 +55,29 @@ LABEL_MAPPING = {
 
 THREAT_LABELS = list(LABEL_MAPPING.keys())
 
+# Sector Classification Labels (Zero-shot NLP)
+# Natural-language hypotheses for the zero-shot model — run in the same
+# inference pass as THREAT_LABELS with multi_label=True.
+SECTOR_LABELS = [
+    "targeting financial services or banking",
+    "targeting government or public sector",
+    "targeting healthcare or hospitals",
+    "targeting education or universities",
+    "targeting critical infrastructure or energy",
+    "targeting technology companies",
+]
+
+SECTOR_LABEL_MAPPING = {
+    "targeting financial services or banking": "financial",
+    "targeting government or public sector": "government",
+    "targeting healthcare or hospitals": "healthcare",
+    "targeting education or universities": "education",
+    "targeting critical infrastructure or energy": "critical_infrastructure",
+    "targeting technology companies": "technology",
+}
+
+SECTOR_CONFIDENCE_THRESHOLD = 0.35
+
 # ============================================
 # ENHANCED SCORING CONFIGURATION
 # ============================================

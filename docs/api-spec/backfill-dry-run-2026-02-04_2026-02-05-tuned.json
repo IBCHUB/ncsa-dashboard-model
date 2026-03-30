@@ -8,7 +8,7 @@
   "filtered_raw_documents": 463,
   "aggregated_iocs": 391,
   "status_counts": {
-    "validated_auto": 186,
+    "validated": 186,
     "needs_review": 0,
     "rejected": 205
   },
@@ -87,7 +87,7 @@
         ]
       }
     ],
-    "validated_auto": [
+    "validated": [
       {
         "ioc_type": "cve",
         "ioc_value": "CVE-2022-26318",

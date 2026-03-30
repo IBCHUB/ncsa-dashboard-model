@@ -1,45 +1,75 @@
 """
-AI-powered Translation Module using OpenAI GPT
+AI-powered Translation Module using Hugging Face (Local Offline)
 
-Provides context-aware translation for cybersecurity threat intelligence content.
-Optimized for technical terms and Thai language output.
+Provides local translation for cybersecurity threat intelligence content.
+Optimized for English to Thai using Helsinki-NLP/opus-mt-en-th.
 """
 
 import hashlib
 import os
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# OpenAI API Key - can be set via environment variable or .env file
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# Device setup
+DEVICE = os.getenv("DEVICE", "cpu")
+_device_id = -1
+if DEVICE == "cuda":
+    try:
+        import torch
+        if torch.cuda.is_available():
+            _device_id = 0
+        else:
+            DEVICE = "cpu"
+    except ImportError:
+        DEVICE = "cpu"
 
 # Translation settings
-DEFAULT_MODEL = "gpt-4o-mini"  # Cost-effective model for translation
-MAX_TEXT_LENGTH = 4000  # Max characters per translation request
-
-
-def get_openai_client():
-    """Get OpenAI client, lazy initialization."""
-    try:
-        from openai import OpenAI
-        api_key = OPENAI_API_KEY
-        if not api_key:
-            logger.warning("OPENAI_API_KEY not set, translation will return original text")
-            return None
-        return OpenAI(api_key=api_key)
-    except ImportError:
-        logger.error("openai package not installed")
-        return None
-    except Exception as e:
-        logger.error(f"Failed to initialize OpenAI client: {e}")
-        return None
-
+DEFAULT_MODEL = "Helsinki-NLP/opus-mt-en-th"
+MAX_TEXT_LENGTH = 1000  # Max characters per translation request (local models usually have lower context)
 
 # Cache to avoid re-translating same content (capped to prevent unbounded memory growth)
 _CACHE_MAX_SIZE = 1000
 _translation_cache: dict[str, str] = {}
+
+# Lazy loaded pipeline
+_translator_pipeline = None
+_model_failed = False
+
+def get_translator():
+    """Get Hugging Face pipeline, lazy initialization."""
+    global _translator_pipeline, _model_failed
+    if _translator_pipeline is not None:
+        return _translator_pipeline
+    
+    if _model_failed:
+        # Don't keep trying if it failed the first time (saves time per request)
+        return None
+        
+    try:
+        from transformers import pipeline
+        logger.info(f"Loading translation model {DEFAULT_MODEL} on device {DEVICE}...")
+        _translator_pipeline = pipeline("translation", model=DEFAULT_MODEL, device=_device_id)
+        logger.info("Translation model loaded successfully")
+        return _translator_pipeline
+    except ImportError:
+        logger.error("transformers package not installed")
+        _model_failed = True
+        return None
+    except Exception as e:
+        logger.error(f"Failed to initialize translation pipeline: {e}")
+        _model_failed = True
+        return None
+
+
+def is_mostly_thai(text: str) -> bool:
+    """Heuristic to check if text is already mostly Thai."""
+    thai_chars = len(re.findall(r'[\u0E00-\u0E7F]', text))
+    if len(text) == 0:
+        return False
+    return (thai_chars / len(text)) > 0.3
 
 
 def translate_content(
@@ -48,12 +78,12 @@ def translate_content(
     context: str = "cybersecurity threat intelligence"
 ) -> str:
     """
-    Translate text using OpenAI GPT with cybersecurity context.
+    Translate text using local Hugging Face model with cybersecurity context in mind.
     
     Args:
         text: Text to translate
-        target_lang: Target language code ('th' for Thai, 'en' for English)
-        context: Domain context for better translation
+        target_lang: Target language code ('th' for Thai). Only 'th' is supported.
+        context: Deprecated context arg for local model backward compatibility.
         
     Returns:
         Translated text, or original text if translation fails
@@ -62,7 +92,16 @@ def translate_content(
     if not text or len(text.strip()) < 5:
         return text
     
+    # We only have en-th model downloaded. Skip non-Thai target.
+    if target_lang != "th":
+        return text
+        
+    # If it's already Thai, we shouldn't pass it to opus-mt-en-th
+    if is_mostly_thai(text):
+        return text
+    
     # Truncate very long text (work on a local copy to avoid mutating the caller's string key)
+    # Most local translation models expect < 512 tokens.
     if len(text) > MAX_TEXT_LENGTH:
         text = text[:MAX_TEXT_LENGTH] + "..."
 
@@ -71,45 +110,23 @@ def translate_content(
     if cache_key in _translation_cache:
         return _translation_cache[cache_key]
     
-    # Get OpenAI client
-    client = get_openai_client()
-    if client is None:
+    translator = get_translator()
+    if translator is None:
         return text
     
-    # Language mapping
-    lang_names = {
-        "th": "Thai (ภาษาไทย)",
-        "en": "English",
-        "ja": "Japanese",
-        "zh": "Chinese (Simplified)"
-    }
-    target_lang_name = lang_names.get(target_lang, target_lang)
-    
-    # System prompt for cybersecurity translation
-    system_prompt = f"""You are a professional translator specializing in {context}.
-Translate the given text to {target_lang_name}.
-
-Important guidelines:
-1. Keep technical terms accurate (e.g., "lateral movement" → "การแพร่กระจายในเครือข่าย")
-2. Preserve meaning of security concepts (APT, C2, ransomware, etc.)
-3. Use formal but readable language
-4. Keep acronyms as-is when commonly used (e.g., IOC, APT, CVE)
-5. If the text is already in the target language, return it as-is
-6. Return ONLY the translated text, no explanations"""
-    
     try:
-        response = client.chat.completions.create(
-            model=DEFAULT_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
-            ],
-            temperature=0.3,  # Low temperature for consistent translation
-            max_tokens=2000
-        )
+        # Using the pipeline directly on string text
+        # Clean up some formatting that confuses local models:
+        clean_text = text.replace("\n", " ").strip()
         
-        translated = response.choices[0].message.content.strip()
+        result = translator(clean_text, max_length=512, truncation=True)
+        translated = result[0]["translation_text"].strip()
         
+        # Basic post-processing heuristics to fix common translation artefacts
+        if len(translated) == 0 or len(translated) > len(text) * 3:
+            # Model hallucinated
+            return text
+            
         # Cache the result (evict oldest entry if at capacity)
         if len(_translation_cache) >= _CACHE_MAX_SIZE:
             _translation_cache.pop(next(iter(_translation_cache)))
@@ -121,5 +138,3 @@ Important guidelines:
     except Exception as e:
         logger.error(f"Translation failed: {e}")
         return text
-
-

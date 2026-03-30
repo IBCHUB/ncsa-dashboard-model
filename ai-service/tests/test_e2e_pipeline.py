@@ -67,7 +67,7 @@ MOCK_SCORE_RESULT = {
 }
 
 MOCK_VALIDATION = {
-    "validation_status": "validated_auto",
+    "validation_status": "validated",
     "validation_reasons": [],
     "warehouse_eligible": True,
     "review_required": False,

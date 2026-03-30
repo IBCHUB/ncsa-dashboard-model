@@ -7,11 +7,8 @@ from __future__ import annotations
 from typing import Any, Dict, List
 import ipaddress
 
-VALIDATED_AUTO = "validated_auto"
-VALIDATED_MANUAL = "validated_manual"
-NEEDS_REVIEW = "needs_review"
+VALIDATED = "validated"
 REJECTED = "rejected"
-REJECTED_MANUAL = "rejected_manual"
 
 
 def _is_private_ip_indicator(ioc_type: str, ioc_value: str) -> bool:
@@ -77,11 +74,9 @@ def evaluate_validation_status(
     )
 
     curated_editorial_auto_validated = (
-        (
-            normalized_ioc_type == "cve"
-        ) or (
-            source_count >= 2
-        )
+        normalized_ioc_type == "cve"
+        or source_count >= 2
+        or confidence >= 0.60  # single news source ผ่านได้ถ้า AI confidence สูงพอ
     ) if curated_editorial_signal else False
 
     rejected = (
@@ -110,19 +105,16 @@ def evaluate_validation_status(
         )
     )
 
-    if rejected:
+    if rejected or not auto_validated:
         status = REJECTED
-    elif auto_validated:
-        status = VALIDATED_AUTO
-        reasons = [reason for reason in reasons if reason == "sensitive_content_was_redacted"]
     else:
-        status = NEEDS_REVIEW
+        status = VALIDATED
+        reasons = [reason for reason in reasons if reason == "sensitive_content_was_redacted"]
 
     return {
         "validation_status": status,
         "validation_reasons": reasons,
-        "warehouse_eligible": status == VALIDATED_AUTO,
-        "review_required": status == NEEDS_REVIEW,
+        "warehouse_eligible": status == VALIDATED,
         "trusted_sources": trusted,
         "news_sources": news,
         "other_sources": other,

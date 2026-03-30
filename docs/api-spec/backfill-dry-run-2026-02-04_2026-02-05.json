@@ -8,7 +8,7 @@
   "filtered_raw_documents": 463,
   "aggregated_iocs": 391,
   "status_counts": {
-    "validated_auto": 0,
+    "validated": 0,
     "needs_review": 16,
     "rejected": 375
   },

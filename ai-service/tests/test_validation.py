@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.validation import NEEDS_REVIEW, REJECTED, VALIDATED_AUTO, evaluate_validation_status  # noqa: E402
+from models.validation import REJECTED, VALIDATED, evaluate_validation_status  # noqa: E402
 
 
 def test_validation_auto_validates_trusted_multi_source_signal():
@@ -22,9 +22,8 @@ def test_validation_auto_validates_trusted_multi_source_signal():
         sanitization_summary={"sanitized": False},
     )
 
-    assert result["validation_status"] == VALIDATED_AUTO
+    assert result["validation_status"] == VALIDATED
     assert result["warehouse_eligible"] is True
-    assert result["review_required"] is False
     assert result["validation_reasons"] == []
 
 
@@ -44,11 +43,11 @@ def test_validation_keeps_redaction_reason_for_auto_validated_items():
         sanitization_summary={"sanitized": True},
     )
 
-    assert result["validation_status"] == VALIDATED_AUTO
+    assert result["validation_status"] == VALIDATED
     assert result["validation_reasons"] == ["sensitive_content_was_redacted"]
 
 
-def test_validation_requires_review_without_trusted_corroboration():
+def test_validation_rejects_without_trusted_corroboration_and_policy_gate():
     result = evaluate_validation_status(
         ioc_value="emerging-alert.example",
         ioc_type="domain",
@@ -64,7 +63,7 @@ def test_validation_requires_review_without_trusted_corroboration():
         sanitization_summary={"sanitized": False},
     )
 
-    assert result["validation_status"] == NEEDS_REVIEW
+    assert result["validation_status"] == REJECTED
     assert result["warehouse_eligible"] is False
     assert "missing_trusted_source_corroboration" in result["validation_reasons"]
     assert "policy_gate_triggered" in result["validation_reasons"]
@@ -107,9 +106,8 @@ def test_validation_auto_validates_curated_editorial_cve_signal():
         sanitization_summary={"sanitized": False},
     )
 
-    assert result["validation_status"] == VALIDATED_AUTO
+    assert result["validation_status"] == VALIDATED
     assert result["warehouse_eligible"] is True
-    assert result["review_required"] is False
 
 
 def test_validation_auto_validates_curated_editorial_multi_source_signal():
@@ -128,5 +126,5 @@ def test_validation_auto_validates_curated_editorial_multi_source_signal():
         sanitization_summary={"sanitized": False},
     )
 
-    assert result["validation_status"] == VALIDATED_AUTO
+    assert result["validation_status"] == VALIDATED
     assert result["warehouse_eligible"] is True

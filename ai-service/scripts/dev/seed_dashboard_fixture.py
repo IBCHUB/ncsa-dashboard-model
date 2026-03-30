@@ -1041,7 +1041,7 @@ def _warehouse_doc(
         "score_config_version": "synthetic-uat-v4",
         "credibility_score": max(60, min(99, 74 + len(sources) * 4 + rng.randint(-3, 6))),
         "impact_score": max(55, min(99, 68 + {"critical": 20, "high": 12, "medium": 4, "low": -4, "clean": -10}[severity] + rng.randint(-4, 4))),
-        "validation_status": "validated_auto",
+        "validation_status": "validated",
         "validation_reasons": [],
         "warehouse_eligible": True,
         "review_required": False,

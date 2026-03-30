@@ -16,6 +16,9 @@ from test_support.dashboard_fake_backend import FakeElasticClient  # noqa: E402
 @pytest.fixture()
 def client(monkeypatch):
     dashboard_bootstrap._state = None
+    monkeypatch.setenv("DASHBOARD_BOOTSTRAP_PASSWORD", "admin123!")
+    monkeypatch.setenv("DASHBOARD_SUPERADMIN_PASSWORD", "superadmin123!")
+    monkeypatch.setenv("DASHBOARD_ANALYST_PASSWORD", "analyst123!")
     fake_client = FakeElasticClient()
     monkeypatch.setattr(dashboard_router, "get_elastic_client", lambda: fake_client)
     app = FastAPI()
