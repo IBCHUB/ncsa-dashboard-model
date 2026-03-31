@@ -158,8 +158,14 @@ def build_classifier_context(
             ip_info = enrichment.get("ip_info")
             if isinstance(ip_info, dict) and ip_info:
                 ip_parts = []
-                country = ip_info.get("country") or ip_info.get("country_code", "")
-                org = ip_info.get("org", "")
+                asn_data = ip_info.get("asn_data", {})
+                _asn_data = asn_data if isinstance(asn_data, dict) else {}
+                country = (
+                    ip_info.get("country")
+                    or ip_info.get("country_code", "")
+                    or _asn_data.get("country", "")
+                )
+                org = ip_info.get("org", "") or _asn_data.get("org", "")
                 asn = ip_info.get("asn", "")
                 if country:
                     ip_parts.append(f"IP located in {country}")

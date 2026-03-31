@@ -180,11 +180,8 @@ def calculate_source_score(sources: List[Any]) -> Dict[str, Any]:
             name = str(source).upper()
             confidence = 0.0
             
-        # Add confidence to bonus (scaled down, e.g., 20 confidence -> 2 points)
-        # Assuming confidence is 0-100, we take 10% as bonus
+        # Confidence bonus: 20% of source confidence (0-100 scale → 0-20 bonus points)
         if confidence > 0:
-            # Add confidence to bonus (scaled 0-20 points)
-            # Assuming confidence is 0-100, we take 20% as bonus
             total_confidence_bonus += (confidence * 0.2)
         
         if any(t.upper() in name for t in TRUSTED_SOURCES):

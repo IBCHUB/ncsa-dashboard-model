@@ -4,8 +4,6 @@
 
 รีโปนี้เป็นชุดงานหลักของระบบ `AI / ML` และ `Threat Data Warehouse` สำหรับโครงการ TCTI โดยรับข้อมูลดิบจาก `Threat Data Lake` ที่มาจากระบบภายนอก แล้วประมวลผลผ่าน AI Service ก่อนบันทึกลง `Threat Data Warehouse`
 
-ระบบ `Dashboard` และ `Threat Search` ที่ใช้งานจริงไม่ได้อยู่ในรีโปนี้แล้ว และถูกดูแลแยกในรีโปอื่น
-
 ## ภาพรวม
 
 องค์ประกอบหลักของรีโปนี้มีดังนี้
@@ -43,29 +41,36 @@ External Threat Data Lake
   3. classify context (threat, sector, actor, mitre)
   4. score risk (multi-factor)
   5. validation gate
+          |
+          v
+    Data Warehouse
+          |
+          v
+  rebuild_warehouse.py
   6. cluster campaigns (HDBSCAN)
   7. build relationship graph
+  8. forecast trends (Holt-Winters)
           |
-          +--> Data Warehouse
-                    |
-                    v
-     Dashboard API (/api/v1) + External Consumers
+          v
+  Dashboard API (/api/v1) + External Consumers
 ```
 
 ลำดับการไหลของข้อมูล
 
 1. ระบบภายนอกส่งข้อมูลดิบเข้ามาที่ `Data Lake`
 2. `ai-service` อ่านเอกสารที่ยังไม่ถูกประมวลผล
-3. ท่อประมวลผล **AI Service** จะทำงาน 7 ขั้นตอนอัตโนมัติ:
+3. ท่อประมวลผล **AI Service** จะทำงาน 5 ขั้นตอนอัตโนมัติ:
    - `Sanitize` (ลบข้อมูลส่วนตัว/ข้อมูลความลับ)
    - `Aggregate` (มัดรวมเบาะแสจากหลายแหล่ง)
    - `Classify Context` (จัดหมวดหมู่ภัยคุกคาม, อุตสาหกรรมเป้าหมาย, กลุ่มแฮ็กเกอร์, และเทคนิค MITRE)
    - `Score Risk` (ให้คะแนนความเสี่ยงเพื่อจัดลำดับ)
    - `Validate` (คัดกรองทิ้งข้อมูลที่ไม่ได้มาตรฐาน)
-   - `Cluster Campaigns` (จัดกลุ่มพฤติกรรมเป็นแคมเปญ)
+4. ผลลัพธ์บันทึกลง `Threat Data Warehouse` พร้อม metadata ของ validation
+5. `rebuild_warehouse.py` รันการวิเคราะห์ขั้นสูงหลัง warehouse พร้อมแล้ว:
+   - `Cluster Campaigns` (จัดกลุ่มพฤติกรรมเป็นแคมเปญด้วย HDBSCAN)
    - `Build Graph` (สร้างแผนผังความสัมพันธ์หาต้นตอ)
-4. ผลลัพธ์ทุกตัวจะถูกบันทึกลง `Threat Data Warehouse` พร้อม metadata ของ validation
-5. Dashboard API อ่านจาก warehouse เพื่อแสดงผล executive/operations/IOC analytics
+   - `Forecast Trends` (พยากรณ์แนวโน้มด้วย Holt-Winters)
+6. Dashboard API อ่านจาก warehouse เพื่อแสดงผล executive/operations/IOC analytics
 
 ## โครงสร้างรีโป
 

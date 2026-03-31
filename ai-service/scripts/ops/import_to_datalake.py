@@ -120,7 +120,12 @@ def _resolve_geo_country(geo: dict, enrichment: dict) -> str:
 
     ip_info = enrichment.get("ip_info", {})
     if isinstance(ip_info, dict):
-        country = ip_info.get("country", "") or ip_info.get("country_code", "")
+        asn_data = ip_info.get("asn_data", {})
+        country = (
+            ip_info.get("country", "")
+            or ip_info.get("country_code", "")
+            or (asn_data.get("country", "") if isinstance(asn_data, dict) else "")
+        )
         if country:
             return country
 
@@ -131,6 +136,16 @@ def _resolve_geo_country(geo: dict, enrichment: dict) -> str:
             return country
 
     return ""
+
+
+def _parse_confidence(value) -> int:
+    """Parse source confidence to int 0-100, treating missing/invalid as 0."""
+    if value is None or str(value).strip() in ("", "null", "none"):
+        return 0
+    try:
+        return min(max(int(float(str(value))), 0), 100)
+    except (ValueError, TypeError):
+        return 0
 
 
 def normalize_ioc(raw_event: dict) -> dict:
@@ -159,7 +174,7 @@ def normalize_ioc(raw_event: dict) -> dict:
         "geo_country": _resolve_geo_country(geo, enrichment),
         "ai_processed": False,
         # Source confidence & traceability
-        "confidence": int(raw_event.get("confidence", 0) or 0),
+        "confidence": _parse_confidence(raw_event.get("confidence")),
         "source_url": raw_event.get("source_url", ""),
         "source_id": raw_event.get("source_id", ""),
         # IOC relationships
