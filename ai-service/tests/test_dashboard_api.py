@@ -64,7 +64,10 @@ def test_executive_and_operations_dashboards(client):
     test_client, _ = client
     headers = _login(test_client)
 
-    executive = test_client.get("/api/v1/executive/dashboard", headers=headers)
+    executive = test_client.get(
+        "/api/v1/executive/dashboard?start_date=2026-03-11&end_date=2026-03-11",
+        headers=headers,
+    )
     assert executive.status_code == 200
     executive_payload = executive.json()["data"]
     assert executive_payload["threat_level"]["score"] >= 0
@@ -158,6 +161,37 @@ def test_executive_and_operations_dashboards(client):
     assert attack_time_report.status_code == 200
     assert attack_time_report.json()["data"]["summary"]["total_events"] >= 1
     assert attack_time_report.json()["data"]["filters"]["start_date"] == "2026-03-10"
+
+    attack_time_export = test_client.post(
+        "/api/v1/reports/operations/attack-time/export",
+        headers=headers,
+        json={
+            "start_date": "2026-03-10",
+            "end_date": "2026-03-11",
+            "query": None,
+            "threat_types": [],
+            "sources": [],
+            "severities": [],
+            "page": 1,
+            "page_size": 20,
+            "export_format": "csv",
+        },
+    )
+    assert attack_time_export.status_code == 202
+    assert attack_time_export.json()["data"]["report_type"] == "operations-attack-time"
+
+    threat_intelligence_export = test_client.post(
+        "/api/v1/reports/threat-intelligence/export",
+        headers=headers,
+        json={
+            "section": "overview",
+            "start_date": "2026-03-10",
+            "end_date": "2026-03-11",
+            "export_format": "pdf",
+        },
+    )
+    assert threat_intelligence_export.status_code == 202
+    assert threat_intelligence_export.json()["data"]["report_type"] == "threat-intelligence-overview"
 
     event = test_client.get("/api/v1/operations/events/dl-1", headers=headers)
     assert event.status_code == 200

@@ -160,6 +160,15 @@ class OperationsReportRequest(DashboardDateRangeRequest):
     page_size: int = 20
 
 
+class ThreatIntelligenceExportRequest(DashboardDateRangeRequest):
+    section: str
+    export_format: str
+
+
+class AttackTimeExportRequest(OperationsReportRequest):
+    export_format: str
+
+
 class ActionReportRequest(BaseModel):
     query: Optional[str] = None
     start_date: Optional[date] = None
@@ -1438,13 +1447,20 @@ def _build_executive_attack_volume_trend(
     }
 
 
-def _operations_overview(docs: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _operations_overview(docs: List[Dict[str, Any]], anchor_end: Optional[datetime] = None) -> Dict[str, Any]:
     severities = [_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in docs]
     unique_sources = {source for doc in docs for source in _normalize_sources(doc)}
+    anchor = anchor_end or datetime.now(UTC)
+    recent_cutoff = anchor - timedelta(days=1)
+    new_ioc = 0
+    for doc in docs:
+        event_time = _pick_event_time(doc)
+        if event_time and recent_cutoff <= event_time <= anchor:
+            new_ioc += 1
     return {
         "active_ioc": len(docs),
         "critical_ioc_active": sum(1 for severity in severities if severity == "critical"),
-        "new_ioc": sum(1 for doc in docs if _pick_event_time(doc) and (_pick_event_time(doc) or datetime.now(UTC)) >= datetime.now(UTC) - timedelta(days=1)),
+        "new_ioc": new_ioc,
         "sources_active": len(unique_sources),
     }
 
@@ -1968,6 +1984,7 @@ def operations_dashboard(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    anchor_end = _resolve_anchor_end(end_date) if end_date else None
     docs = _hits_to_docs(_search_warehouse_docs(start_date=start_date, end_date=end_date, sort_by="time", limit=5000))
     datalake_docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
     source_counts = Counter(source for doc in docs for source in _normalize_sources(doc))
@@ -1976,7 +1993,7 @@ def operations_dashboard(
     sector_counts = Counter(_sector_info(doc)["sector_name_th"] for doc in docs)
     heatmap_docs = datalake_docs or docs
     payload = {
-        "overview": _operations_overview(docs),
+        "overview": _operations_overview(docs, anchor_end=anchor_end),
         "incident_by_severity": _build_severity_distribution(docs),
         "attack_time_heatmap": _build_heatmap(heatmap_docs),
         "top_intelligence_sources": _build_top_list(source_counts),
@@ -2060,6 +2077,26 @@ def operations_report_preview(report_key: str, request: OperationsReportRequest,
     return _success(payload)
 
 
+@router.post("/reports/operations/attack-time/export", tags=["Reports"], status_code=202)
+def attack_time_report_export(request: AttackTimeExportRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+    job = _queue_export_job(
+        request.export_format,
+        "operations-attack-time",
+        "operations-attack-time",
+        {
+            "query": request.query,
+            "start_date": request.start_date.isoformat(),
+            "end_date": request.end_date.isoformat(),
+            "threat_types": request.threat_types,
+            "sources": request.sources,
+            "severities": request.severities,
+            "page": request.page,
+            "page_size": request.page_size,
+        },
+    )
+    return _success(job)
+
+
 @router.post("/reports/operations/{report_key}/export", tags=["Reports"], status_code=202)
 def operations_report_export(report_key: str, request: ExportReportRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
     normalized_key = _normalize_report_key(report_key)
@@ -2073,6 +2110,24 @@ def operations_report_export(report_key: str, request: ExportReportRequest, curr
             "threat_types": request.threat_types,
             "sources": request.sources,
             "severities": request.severities,
+        },
+    )
+    return _success(job)
+
+
+@router.post("/reports/threat-intelligence/export", tags=["Reports"], status_code=202)
+def threat_intelligence_report_export(request: ThreatIntelligenceExportRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+    section = str(request.section or "").strip().lower()
+    if section not in {"overview", "ioc"}:
+        raise HTTPException(status_code=400, detail="Unsupported threat intelligence export section")
+    job = _queue_export_job(
+        request.export_format,
+        f"threat-intelligence-{section}",
+        f"threat-intelligence-{section}",
+        {
+            "section": section,
+            "start_date": request.start_date.isoformat(),
+            "end_date": request.end_date.isoformat(),
         },
     )
     return _success(job)
