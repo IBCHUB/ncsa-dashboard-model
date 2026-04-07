@@ -35,6 +35,3 @@ tmp/
 # Agent
 .agent/
 brain/
-
-# Separate repos
-ncsa-dashboard-web/

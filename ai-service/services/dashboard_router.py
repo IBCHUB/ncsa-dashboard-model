@@ -136,6 +136,13 @@ class ReportFilterRequest(BaseModel):
     severities: List[str] = Field(default_factory=list)
 
 
+class IOCReportPreviewRequest(ReportFilterRequest):
+    limit: int = Field(default=200, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+    page: Optional[int] = Field(default=None, ge=1)
+    page_size: Optional[int] = Field(default=None, ge=1, le=500)
+
+
 class ExportReportRequest(ReportFilterRequest):
     export_format: str
 
@@ -2585,7 +2592,7 @@ def ioc_analytics(
 
 
 @router.post("/reports/ioc/preview", tags=["Reports"])
-def ioc_report_preview(request: ReportFilterRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
     docs = _hits_to_docs(
         _search_warehouse_docs(
             start_date=request.start_date.isoformat(),
@@ -2597,7 +2604,21 @@ def ioc_report_preview(request: ReportFilterRequest, current_user: Dict[str, Any
             limit=5000,
         )
     )
-    items = [_build_ioc_record(index + 1, doc) for index, doc in enumerate(docs[:200])]
+    use_page_pagination = "page" in request.model_fields_set or "page_size" in request.model_fields_set
+    if use_page_pagination:
+        effective_page_size = request.page_size or request.limit
+        effective_page = request.page or 1
+        effective_limit = effective_page_size
+        effective_offset = max(effective_page - 1, 0) * effective_page_size
+    else:
+        effective_limit = request.limit
+        effective_offset = request.offset
+
+    paged_docs = docs[effective_offset: effective_offset + effective_limit]
+    items = [
+        _build_ioc_record(effective_offset + index + 1, doc)
+        for index, doc in enumerate(paged_docs)
+    ]
     severity_distribution = _build_severity_distribution(docs)
     source_counts = Counter(source for doc in docs for source in _normalize_sources(doc))
     type_counts = Counter(str(doc.get("ioc_type", "")).lower() for doc in docs)
@@ -2607,7 +2628,7 @@ def ioc_report_preview(request: ReportFilterRequest, current_user: Dict[str, Any
             "generated_for": f"{request.start_date.isoformat()} to {request.end_date.isoformat()}",
             "high_risk_count": sum(1 for doc in docs if _safe_int(doc.get("ai_risk_score")) >= 80),
         },
-        "filters": request.model_dump(),
+        "filters": request.model_dump(exclude_none=True),
         "charts": {
             "severity_distribution": severity_distribution,
             "top_sources": _build_top_list(source_counts),

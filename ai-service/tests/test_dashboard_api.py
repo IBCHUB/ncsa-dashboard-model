@@ -329,10 +329,36 @@ def test_reports_news_and_admin_domains(client):
             "sources": [],
             "ioc_types": [],
             "severities": [],
+            "limit": 1,
+            "offset": 1,
         },
     )
     assert preview.status_code == 200
     assert preview.json()["data"]["summary"]["total_rows"] >= 2
+    assert preview.json()["data"]["filters"]["limit"] == 1
+    assert preview.json()["data"]["filters"]["offset"] == 1
+    assert len(preview.json()["data"]["items"]) == 1
+    assert preview.json()["data"]["items"][0]["rank"] == 2
+
+    preview_paged = test_client.post(
+        "/api/v1/reports/ioc/preview",
+        headers=headers,
+        json={
+            "start_date": "2026-03-10",
+            "end_date": "2026-03-11",
+            "threat_types": [],
+            "sources": [],
+            "ioc_types": [],
+            "severities": [],
+            "page": 2,
+            "page_size": 1,
+        },
+    )
+    assert preview_paged.status_code == 200
+    assert preview_paged.json()["data"]["filters"]["page"] == 2
+    assert preview_paged.json()["data"]["filters"]["page_size"] == 1
+    assert len(preview_paged.json()["data"]["items"]) == 1
+    assert preview_paged.json()["data"]["items"][0]["rank"] == 2
 
     export = test_client.post(
         "/api/v1/reports/ioc/export",
@@ -348,6 +374,11 @@ def test_reports_news_and_admin_domains(client):
         },
     )
     assert export.status_code == 202
+    export_payload = export.json()["data"]
+    assert export_payload["filters"]["start_date"] == "2026-03-10"
+    assert export_payload["filters"]["end_date"] == "2026-03-11"
+    assert "T" in export_payload["created_at"]
+    assert "T" in export_payload["completed_at"]
     export_id = export.json()["data"]["export_id"]
 
     export_status = test_client.get(f"/api/v1/exports/{export_id}", headers=headers)
