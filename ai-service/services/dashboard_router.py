@@ -9,8 +9,10 @@ until dedicated services exist.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import csv
 from datetime import date, datetime, timedelta, timezone
 import hashlib
+import io
 import json
 import logging
 from math import floor
@@ -18,7 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -144,6 +146,15 @@ class IOCReportPreviewRequest(ReportFilterRequest):
 
 
 class ExportReportRequest(ReportFilterRequest):
+    export_format: str
+
+
+class IOCExportRequest(ReportFilterRequest):
+    query: Optional[str] = None
+    risk_levels: List[str] = Field(default_factory=list)
+    high_risk_only: bool = False
+    page: Optional[int] = Field(default=None, ge=1)
+    page_size: Optional[int] = Field(default=None, ge=1, le=500)
     export_format: str
 
 
@@ -422,7 +433,7 @@ def _lookup_items(values: Iterable[str]) -> List[Dict[str, Any]]:
         if lowered in seen:
             continue
         seen.add(lowered)
-        items.append({"value": lowered, "label": value, "description": None, "active": True})
+        items.append({"value": value, "label": value, "description": None, "active": True})
     return items
 
 
@@ -1135,6 +1146,117 @@ def _filter_warehouse_docs(
     return filtered
 
 
+def _resolve_date_bounds(start_date: Optional[str], end_date: Optional[str]) -> Tuple[Optional[datetime], Optional[datetime]]:
+    start_bound = _parse_dt(f"{start_date}T00:00:00+07:00") if start_date else None
+    end_bound = _parse_dt(f"{end_date}T23:59:59+07:00") if end_date else None
+    return start_bound, end_bound
+
+
+def _ioc_doc_matches_date_range(doc: Dict[str, Any], start_date: Optional[str] = None, end_date: Optional[str] = None) -> bool:
+    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
+    if start_bound is None and end_bound is None:
+        return True
+
+    observed_from = _parse_dt(
+        doc.get("first_seen") or doc.get("event_time") or doc.get("collect_time") or doc.get("processed_at") or doc.get("created_at")
+    )
+    observed_to = _parse_dt(
+        doc.get("last_seen") or doc.get("collect_time") or doc.get("processed_at") or doc.get("first_seen") or doc.get("event_time") or doc.get("created_at")
+    )
+    if observed_from is None and observed_to is None:
+        return True
+
+    effective_from = observed_from or observed_to
+    effective_to = observed_to or observed_from
+    if effective_from and effective_to and effective_to < effective_from:
+        effective_from, effective_to = effective_to, effective_from
+
+    if start_bound and effective_to and effective_to < start_bound:
+        return False
+    if end_bound and effective_from and effective_from > end_bound:
+        return False
+    return True
+
+
+def _collect_ioc_docs(
+    query: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    sources: Optional[Sequence[str]] = None,
+    threat_types: Optional[Sequence[str]] = None,
+    risk_levels: Optional[Sequence[str]] = None,
+    ioc_types: Optional[Sequence[str]] = None,
+    severities: Optional[Sequence[str]] = None,
+    high_risk_only: bool = False,
+    sort_by: str = "risk",
+    sort_order: str = "desc",
+) -> List[Dict[str, Any]]:
+    effective_severities = list(severities or risk_levels or [])
+    docs = _hits_to_docs(
+        _search_warehouse_docs(
+            query_text=query or "*",
+            ioc_types=list(ioc_types or []) or None,
+            severities=effective_severities or None,
+            start_date=start_date,
+            end_date=end_date,
+            sort_by=sort_by,
+            limit=5000,
+        )
+    )
+    docs = _filter_warehouse_docs(
+        docs,
+        threat_types=threat_types,
+        sources=sources,
+        severities=effective_severities or None,
+    )
+    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date)]
+    if high_risk_only:
+        docs = [doc for doc in docs if int(doc.get("ai_risk_score") or 0) >= 80]
+    docs = sorted(
+        docs,
+        key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
+        reverse=(sort_order != "asc"),
+    )
+    return docs
+
+
+def _build_ioc_export_csv(items: Sequence[Dict[str, Any]]) -> bytes:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "rank",
+            "ioc_id",
+            "ioc_value",
+            "ioc_type",
+            "ioc_type_label",
+            "severity",
+            "risk_score",
+            "threat_types",
+            "sources",
+            "first_seen",
+            "last_seen",
+        ]
+    )
+    for item in items:
+        writer.writerow(
+            [
+                item.get("rank"),
+                item.get("ioc_id"),
+                item.get("ioc_value"),
+                item.get("ioc_type"),
+                item.get("ioc_type_label"),
+                item.get("severity"),
+                item.get("risk_score"),
+                " | ".join(str(value) for value in (item.get("threat_types") or [])),
+                " | ".join(str(value) for value in (item.get("sources") or [])),
+                item.get("first_seen"),
+                item.get("last_seen"),
+            ]
+        )
+    return buffer.getvalue().encode("utf-8-sig")
+
+
 def _build_report_ranking(
     report_key: str,
     docs: Sequence[Dict[str, Any]],
@@ -1811,9 +1933,30 @@ def _build_news_articles(docs: List[Dict[str, Any]], query_text: Optional[str] =
     return list(articles.values())
 
 
-def _queue_export_job(export_format: str, file_prefix: str, report_type: str, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _queue_export_job(
+    export_format: str,
+    file_prefix: str,
+    report_type: str,
+    filters: Optional[Dict[str, Any]] = None,
+    file_content: Optional[bytes] = None,
+    media_type: Optional[str] = None,
+) -> Dict[str, Any]:
     state = get_dashboard_state()
-    return state.create_export_job(export_format, file_prefix, report_type=report_type, filters=filters or {})
+    return state.create_export_job(
+        export_format,
+        file_prefix,
+        report_type=report_type,
+        filters=filters or {},
+        file_content=file_content,
+        media_type=media_type,
+    )
+
+
+def _public_export_job(job: Dict[str, Any], request: Request) -> Dict[str, Any]:
+    payload = dict(job)
+    if get_dashboard_state().get_export_file(str(job.get("export_id"))):
+        payload["download_url"] = str(request.url_for("export_download", export_id=str(job["export_id"])))
+    return payload
 
 
 @router.post("/auth/login", tags=["Auth"])
@@ -2446,26 +2589,18 @@ def list_iocs(
     sort_order: str = "desc",
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    effective_severities = severities or risk_levels
-    docs = _hits_to_docs(
-        _search_warehouse_docs(
-            query_text=query or "*",
-            ioc_types=ioc_types,
-            severities=effective_severities,
-            start_date=start_date,
-            end_date=end_date,
-            sources=sources,
-            threat_types=threat_types,
-            sort_by=sort_by,
-            limit=5000,
-        )
-    )
-    if high_risk_only:
-        docs = [doc for doc in docs if int(doc.get("ai_risk_score") or 0) >= 80]
-    docs = sorted(
-        docs,
-        key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
-        reverse=(sort_order != "asc"),
+    docs = _collect_ioc_docs(
+        query=query,
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        risk_levels=risk_levels,
+        ioc_types=ioc_types,
+        severities=severities,
+        high_risk_only=high_risk_only,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
     items = [_build_ioc_record(index + 1, doc) for index, doc in enumerate(docs)]
     facets = {
@@ -2593,16 +2728,13 @@ def ioc_analytics(
 
 @router.post("/reports/ioc/preview", tags=["Reports"])
 def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    docs = _hits_to_docs(
-        _search_warehouse_docs(
-            start_date=request.start_date.isoformat(),
-            end_date=request.end_date.isoformat(),
-            threat_types=request.threat_types or None,
-            sources=request.sources or None,
-            ioc_types=request.ioc_types or None,
-            severities=request.severities or None,
-            limit=5000,
-        )
+    docs = _collect_ioc_docs(
+        start_date=request.start_date.isoformat(),
+        end_date=request.end_date.isoformat(),
+        threat_types=request.threat_types or None,
+        sources=request.sources or None,
+        ioc_types=request.ioc_types or None,
+        severities=request.severities or None,
     )
     use_page_pagination = "page" in request.model_fields_set or "page_size" in request.model_fields_set
     if use_page_pagination:
@@ -2649,9 +2781,36 @@ def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str,
 
 
 @router.post("/reports/ioc/export", tags=["Reports"], status_code=202)
-def ioc_report_export(request: ExportReportRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    job = _queue_export_job(request.export_format, "ioc-report", "ioc-report", request.model_dump())
-    return _success(job)
+def ioc_report_export(
+    request: IOCExportRequest,
+    http_request: Request,
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    docs = _collect_ioc_docs(
+        query=request.query,
+        start_date=request.start_date.isoformat(),
+        end_date=request.end_date.isoformat(),
+        threat_types=request.threat_types or None,
+        sources=request.sources or None,
+        risk_levels=request.risk_levels or None,
+        ioc_types=request.ioc_types or None,
+        severities=request.severities or None,
+        high_risk_only=request.high_risk_only,
+    )
+    items = [_build_ioc_record(index + 1, doc) for index, doc in enumerate(docs)]
+    filters = request.model_dump(exclude_none=True)
+    if str(request.export_format or "").lower() != "csv":
+        filters["requested_export_format"] = request.export_format
+    filters["export_format"] = "csv"
+    job = _queue_export_job(
+        "csv",
+        "ioc-report",
+        "ioc-report",
+        filters,
+        file_content=_build_ioc_export_csv(items),
+        media_type="text/csv; charset=utf-8",
+    )
+    return _success(_public_export_job(job, http_request))
 
 
 @router.post("/reports/most-frequent-threats/preview", tags=["Reports"])
@@ -2708,11 +2867,24 @@ def most_frequent_threats_preview(request: MostFrequentThreatsRequest, current_u
 
 
 @router.get("/exports/{export_id}", tags=["Reports"])
-def export_job(export_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def export_job(export_id: str, request: Request, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
     job = get_dashboard_state().get_export_job(export_id)
     if not job:
         raise HTTPException(status_code=404, detail="Export job not found")
-    return _success(job)
+    return _success(_public_export_job(job, request))
+
+
+@router.get("/exports/{export_id}/download", tags=["Reports"])
+def export_download(export_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+    state = get_dashboard_state()
+    job = state.get_export_job(export_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Export job not found")
+    export_file = state.get_export_file(export_id)
+    if not export_file:
+        raise HTTPException(status_code=404, detail="Export file not found")
+    headers = {"Content-Disposition": f'attachment; filename="{job["file_name"]}"'}
+    return Response(content=export_file["content"], media_type=export_file["media_type"], headers=headers)
 
 
 @router.get("/news", tags=["News"])

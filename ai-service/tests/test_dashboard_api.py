@@ -50,14 +50,14 @@ def test_auth_and_lookup_contracts(client):
     threat_types = test_client.get("/api/v1/lookups/threat-types", headers=headers)
     assert threat_types.status_code == 200
     values = [item["value"] for item in threat_types.json()["data"]["items"]]
-    assert "phishing" in values
-    assert "malware" in values
+    assert "Phishing" in values
+    assert "Malware" in values
 
     sources = test_client.get("/api/v1/lookups/sources", headers=headers)
     assert sources.status_code == 200
     source_values = [item["value"] for item in sources.json()["data"]["items"]]
-    assert "abuseipdb" in source_values
-    assert "thehackernews" in source_values
+    assert "AbuseIPDB" in source_values
+    assert "TheHackerNews" in source_values
 
 
 def test_executive_and_operations_dashboards(client):
@@ -366,10 +366,13 @@ def test_reports_news_and_admin_domains(client):
         json={
             "start_date": "2026-03-10",
             "end_date": "2026-03-11",
-            "threat_types": [],
-            "sources": [],
-            "ioc_types": [],
+            "query": "malicious.example",
+            "threat_types": ["Phishing"],
+            "sources": ["AbuseIPDB"],
+            "risk_levels": ["critical"],
+            "ioc_types": ["domain"],
             "severities": [],
+            "high_risk_only": True,
             "export_format": "csv",
         },
     )
@@ -377,6 +380,10 @@ def test_reports_news_and_admin_domains(client):
     export_payload = export.json()["data"]
     assert export_payload["filters"]["start_date"] == "2026-03-10"
     assert export_payload["filters"]["end_date"] == "2026-03-11"
+    assert export_payload["filters"]["query"] == "malicious.example"
+    assert export_payload["filters"]["risk_levels"] == ["critical"]
+    assert export_payload["filters"]["high_risk_only"] is True
+    assert export_payload["download_url"].endswith(f"/api/v1/exports/{export_payload['export_id']}/download")
     assert "T" in export_payload["created_at"]
     assert "T" in export_payload["completed_at"]
     export_id = export.json()["data"]["export_id"]
@@ -385,6 +392,12 @@ def test_reports_news_and_admin_domains(client):
     assert export_status.status_code == 200
     assert export_status.json()["data"]["status"] == "completed"
     assert export_status.json()["data"]["report_type"] == "ioc-report"
+    assert export_status.json()["data"]["download_url"].endswith(f"/api/v1/exports/{export_id}/download")
+
+    export_download = test_client.get(f"/api/v1/exports/{export_id}/download", headers=headers)
+    assert export_download.status_code == 200
+    assert export_download.headers["content-type"].startswith("text/csv")
+    assert "malicious.example" in export_download.text
 
     most_frequent = test_client.post(
         "/api/v1/reports/most-frequent-threats/preview",

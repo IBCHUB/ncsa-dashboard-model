@@ -195,6 +195,7 @@ class DashboardState:
     enforcement_points: List[Dict[str, Any]] = field(default_factory=_default_enforcement_points)
     sessions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     export_jobs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    export_files: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     action_assignments: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     action_notes: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -466,6 +467,8 @@ class DashboardState:
         file_prefix: str,
         report_type: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
+        file_content: Optional[bytes] = None,
+        media_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         with self.lock:
             export_id = f"exp-{secrets.token_hex(4)}"
@@ -474,6 +477,7 @@ class DashboardState:
                 "export_id": export_id,
                 "status": "completed",
                 "format": export_format,
+                "export_format": export_format,
                 "file_name": f"{file_prefix}-{created_at.strftime('%Y%m%d%H%M%S')}.{export_format.lower()}",
                 "download_url": None,
                 "created_at": _isoformat(created_at),
@@ -481,12 +485,26 @@ class DashboardState:
                 "report_type": report_type or file_prefix,
                 "filters": deepcopy(filters or {}),
             }
+            if file_content is not None:
+                self.export_files[export_id] = {
+                    "content": bytes(file_content),
+                    "media_type": media_type or "application/octet-stream",
+                }
             self.export_jobs[export_id] = job
             return deepcopy(job)
 
     def get_export_job(self, export_id: str) -> Optional[Dict[str, Any]]:
         job = self.export_jobs.get(export_id)
         return deepcopy(job) if job else None
+
+    def get_export_file(self, export_id: str) -> Optional[Dict[str, Any]]:
+        export_file = self.export_files.get(export_id)
+        if not export_file:
+            return None
+        return {
+            "content": bytes(export_file["content"]),
+            "media_type": export_file["media_type"],
+        }
 
     def get_action_assignment(self, action_id: str) -> Optional[Dict[str, Any]]:
         item = self.action_assignments.get(action_id)
