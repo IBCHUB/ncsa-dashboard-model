@@ -82,6 +82,19 @@ def test_executive_and_operations_dashboards(client):
     }
     assert sum(item["value"] for item in executive_payload["threat_volume_severity"]["nodes"]) == executive_payload["exposure_today"]["total_threats"]
 
+    empty_executive = test_client.get(
+        "/api/v1/executive/dashboard?start_date=2026-03-01&end_date=2026-03-02",
+        headers=headers,
+    )
+    assert empty_executive.status_code == 200
+    assert empty_executive.json()["data"]["exposure_today"] == {
+        "total_threats": 0,
+        "ioc_active": 0,
+        "critical_active": 0,
+        "high_active": 0,
+    }
+    assert sum(item["value"] for item in empty_executive.json()["data"]["threat_volume_severity"]["nodes"]) == 0
+
     executive_preview = test_client.post(
         "/api/v1/reports/executive/preview",
         headers=headers,

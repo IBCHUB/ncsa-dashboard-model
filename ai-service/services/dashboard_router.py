@@ -585,32 +585,6 @@ def _search_warehouse_docs(
     )
 
 
-def _search_recent_warehouse_docs(start_date: Optional[str], end_date: Optional[str], limit: int = 5000) -> Dict[str, Any]:
-    client = get_elastic_client()
-    filters: List[Dict[str, Any]] = [
-        {
-            "bool": {
-                "should": [
-                    {"term": {"warehouse_eligible": True}},
-                    {"bool": {"must_not": [{"exists": {"field": "warehouse_eligible"}}]}},
-                ],
-                "minimum_should_match": 1,
-            }
-        }
-    ]
-    date_filter = _date_filter(_date_query_range(start_date, end_date), ["last_seen", "event_time", "first_seen", "collect_time", "processed_at"])
-    if date_filter:
-        filters.append(date_filter)
-    return _search_documents(
-        client.warehouse_index,
-        query_text="*",
-        filters=filters,
-        limit=limit,
-        sort=[{"last_seen": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}],
-        fields=["ioc_value^3", "description", "reference", "ai_threat_types", "ai_threat_actors", "source_name"],
-    )
-
-
 def _search_datalake_docs(
     query_text: str = "*",
     ioc_types: Optional[List[str]] = None,
@@ -2146,10 +2120,7 @@ def executive_dashboard(
     if not start_date:
         start_date = _to_bangkok_date(now - timedelta(hours=24))
 
-    active_window_start = _to_bangkok_date(now - timedelta(days=180))
     visible_docs = _hits_to_docs(_search_warehouse_docs(start_date=start_date, end_date=end_date, sort_by="time", limit=5000))
-    active_docs = _hits_to_docs(_search_recent_warehouse_docs(start_date=active_window_start, end_date=end_date, limit=5000))
-    active_intel_docs = _hits_to_docs(_search_datalake_docs(start_date=active_window_start, end_date=end_date, limit=5000))
     visible_datalake_docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
     threat_level_docs = _hits_to_docs(_search_warehouse_docs(start_date=_to_bangkok_date(now - timedelta(days=14)), end_date=end_date, sort_by="time", limit=5000))
     severity_distribution = _build_severity_distribution(visible_docs)
@@ -2170,7 +2141,7 @@ def executive_dashboard(
                 "value": primary_sector.get("count", 0),
             },
         },
-        "exposure_today": _build_exposure_summary(visible_docs, [*active_docs, *active_intel_docs]),
+        "exposure_today": _build_exposure_summary(visible_docs, [*visible_docs, *visible_datalake_docs]),
         "severity_distribution": severity_distribution,
         "threat_volume_severity": {"nodes": treemap_nodes},
         "attack_volume_trend": attack_volume_trend,
