@@ -74,6 +74,13 @@ def test_executive_and_operations_dashboards(client):
     assert executive_payload["attack_volume_trend"]["forecast_start_index"] == 24
     assert len(executive_payload["attack_origin_map"]["origins"]) >= 1
     assert "threat_volume_severity" in executive_payload
+    assert executive_payload["exposure_today"] == {
+        "total_threats": 3,
+        "ioc_active": 4,
+        "critical_active": 2,
+        "high_active": 1,
+    }
+    assert sum(item["value"] for item in executive_payload["threat_volume_severity"]["nodes"]) == executive_payload["exposure_today"]["total_threats"]
 
     executive_preview = test_client.post(
         "/api/v1/reports/executive/preview",
@@ -338,6 +345,92 @@ def test_collect_ioc_docs_post_filters_query(client, monkeypatch):
     )
 
     assert [doc["ioc_value"] for doc in docs] == ["malicious.example"]
+
+
+def test_build_exposure_summary_uses_latest_active_indicator_state():
+    visible_docs = [
+        {
+            "_id": "visible-1",
+            "ioc_type": "domain",
+            "ioc_value": "alpha.example",
+            "ai_severity": "low",
+            "last_seen": "2026-04-07T09:00:00Z",
+        },
+        {
+            "_id": "visible-2",
+            "ioc_type": "ip",
+            "ioc_value": "198.51.100.10",
+            "ai_severity": "medium",
+            "last_seen": "2026-04-07T10:00:00Z",
+        },
+    ]
+    active_docs = visible_docs + [
+        {
+            "_id": "historic-alpha",
+            "ioc_type": "domain",
+            "ioc_value": "alpha.example",
+            "ai_severity": "critical",
+            "last_seen": "2026-03-01T00:00:00Z",
+        },
+        {
+            "_id": "active-1",
+            "ioc_type": "url",
+            "ioc_value": "https://beta.example",
+            "ai_severity": "critical",
+            "last_seen": "2026-04-02T00:00:00Z",
+        },
+        {
+            "_id": "active-2",
+            "ioc_type": "domain",
+            "ioc_value": "gamma.example",
+            "ai_severity": "high",
+            "last_seen": "2026-04-03T00:00:00Z",
+        },
+    ]
+
+    summary = dashboard_router._build_exposure_summary(visible_docs, active_docs)
+
+    assert summary == {
+        "total_threats": 2,
+        "ioc_active": 4,
+        "critical_active": 1,
+        "high_active": 1,
+    }
+
+
+def test_build_threat_volume_nodes_counts_each_doc_once():
+    docs = [
+        {
+            "_id": "wh-1",
+            "ioc_type": "domain",
+            "ioc_value": "alpha.example",
+            "ai_threat_types": ["Phishing", "APT"],
+            "ai_severity": "low",
+        },
+        {
+            "_id": "wh-2",
+            "ioc_type": "ip",
+            "ioc_value": "198.51.100.10",
+            "ai_threat_types": ["Phishing", "Malware"],
+            "ai_severity": "medium",
+        },
+        {
+            "_id": "wh-3",
+            "ioc_type": "url",
+            "ioc_value": "https://beta.example",
+            "ai_threat_types": ["Malware"],
+            "ai_severity": "high",
+        },
+    ]
+
+    nodes = dashboard_router._build_threat_volume_nodes(docs)
+    by_label = {node["label"]: node for node in nodes}
+
+    assert sum(node["value"] for node in nodes) == len(docs)
+    assert by_label["Phishing"]["value"] == 2
+    assert by_label["Phishing"]["severity"] == "Medium"
+    assert by_label["Malware"]["value"] == 1
+    assert by_label["Malware"]["severity"] == "High"
 
 
 def test_reports_news_and_admin_domains(client):
