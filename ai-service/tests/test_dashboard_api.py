@@ -315,6 +315,31 @@ def test_ioc_listing_detail_and_events(client):
     assert import_tab.json()["data"]["charts"]["import_by_source"][0]["value"] >= 1
 
 
+def test_collect_ioc_docs_post_filters_query(client, monkeypatch):
+    _, fake_client = client
+
+    def _return_all_docs(**_kwargs):
+        return {
+            "hits": {
+                "total": {"value": len(fake_client.index_docs[fake_client.warehouse_index])},
+                "hits": [
+                    {"_id": doc_id, "_source": payload}
+                    for doc_id, payload in fake_client.index_docs[fake_client.warehouse_index].items()
+                ],
+            }
+        }
+
+    monkeypatch.setattr(dashboard_router, "_search_warehouse_docs", _return_all_docs)
+
+    docs = dashboard_router._collect_ioc_docs(
+        query="malicious.example",
+        start_date="2026-03-10",
+        end_date="2026-03-11",
+    )
+
+    assert [doc["ioc_value"] for doc in docs] == ["malicious.example"]
+
+
 def test_reports_news_and_admin_domains(client):
     test_client, _ = client
     headers = _login(test_client)

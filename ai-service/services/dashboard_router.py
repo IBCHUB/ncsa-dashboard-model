@@ -1205,6 +1205,7 @@ def _collect_ioc_docs(
     )
     docs = _filter_warehouse_docs(
         docs,
+        query=query,
         threat_types=threat_types,
         sources=sources,
         severities=effective_severities or None,
