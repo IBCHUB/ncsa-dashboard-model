@@ -18,6 +18,8 @@ import logging
 from math import floor
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
+import zipfile
+from xml.sax.saxutils import escape as xml_escape
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -902,18 +904,41 @@ def _group_severity_label(docs: Sequence[Dict[str, Any]]) -> str:
     return _severity_label(highest)
 
 
-def _build_exposure_summary(visible_docs: Sequence[Dict[str, Any]], active_docs: Sequence[Dict[str, Any]]) -> Dict[str, int]:
-    latest_active_docs = _latest_indicator_docs(active_docs)
-    return {
+def _build_exposure_summary(
+    visible_docs: Sequence[Dict[str, Any]],
+    active_docs: Sequence[Dict[str, Any]],
+    previous_visible_docs: Optional[Sequence[Dict[str, Any]]] = None,
+    previous_active_docs: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    active_list = _latest_indicator_docs(active_docs)
+    previous_visible_list = list(previous_visible_docs or [])
+    previous_active_list = _latest_indicator_docs(previous_active_docs or [])
+
+    payload = {
         "total_threats": len(visible_docs),
-        "ioc_active": len(latest_active_docs),
+        "ioc_active": len(active_list),
         "critical_active": sum(
-            1 for doc in latest_active_docs if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) == "critical"
+            1 for doc in active_list if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) == "critical"
         ),
         "high_active": sum(
-            1 for doc in latest_active_docs if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) == "high"
+            1 for doc in active_list if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) == "high"
         ),
     }
+    previous_payload = {
+        "total_threats": len(previous_visible_list),
+        "ioc_active": len(previous_active_list),
+        "critical_active": sum(
+            1 for doc in previous_active_list if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) == "critical"
+        ),
+        "high_active": sum(
+            1 for doc in previous_active_list if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) == "high"
+        ),
+    }
+    payload["comparison"] = {
+        key: _comparison_metric(payload[key], previous_payload[key])
+        for key in ("total_threats", "ioc_active", "critical_active", "high_active")
+    }
+    return payload
 
 
 def _build_threat_volume_nodes(docs: Sequence[Dict[str, Any]], limit: int = 12) -> List[Dict[str, Any]]:
@@ -968,6 +993,39 @@ def _build_heatmap(docs: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _build_ioc_export_rows(items: Sequence[Dict[str, Any]]) -> List[List[str]]:
+    rows = [[
+        "rank",
+        "ioc_id",
+        "ioc_value",
+        "ioc_type",
+        "ioc_type_label",
+        "severity",
+        "risk_score",
+        "threat_types",
+        "sources",
+        "first_seen",
+        "last_seen",
+    ]]
+    for item in items:
+        rows.append(
+            [
+                str(item.get("rank") or ""),
+                str(item.get("ioc_id") or ""),
+                str(item.get("ioc_value") or ""),
+                str(item.get("ioc_type") or ""),
+                str(item.get("ioc_type_label") or ""),
+                str(item.get("severity") or ""),
+                str(item.get("risk_score") or ""),
+                " | ".join(str(value) for value in (item.get("threat_types") or [])),
+                " | ".join(str(value) for value in (item.get("sources") or [])),
+                str(item.get("first_seen") or ""),
+                str(item.get("last_seen") or ""),
+            ]
+        )
+    return rows
+
+
 def _build_top_list(counter: Counter, labels: Optional[Dict[str, str]] = None, limit: int = 5) -> List[Dict[str, Any]]:
     total = sum(counter.values()) or 1
     output = []
@@ -1012,6 +1070,34 @@ def _percentage(value: int, total: int) -> float:
     if total <= 0:
         return 0.0
     return round((value / total) * 100, 2)
+
+
+def _comparison_metric(current_value: int, previous_value: int) -> Dict[str, Any]:
+    if previous_value <= 0:
+        if current_value <= 0:
+            return {"previous_value": previous_value, "delta_percent": 0.0, "direction": "flat"}
+        return {"previous_value": previous_value, "delta_percent": 100.0, "direction": "up"}
+
+    change = round(((current_value - previous_value) / previous_value) * 100, 2)
+    if change > 0:
+        direction = "up"
+    elif change < 0:
+        direction = "down"
+    else:
+        direction = "flat"
+    return {"previous_value": previous_value, "delta_percent": change, "direction": direction}
+
+
+def _previous_date_window(start_date: Optional[str], end_date: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    if not start_date or not end_date:
+        return None, None
+    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
+    if start_bound is None or end_bound is None:
+        return None, None
+    span_days = max((end_bound.date() - start_bound.date()).days + 1, 1)
+    previous_end = start_bound.date() - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=span_days - 1)
+    return previous_start.isoformat(), previous_end.isoformat()
 
 
 def _unique_list(values: Iterable[Any], limit: Optional[int] = None) -> List[Any]:
@@ -1284,38 +1370,249 @@ def _collect_ioc_docs(
 def _build_ioc_export_csv(items: Sequence[Dict[str, Any]]) -> bytes:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(
-        [
-            "rank",
-            "ioc_id",
-            "ioc_value",
-            "ioc_type",
-            "ioc_type_label",
-            "severity",
-            "risk_score",
-            "threat_types",
-            "sources",
-            "first_seen",
-            "last_seen",
-        ]
-    )
-    for item in items:
-        writer.writerow(
-            [
-                item.get("rank"),
-                item.get("ioc_id"),
-                item.get("ioc_value"),
-                item.get("ioc_type"),
-                item.get("ioc_type_label"),
-                item.get("severity"),
-                item.get("risk_score"),
-                " | ".join(str(value) for value in (item.get("threat_types") or [])),
-                " | ".join(str(value) for value in (item.get("sources") or [])),
-                item.get("first_seen"),
-                item.get("last_seen"),
-            ]
-        )
+    for row in _build_ioc_export_rows(items):
+        writer.writerow(row)
     return buffer.getvalue().encode("utf-8-sig")
+
+
+def _xlsx_column_name(index: int) -> str:
+    value = index
+    output = ""
+    while value > 0:
+        value, remainder = divmod(value - 1, 26)
+        output = chr(65 + remainder) + output
+    return output
+
+
+def _build_ioc_export_xlsx(items: Sequence[Dict[str, Any]]) -> bytes:
+    rows = _build_ioc_export_rows(items)
+    shared_strings: List[str] = []
+    shared_index: Dict[str, int] = {}
+
+    def shared_string_id(value: Any) -> int:
+        normalized = str(value or "")
+        if normalized not in shared_index:
+            shared_index[normalized] = len(shared_strings)
+            shared_strings.append(normalized)
+        return shared_index[normalized]
+
+    sheet_rows: List[str] = []
+    for row_index, row in enumerate(rows, start=1):
+        cells: List[str] = []
+        for column_index, value in enumerate(row, start=1):
+            cell_ref = f"{_xlsx_column_name(column_index)}{row_index}"
+            style = ' s="1"' if row_index == 1 else ""
+            cells.append(f'<c r="{cell_ref}" t="s"{style}><v>{shared_string_id(value)}</v></c>')
+        sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+
+    column_widths = [
+        8, 28, 32, 16, 18, 14, 12, 28, 28, 22, 22,
+    ]
+    columns_xml = "".join(
+        f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>'
+        for index, width in enumerate(column_widths, start=1)
+    )
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f"<cols>{columns_xml}</cols>"
+        f'<sheetData>{"".join(sheet_rows)}</sheetData>'
+        '</worksheet>'
+    )
+    shared_strings_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{sum(len(row) for row in rows)}" uniqueCount="{len(shared_strings)}">'
+        + "".join(f"<si><t>{xml_escape(value)}</t></si>" for value in shared_strings)
+        + "</sst>"
+    )
+    created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w", compression=zipfile.ZIP_DEFLATED) as workbook:
+        workbook.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
+            '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+            '</Types>',
+        )
+        workbook.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+            '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>'
+            '</Relationships>',
+        )
+        workbook.writestr(
+            "docProps/app.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+            '<Application>NCSA Dashboard</Application>'
+            '</Properties>',
+        )
+        workbook.writestr(
+            "docProps/core.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+            'xmlns:dcterms="http://purl.org/dc/terms/" '
+            'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
+            'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+            '<dc:title>IOC Report</dc:title>'
+            '<dc:creator>NCSA Dashboard</dc:creator>'
+            f'<dcterms:created xsi:type="dcterms:W3CDTF">{created_at}</dcterms:created>'
+            f'<dcterms:modified xsi:type="dcterms:W3CDTF">{created_at}</dcterms:modified>'
+            '</cp:coreProperties>',
+        )
+        workbook.writestr(
+            "xl/workbook.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="IOC Report" sheetId="1" r:id="rId1"/></sheets>'
+            '</workbook>',
+        )
+        workbook.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+            '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>'
+            '</Relationships>',
+        )
+        workbook.writestr(
+            "xl/styles.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<fonts count="2">'
+            '<font><sz val="11"/><name val="Calibri"/></font>'
+            '<font><b/><sz val="11"/><name val="Calibri"/></font>'
+            '</fonts>'
+            '<fills count="2">'
+            '<fill><patternFill patternType="none"/></fill>'
+            '<fill><patternFill patternType="solid"><fgColor rgb="FFDEEAF6"/><bgColor indexed="64"/></patternFill></fill>'
+            '</fills>'
+            '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+            '<cellXfs count="2">'
+            '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+            '<xf numFmtId="0" fontId="1" fillId="1" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+            '</cellXfs>'
+            '</styleSheet>',
+        )
+        workbook.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        workbook.writestr("xl/sharedStrings.xml", shared_strings_xml)
+    return content.getvalue()
+
+
+def _pdf_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _pdf_text_chunk(lines: Sequence[str], page_width: int = 842, page_height: int = 595) -> bytes:
+    baseline = page_height - 40
+    output = [
+        "BT",
+        "/F1 8 Tf",
+        "11 TL",
+        f"40 {baseline} Td",
+    ]
+    for line in lines:
+        ascii_line = str(line or "").encode("latin-1", "replace").decode("latin-1")
+        output.append(f"({_pdf_escape(ascii_line)}) Tj")
+        output.append("T*")
+    output.append("ET")
+    return "\n".join(output).encode("latin-1", "replace")
+
+
+def _build_ioc_export_pdf(items: Sequence[Dict[str, Any]]) -> bytes:
+    widths = [6, 28, 10, 10, 6, 28, 24, 16, 16]
+    headings = ["Rank", "IOC Value", "Type", "Severity", "Risk", "Threat Types", "Sources", "First Seen", "Last Seen"]
+
+    def format_line(values: Sequence[Any]) -> str:
+        cells = []
+        for width, value in zip(widths, values):
+            text = str(value or "")
+            if len(text) > width:
+                text = f"{text[:max(width - 3, 0)]}..." if width > 3 else text[:width]
+            cells.append(text.ljust(width))
+        return " | ".join(cells)
+
+    rows = _build_ioc_export_rows(items)
+    content_lines = [
+        "IOC Report Export",
+        f"Generated at: {datetime.now(BANGKOK_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        "",
+        format_line(headings),
+        "-" * len(format_line(headings)),
+    ]
+    for row in rows[1:]:
+        content_lines.append(
+            format_line([row[0], row[2], row[4], row[5], row[6], row[7], row[8], row[9], row[10]])
+        )
+
+    lines_per_page = 45
+    line_chunks = [content_lines[index:index + lines_per_page] for index in range(0, len(content_lines), lines_per_page)] or [[]]
+    objects: List[bytes] = []
+
+    def add_object(payload: bytes) -> int:
+        objects.append(payload)
+        return len(objects)
+
+    catalog_id = add_object(b"<< /Type /Catalog /Pages 2 0 R >>")
+    add_object(b"<< /Type /Pages /Kids [] /Count 0 >>")
+    font_id = add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    page_ids: List[int] = []
+    for chunk in line_chunks:
+        content_stream = _pdf_text_chunk(chunk)
+        content_id = add_object(b"<< /Length %d >>\nstream\n" % len(content_stream) + content_stream + b"\nendstream")
+        page_id = add_object(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] /Resources << /Font << /F1 {font_id} 0 R >> >> /Contents {content_id} 0 R >>".encode(
+                "ascii"
+            )
+        )
+        page_ids.append(page_id)
+
+    objects[1] = f"<< /Type /Pages /Kids [{' '.join(f'{page_id} 0 R' for page_id in page_ids)}] /Count {len(page_ids)} >>".encode("ascii")
+    assert catalog_id == 1
+
+    buffer = io.BytesIO()
+    buffer.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for index, payload in enumerate(objects, start=1):
+        offsets.append(buffer.tell())
+        buffer.write(f"{index} 0 obj\n".encode("ascii"))
+        buffer.write(payload)
+        buffer.write(b"\nendobj\n")
+    xref_offset = buffer.tell()
+    buffer.write(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    buffer.write(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        buffer.write(f"{offset:010d} 00000 n \n".encode("ascii"))
+    buffer.write(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF".encode("ascii")
+    )
+    return buffer.getvalue()
+
+
+def _build_ioc_export_artifact(items: Sequence[Dict[str, Any]], export_format: str) -> Tuple[str, bytes, str]:
+    normalized = str(export_format or "csv").strip().lower()
+    if normalized == "xlsx":
+        return "xlsx", _build_ioc_export_xlsx(items), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if normalized == "pdf":
+        return "pdf", _build_ioc_export_pdf(items), "application/pdf"
+    if normalized == "csv":
+        return "csv", _build_ioc_export_csv(items), "text/csv; charset=utf-8"
+    raise HTTPException(status_code=400, detail="Unsupported export format")
 
 
 def _build_report_ranking(
@@ -2121,8 +2418,20 @@ def executive_dashboard(
         start_date = _to_bangkok_date(now - timedelta(hours=24))
 
     visible_docs = _hits_to_docs(_search_warehouse_docs(start_date=start_date, end_date=end_date, sort_by="time", limit=5000))
+    active_ioc_docs = _collect_ioc_docs(start_date=start_date, end_date=end_date, sort_by="time")
     visible_datalake_docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
     threat_level_docs = _hits_to_docs(_search_warehouse_docs(start_date=_to_bangkok_date(now - timedelta(days=14)), end_date=end_date, sort_by="time", limit=5000))
+    previous_start_date, previous_end_date = _previous_date_window(start_date, end_date)
+    previous_visible_docs = (
+        _hits_to_docs(_search_warehouse_docs(start_date=previous_start_date, end_date=previous_end_date, sort_by="time", limit=5000))
+        if previous_start_date and previous_end_date
+        else []
+    )
+    previous_active_ioc_docs = (
+        _collect_ioc_docs(start_date=previous_start_date, end_date=previous_end_date, sort_by="time")
+        if previous_start_date and previous_end_date
+        else []
+    )
     severity_distribution = _build_severity_distribution(visible_docs)
     treemap_nodes = _build_threat_volume_nodes(visible_docs)
     threat_level = _build_threat_level(threat_level_docs, now=now)
@@ -2141,7 +2450,12 @@ def executive_dashboard(
                 "value": primary_sector.get("count", 0),
             },
         },
-        "exposure_today": _build_exposure_summary(visible_docs, [*visible_docs, *visible_datalake_docs]),
+        "exposure_today": _build_exposure_summary(
+            visible_docs,
+            active_ioc_docs,
+            previous_visible_docs=previous_visible_docs,
+            previous_active_docs=previous_active_ioc_docs,
+        ),
         "severity_distribution": severity_distribution,
         "threat_volume_severity": {"nodes": treemap_nodes},
         "attack_volume_trend": attack_volume_trend,
@@ -2192,12 +2506,12 @@ def operations_dashboard(
 ):
     anchor_end = _resolve_anchor_end(end_date) if end_date else None
     docs = _hits_to_docs(_search_warehouse_docs(start_date=start_date, end_date=end_date, sort_by="time", limit=5000))
+    heatmap_docs = _collect_ioc_docs(start_date=start_date, end_date=end_date, sort_by="time")
     datalake_docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
     source_counts = Counter(source for doc in docs for source in _normalize_sources(doc))
     threat_counts = Counter(threat for doc in docs for threat in (doc.get("ai_threat_types") or doc.get("threat_type") or []))
     country_counts = Counter(country for country in (_country_from_doc(doc) for doc in datalake_docs + docs) if country)
     sector_counts = Counter(_sector_info(doc)["sector_name_th"] for doc in docs)
-    heatmap_docs = datalake_docs or docs
     payload = {
         "overview": _operations_overview(docs, anchor_end=anchor_end),
         "incident_by_severity": _build_severity_distribution(docs),
@@ -2710,7 +3024,7 @@ def ioc_analytics(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    warehouse_docs = _hits_to_docs(_search_warehouse_docs(start_date=start_date, end_date=end_date, limit=5000))
+    warehouse_docs = _collect_ioc_docs(start_date=start_date, end_date=end_date)
     datalake_docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
     if tab == "ioc-summary":
         by_type = Counter(str(doc.get("ioc_type", "")).lower() for doc in warehouse_docs)
@@ -2854,17 +3168,16 @@ def ioc_report_export(
         high_risk_only=request.high_risk_only,
     )
     items = [_build_ioc_record(index + 1, doc) for index, doc in enumerate(docs)]
+    selected_format, file_content, media_type = _build_ioc_export_artifact(items, request.export_format)
     filters = request.model_dump(exclude_none=True)
-    if str(request.export_format or "").lower() != "csv":
-        filters["requested_export_format"] = request.export_format
-    filters["export_format"] = "csv"
+    filters["export_format"] = selected_format
     job = _queue_export_job(
-        "csv",
+        selected_format,
         "ioc-report",
         "ioc-report",
         filters,
-        file_content=_build_ioc_export_csv(items),
-        media_type="text/csv; charset=utf-8",
+        file_content=file_content,
+        media_type=media_type,
     )
     return _success(_public_export_job(job, http_request))
 

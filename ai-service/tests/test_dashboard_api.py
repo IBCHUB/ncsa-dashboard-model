@@ -76,9 +76,15 @@ def test_executive_and_operations_dashboards(client):
     assert "threat_volume_severity" in executive_payload
     assert executive_payload["exposure_today"] == {
         "total_threats": 3,
-        "ioc_active": 4,
+        "ioc_active": 3,
         "critical_active": 2,
         "high_active": 1,
+        "comparison": {
+            "total_threats": {"previous_value": 1, "delta_percent": 200.0, "direction": "up"},
+            "ioc_active": {"previous_value": 1, "delta_percent": 200.0, "direction": "up"},
+            "critical_active": {"previous_value": 1, "delta_percent": 100.0, "direction": "up"},
+            "high_active": {"previous_value": 0, "delta_percent": 100.0, "direction": "up"},
+        },
     }
     assert sum(item["value"] for item in executive_payload["threat_volume_severity"]["nodes"]) == executive_payload["exposure_today"]["total_threats"]
 
@@ -92,6 +98,12 @@ def test_executive_and_operations_dashboards(client):
         "ioc_active": 0,
         "critical_active": 0,
         "high_active": 0,
+        "comparison": {
+            "total_threats": {"previous_value": 0, "delta_percent": 0.0, "direction": "flat"},
+            "ioc_active": {"previous_value": 0, "delta_percent": 0.0, "direction": "flat"},
+            "critical_active": {"previous_value": 0, "delta_percent": 0.0, "direction": "flat"},
+            "high_active": {"previous_value": 0, "delta_percent": 0.0, "direction": "flat"},
+        },
     }
     assert sum(item["value"] for item in empty_executive.json()["data"]["threat_volume_severity"]["nodes"]) == 0
 
@@ -129,8 +141,9 @@ def test_executive_and_operations_dashboards(client):
     operations = test_client.get("/api/v1/operations/dashboard", headers=headers)
     assert operations.status_code == 200
     operations_payload = operations.json()["data"]
-    assert operations_payload["overview"]["active_ioc"] >= 2
+    assert operations_payload["overview"]["active_ioc"] == 3
     assert operations_payload["attack_time_heatmap"]["mode"] == "day-hour"
+    assert sum(cell["value"] for cell in operations_payload["attack_time_heatmap"]["cells"]) == operations_payload["overview"]["active_ioc"]
 
     operations_report = test_client.get(
         "/api/v1/operations/reports/attack-origin?start_date=2026-03-10&end_date=2026-03-11",
@@ -328,6 +341,8 @@ def test_ioc_listing_detail_and_events(client):
 
     summary_tab = test_client.get("/api/v1/ioc-analytics?tab=ioc-summary", headers=headers)
     assert summary_tab.status_code == 200
+    assert summary_tab.json()["data"]["cards"]["total_ioc"] == 3
+    assert summary_tab.json()["data"]["cards"]["active_ioc"] == 3
     assert summary_tab.json()["data"]["charts"]["severity_by_type"][0]["critical"] >= 0
 
     import_tab = test_client.get("/api/v1/ioc-analytics?tab=statistics-import", headers=headers)
@@ -408,6 +423,12 @@ def test_build_exposure_summary_uses_latest_active_indicator_state():
         "ioc_active": 4,
         "critical_active": 1,
         "high_active": 1,
+        "comparison": {
+            "total_threats": {"previous_value": 0, "delta_percent": 100.0, "direction": "up"},
+            "ioc_active": {"previous_value": 0, "delta_percent": 100.0, "direction": "up"},
+            "critical_active": {"previous_value": 0, "delta_percent": 100.0, "direction": "up"},
+            "high_active": {"previous_value": 0, "delta_percent": 100.0, "direction": "up"},
+        },
     }
 
 
@@ -529,6 +550,56 @@ def test_reports_news_and_admin_domains(client):
     assert export_download.status_code == 200
     assert export_download.headers["content-type"].startswith("text/csv")
     assert "malicious.example" in export_download.text
+
+    xlsx_export = test_client.post(
+        "/api/v1/reports/ioc/export",
+        headers=headers,
+        json={
+            "start_date": "2026-03-10",
+            "end_date": "2026-03-11",
+            "query": "malicious.example",
+            "threat_types": ["Phishing"],
+            "sources": ["AbuseIPDB"],
+            "risk_levels": ["critical"],
+            "ioc_types": ["domain"],
+            "severities": [],
+            "high_risk_only": True,
+            "export_format": "xlsx",
+        },
+    )
+    assert xlsx_export.status_code == 202
+    xlsx_payload = xlsx_export.json()["data"]
+    assert xlsx_payload["export_format"] == "xlsx"
+    assert xlsx_payload["file_name"].endswith(".xlsx")
+    xlsx_download = test_client.get(f"/api/v1/exports/{xlsx_payload['export_id']}/download", headers=headers)
+    assert xlsx_download.status_code == 200
+    assert xlsx_download.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert xlsx_download.content[:4] == b"PK\x03\x04"
+
+    pdf_export = test_client.post(
+        "/api/v1/reports/ioc/export",
+        headers=headers,
+        json={
+            "start_date": "2026-03-10",
+            "end_date": "2026-03-11",
+            "query": "malicious.example",
+            "threat_types": ["Phishing"],
+            "sources": ["AbuseIPDB"],
+            "risk_levels": ["critical"],
+            "ioc_types": ["domain"],
+            "severities": [],
+            "high_risk_only": True,
+            "export_format": "pdf",
+        },
+    )
+    assert pdf_export.status_code == 202
+    pdf_payload = pdf_export.json()["data"]
+    assert pdf_payload["export_format"] == "pdf"
+    assert pdf_payload["file_name"].endswith(".pdf")
+    pdf_download = test_client.get(f"/api/v1/exports/{pdf_payload['export_id']}/download", headers=headers)
+    assert pdf_download.status_code == 200
+    assert pdf_download.headers["content-type"].startswith("application/pdf")
+    assert pdf_download.content[:8] == b"%PDF-1.4"
 
     most_frequent = test_client.post(
         "/api/v1/reports/most-frequent-threats/preview",
