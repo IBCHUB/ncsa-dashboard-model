@@ -24,6 +24,7 @@ from models.scorer import calculate_risk_score
 from models.validation import REJECTED
 from services.dashboard_compat_router import router as dashboard_compat_router
 from services.dashboard_router import router as dashboard_router
+from services.external_sharing_router import router as external_sharing_router
 from utils.pipeline_documents import build_enriched_ioc_document
 from utils.sanitizer import sanitize_text
 
@@ -63,6 +64,7 @@ app.add_middleware(
 
 app.include_router(dashboard_compat_router)
 app.include_router(dashboard_router)
+app.include_router(external_sharing_router)
 
 # ============================================
 # AUTHENTICATION
@@ -92,8 +94,9 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
             headers={"WWW-Authenticate": "ApiKey"}
         )
     
-    if api_key not in API_KEYS:
-        logger.warning(f"Invalid API key attempt: {api_key[:8]}...")
+    import hmac
+    if not any(hmac.compare_digest(api_key, k) for k in API_KEYS):
+        logger.warning("Invalid API key attempt")
         raise HTTPException(
             status_code=403,
             detail="Invalid API Key.",
@@ -105,8 +108,8 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
 
 # Request/Response Models
 class ClassifyRequest(BaseModel):
-    text: str = Field(..., description="Text to classify (title + description)")
-    threshold: float = Field(0.3, description="Confidence threshold")
+    text: str = Field(..., description="Text to classify (title + description)", max_length=10000)
+    threshold: float = Field(0.3, description="Confidence threshold", ge=0.0, le=1.0)
 
 
 class ClassifyResponse(BaseModel):
@@ -119,13 +122,13 @@ class ClassifyResponse(BaseModel):
 
 
 class ScoreRequest(BaseModel):
-    ioc_value: str = Field(..., description="IOC value (IP, domain, hash, etc.)")
-    ioc_type: str = Field(..., description="Type of IOC")
-    description: str = Field("", description="Threat description")
-    sources: List[str] = Field(default_factory=list, description="Data sources")
-    country_code: Optional[str] = Field(None, description="Country code")
-    domain_age_days: Optional[int] = Field(None, description="Domain age in days")
-    ioc_age_days: Optional[int] = Field(None, description="IOC age in days")
+    ioc_value: str = Field(..., description="IOC value (IP, domain, hash, etc.)", max_length=2048)
+    ioc_type: str = Field(..., description="Type of IOC", max_length=64)
+    description: str = Field("", description="Threat description", max_length=50000)
+    sources: List[str] = Field(default_factory=list, description="Data sources", max_length=50)
+    country_code: Optional[str] = Field(None, description="Country code", max_length=4)
+    domain_age_days: Optional[int] = Field(None, description="Domain age in days", ge=0)
+    ioc_age_days: Optional[int] = Field(None, description="IOC age in days", ge=0)
 
 
 class ScoreResponse(BaseModel):
@@ -141,14 +144,14 @@ class ScoreResponse(BaseModel):
 
 
 class EnrichRequest(BaseModel):
-    ioc_value: str
-    ioc_type: str
-    description: str = ""
-    title: str = ""
-    sources: List[str] = Field(default_factory=list)
-    country_code: Optional[str] = None
-    domain_age_days: Optional[int] = None
-    ioc_age_days: Optional[int] = None
+    ioc_value: str = Field(..., max_length=2048)
+    ioc_type: str = Field(..., max_length=64)
+    description: str = Field("", max_length=50000)
+    title: str = Field("", max_length=500)
+    sources: List[str] = Field(default_factory=list, max_length=50)
+    country_code: Optional[str] = Field(None, max_length=4)
+    domain_age_days: Optional[int] = Field(None, ge=0)
+    ioc_age_days: Optional[int] = Field(None, ge=0)
 
 
 class EnrichResponse(BaseModel):
@@ -174,7 +177,7 @@ class EnrichResponse(BaseModel):
 
 
 class BatchEnrichRequest(BaseModel):
-    items: List[EnrichRequest]
+    items: List[EnrichRequest] = Field(..., max_length=100)
 
 
 class BatchEnrichResponse(BaseModel):
@@ -189,9 +192,9 @@ class HealthResponse(BaseModel):
 
 
 class TranslateRequest(BaseModel):
-    text: str = Field(..., description="Text to translate")
-    target_lang: str = Field("th", description="Target language code (th, en, ja, zh)")
-    context: str = Field("cybersecurity threat intelligence", description="Domain context for better translation")
+    text: str = Field(..., description="Text to translate", max_length=10000)
+    target_lang: str = Field("th", description="Target language code (th, en, ja, zh)", pattern="^(th|en|ja|zh)$")
+    context: str = Field("cybersecurity threat intelligence", description="Domain context for better translation", max_length=200)
 
 
 class TranslateResponse(BaseModel):
@@ -239,8 +242,8 @@ async def classify_endpoint(request: ClassifyRequest, api_key: str = Depends(ver
         }
         
     except Exception as e:
-        logger.error(f"Classification error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Classification error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal processing error")
 
 
 @app.post("/score", response_model=ScoreResponse)
@@ -266,8 +269,8 @@ async def score_endpoint(request: ScoreRequest, api_key: str = Depends(verify_ap
         return result
         
     except Exception as e:
-        logger.error(f"Scoring error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Scoring error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal processing error")
 
 
 @app.post("/enrich", response_model=EnrichResponse)
@@ -338,8 +341,8 @@ async def enrich_endpoint(request: EnrichRequest, api_key: str = Depends(verify_
         }
         
     except Exception as e:
-        logger.error(f"Enrichment error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Enrichment error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal processing error")
 
 
 @app.post("/enrich/batch", response_model=BatchEnrichResponse)
@@ -398,10 +401,12 @@ async def translate_endpoint(request: TranslateRequest, api_key: str = Depends(v
     Requires API Key.
     """
     try:
+        import hashlib
         from utils.translator import translate_content, _translation_cache
-        
-        # Check if already cached
-        cache_key = f"{request.target_lang}:{hash(request.text)}"
+
+        # Check if already cached — use deterministic hash, not Python's hash()
+        text_hash = hashlib.sha256(request.text.encode()).hexdigest()[:32]
+        cache_key = f"{request.target_lang}:{text_hash}"
         cached = cache_key in _translation_cache
         
         translated = translate_content(
@@ -420,8 +425,8 @@ async def translate_endpoint(request: TranslateRequest, api_key: str = Depends(v
         }
         
     except Exception as e:
-        logger.error(f"Translation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Translation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal processing error")
 
 
 

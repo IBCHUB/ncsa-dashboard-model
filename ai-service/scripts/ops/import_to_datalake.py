@@ -19,7 +19,7 @@ import glob
 import logging
 import hashlib
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -53,14 +53,14 @@ def build_datalake_doc_id(doc: dict) -> str:
     reference = str(doc.get("reference", "")).strip()
     desc = str(doc.get("description", ""))[:256]
     fingerprint = f"{source}|{source_type}|{event_time}|{collect_time}|{reference}|{desc}"
-    digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:24]
+    digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:24]
     return f"{ioc_type}:{ioc_value}:{digest}"
 
 
 def parse_date(date_str: str) -> str:
     """Parse various date formats to ISO format."""
     if not date_str:
-        return datetime.utcnow().isoformat() + "Z"
+        return datetime.now(timezone.utc).isoformat()
     
     # Try common formats
     formats = [
@@ -278,7 +278,7 @@ def import_to_elasticsearch(
         for doc in documents:
             try:
                 ioc_id = build_datalake_doc_id(doc)
-                doc["created_at"] = datetime.utcnow().isoformat() + "Z"
+                doc["created_at"] = datetime.now(timezone.utc).isoformat()
                 
                 resp = httpx.put(
                     f"{elasticsearch_url}/{datalake_index}/_doc/{quote(ioc_id, safe='')}",

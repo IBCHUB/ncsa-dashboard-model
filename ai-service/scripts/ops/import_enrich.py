@@ -5,7 +5,7 @@ Import enriched threat intelligence data from enrich.json into Elasticsearch Dat
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -149,7 +149,7 @@ def process_enrich_json(file_path):
                 'tags': source.get('tags', []),
                 'geo_info': source.get('geo_info', {}),
                 'ai_processed': False,
-                'created_at': datetime.utcnow().isoformat() + 'Z'
+                'created_at': datetime.now(timezone.utc).isoformat()
             }
 
             # Drop null/empty date fields to avoid Elasticsearch date parsing errors.
