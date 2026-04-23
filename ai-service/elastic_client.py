@@ -239,6 +239,13 @@ class ElasticClient:
                     "confidence": {"type": "integer"},
                     "source_url": {"type": "keyword"},
                     "source_id": {"type": "keyword"},
+                    "partner_id": {"type": "keyword"},
+                    "submitted_by_partner": {"type": "keyword"},
+                    "tlp": {"type": "keyword"},
+                    "published_at": {"type": "date"},
+                    "last_shared_at": {"type": "date"},
+                    "revoked_at": {"type": "date"},
+                    "sharing_status": {"type": "keyword"},
                     # IOC relationships
                     "related_hash": {"type": "keyword"},
                     "related_domain": {"type": "keyword"},
@@ -304,6 +311,13 @@ class ElasticClient:
                     "action_closed_reason": {"type": "keyword"},
                     "cleaning_flags": {"type": "keyword"},
                     "sanitization_summary": {"type": "object", "enabled": False},
+                    "partner_id": {"type": "keyword"},
+                    "submitted_by_partner": {"type": "keyword"},
+                    "tlp": {"type": "keyword"},
+                    "published_at": {"type": "date"},
+                    "last_shared_at": {"type": "date"},
+                    "revoked_at": {"type": "date"},
+                    "sharing_status": {"type": "keyword"},
                     "cluster_label": {"type": "integer"},
                     "cluster_probability": {"type": "float"},
                     "processed_at": {"type": "date"},
@@ -469,6 +483,13 @@ class ElasticClient:
         document["validation_reasons"] = document.get("validation_reasons", [])
         document["cleaning_flags"] = document.get("cleaning_flags", [])
         document["sanitization_summary"] = document.get("sanitization_summary", {})
+        document["partner_id"] = document.get("partner_id")
+        document["submitted_by_partner"] = document.get("submitted_by_partner")
+        document["tlp"] = document.get("tlp", "amber")
+        document["published_at"] = document.get("published_at", processed_at)
+        document["last_shared_at"] = document.get("last_shared_at", document["published_at"])
+        document["revoked_at"] = document.get("revoked_at")
+        document["sharing_status"] = document.get("sharing_status", "active")
         document["cluster_label"] = document.get("cluster_label")
         document["cluster_probability"] = document.get("cluster_probability")
         return document
@@ -507,7 +528,9 @@ class ElasticClient:
         
         now = datetime.now(timezone.utc).isoformat()
         for original_doc in documents:
-            doc = {**original_doc, "ai_processed": False, "created_at": now}
+            doc = copy.deepcopy(original_doc)
+            doc.setdefault("ai_processed", False)
+            doc.setdefault("created_at", now)
             try:
                 ioc_id = self._build_datalake_doc_id(doc)
                 if ES_CLIENT_AVAILABLE and client:

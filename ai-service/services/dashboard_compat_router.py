@@ -66,7 +66,8 @@ def _compat_lookup_items(items: Optional[List[Dict[str, Any]]]) -> List[Dict[str
     output = []
     for index, item in enumerate(items or [], start=1):
         name = str(item.get("label") or item.get("Name") or item.get("value") or item.get("Value") or f"Item {index}")
-        value = str(item.get("value") or item.get("Value") or name)
+        raw_value = str(item.get("value") or item.get("Value") or name)
+        value = raw_value.lower() if raw_value else raw_value
         output.append({"Id": index, "Name": name, "Value": value})
     return output
 

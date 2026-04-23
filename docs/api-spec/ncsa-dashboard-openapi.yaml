@@ -9,6 +9,7 @@ info:
     - canonical path ใช้ `/api/v1/...`
     - response มาตรฐานใช้ `data`, `meta`, `error`
     - authentication ใช้ `Bearer token`
+    - external sharing API ใช้ namespace `/api/v1/external/...` และ `X-API-Key`
     - web client สามารถเก็บ token ใน cookie ชื่อ `token` ได้ตามพฤติกรรมของ UI ปัจจุบัน
     - analytics ทั้งหมดใช้ timezone เริ่มต้น `Asia/Bangkok`
 servers:
@@ -30,6 +31,7 @@ tags:
   - name: Account
   - name: Users
   - name: Notifications
+  - name: ExternalSharing
 paths:
   /api/v1/auth/login:
     post:

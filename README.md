@@ -24,6 +24,7 @@
 - สร้าง attack relationship graph (actors, IOCs, malware, CVEs, infrastructure)
 - พยากรณ์แนวโน้มการโจมตีด้วย Holt-Winters forecasting
 - เตรียม Dashboard API สำหรับ executive/operations/IOC analytics
+- เปิด External Threat Sharing API สำหรับ partner ภายนอกด้วย `X-API-Key`
 - แปลข้อความภัยคุกคามด้วย Hugging Face (opus-mt-en-th)
 
 ## สถาปัตยกรรม
@@ -91,7 +92,9 @@ Cyber/
 │   ├── services/
 │   │   ├── dashboard_router.py       # /api/v1 dashboard
 │   │   ├── dashboard_compat_router.py # Legacy route compatibility
-│   │   └── dashboard_bootstrap.py    # In-process admin/user store
+│   │   ├── dashboard_bootstrap.py    # In-process admin/user store
+│   │   ├── external_sharing_router.py # /api/v1/external partner sharing API
+│   │   └── external_sharing_bootstrap.py # In-process partner/submission/export store
 │   ├── utils/                # sanitizer, pipeline builder, translator
 │   ├── scripts/ops/          # import, backfill, rebuild
 │   ├── scripts/dev/          # verification, seeding, smoke tests
@@ -142,6 +145,7 @@ python main.py
 | `WAREHOUSE_INDEX` | `cyber-logs-datawarehouse` | index ผลลัพธ์สำหรับใช้งานต่อ |
 | `DATALAKE_API_KEY` | ว่าง | API key สำหรับอ่าน/เขียน datalake (remote ELK) |
 | `WAREHOUSE_API_KEY` | ว่าง | API key สำหรับ warehouse (remote ELK) |
+| `EXTERNAL_PARTNER_REGISTRY_JSON` | ว่าง | JSON array สำหรับ map `X-API-Key -> partner -> permissions -> max_tlp` |
 | `DEVICE` | `cpu` | `cpu` หรือ `cuda` |
 
 ดูตัวแปรแวดล้อมทั้งหมดใน [docs/CONTRIB.md](docs/CONTRIB.md)
@@ -155,3 +159,5 @@ python main.py
 | 3 | [docs/CODEMAPS/backend.md](docs/CODEMAPS/backend.md) | API endpoints ทั้งหมด, models/services layer |
 | 4 | [docs/CODEMAPS/data.md](docs/CODEMAPS/data.md) | ES schema, scoring config, graph schema |
 | 5 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Deploy, monitoring, troubleshooting, rollback |
+| 6 | [docs/api-spec/ncsa-external-sharing-openapi.yaml](docs/api-spec/ncsa-external-sharing-openapi.yaml) | partner-facing OpenAPI สำหรับ external sharing |
+| 7 | [ai-service/.env.external-sharing.example](ai-service/.env.external-sharing.example) | ตัวอย่าง env สำหรับ partner registry และ local testing |

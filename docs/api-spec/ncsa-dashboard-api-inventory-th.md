@@ -254,6 +254,37 @@
 | Mark notification read | `/api/v1/notifications/{notification_id}/read` | `POST` | ไม่มี | updated notification |
 | Mark all read | `/api/v1/notifications/read-all` | `POST` | `type?` | bulk update result |
 
+### 3.12 External Threat Sharing
+
+ข้อกำหนดเฉพาะ:
+
+- canonical endpoint ใช้ `/api/v1/external/...`
+- authentication ใช้ header `X-API-Key`
+- response ยังคงใช้ envelope มาตรฐาน `data`, `meta`, `error`
+- indicator identifier ภายนอกใช้รูปแบบ `ioc_type::ioc_value`
+- outbound feed จะปล่อยเฉพาะ record ที่ผ่าน validation และไม่เกิน `max_tlp` ของ partner
+
+| หน้า/ฟังก์ชัน | Canonical Endpoint | Method | Request/Query | Response หลัก |
+|---------------|--------------------|--------|---------------|---------------|
+| Partner profile | `/api/v1/external/profile` | `GET` | ไม่มี | partner metadata + permissions |
+| IOC type lookup | `/api/v1/external/lookups/ioc-types` | `GET` | ไม่มี | IOC types ที่ partner ใช้ได้ |
+| Threat type lookup | `/api/v1/external/lookups/threat-types` | `GET` | ไม่มี | threat type options |
+| Severity lookup | `/api/v1/external/lookups/severities` | `GET` | ไม่มี | severity options |
+| TLP lookup | `/api/v1/external/lookups/tlp-levels` | `GET` | ไม่มี | `clear`, `green`, `amber`, `red` |
+| Export format lookup | `/api/v1/external/lookups/export-formats` | `GET` | ไม่มี | `json`, `csv`, `plain_text`, `suricata`, `snort` |
+| Incremental sync feed | `/api/v1/external/changes` | `GET` | `cursor`, `since`, `page_size`, `tlp`, `ioc_types[]`, `threat_types[]`, `severities[]`, `updated_after` | `created[]`, `updated[]`, `revoked[]`, `next_cursor` |
+| Indicator search/list | `/api/v1/external/indicators` | `GET` | `page`, `page_size`, `query`, `ioc_types[]`, `threat_types[]`, `severities[]`, `min_risk_score`, `tlp`, `start_date`, `end_date` | paged shared indicators |
+| Indicator detail | `/api/v1/external/indicators/{indicator_id}` | `GET` | ไม่มี | shared IOC detail |
+| Observation history | `/api/v1/external/indicators/{indicator_id}/observations` | `GET` | `page`, `page_size` | paged sightings/history |
+| Relationship summary | `/api/v1/external/indicators/{indicator_id}/relationships` | `GET` | ไม่มี | related indicators, actors, MITRE, campaign graph |
+| Submit single IOC | `/api/v1/external/indicators` | `POST` | IOC payload | submission receipt |
+| Submit event/observation | `/api/v1/external/events` | `POST` | event payload + indicators[] | submission receipt |
+| Submit bulk payload | `/api/v1/external/bulk` | `POST` | `items[]`, `default_tlp`, `dedupe_strategy` | bulk submission result |
+| Submission status | `/api/v1/external/submissions/{submission_id}` | `GET` | ไม่มี | accepted/rejected/pending + normalized ids |
+| Revoke submission | `/api/v1/external/submissions/{submission_id}/revoke` | `POST` | ไม่มี | revoke result + updated_count |
+| Create export job | `/api/v1/external/exports` | `POST` | filters + `format` | export job status |
+| Export job status | `/api/v1/external/exports/{export_id}` | `GET` | ไม่มี | `status`, `download_url`, `expires_at`, `record_count` |
+
 ## 4. Shared Schema Catalogue
 
 | Schema | ใช้ใน endpoint |
@@ -263,10 +294,16 @@
 | `SeverityBreakdown` | executive, operations, IOC analytics |
 | `TrendSeries` | executive trend, operations comparison |
 | `HeatmapMatrix` | operations attack time |
-| `ExportJob` | reports export |
+| `ExportJob` | dashboard reports และ external sharing exports |
 | `ActionTicket` | action center list/detail |
 | `IOCRecord` | IOC list/report preview |
 | `IOCEnrichment` | IOC detail |
+| `PartnerProfile` | external partner profile |
+| `SharedIndicator` | external indicator list/detail |
+| `SharedObservation` | external observation history |
+| `ChangeEvent` | external incremental sync feed |
+| `SubmissionReceipt` | single indicator/event submission |
+| `BulkSubmissionResult` | external bulk submit |
 | `NewsArticle` | cyber news |
 | `User` | settings user management |
 | `UserGroup` | settings role management |

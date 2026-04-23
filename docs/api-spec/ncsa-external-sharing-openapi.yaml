@@ -1,0 +1,1219 @@
+openapi: 3.0.3
+info:
+  title: NCSA External Threat Sharing API
+  version: 1.0.0
+  description: |
+    OpenAPI contract สำหรับการแบ่งปันข้อมูลภัยคุกคามกับองค์กรภายนอก
+
+    หลักการสำคัญ:
+    - namespace หลักใช้ `/api/v1/external/...`
+    - authentication ใช้ `X-API-Key`
+    - success response ใช้ envelope มาตรฐาน `data`, `meta`, `error`
+    - indicator identifier ภายนอกใช้รูปแบบ `<ioc_type>::<ioc_value>`
+    - outbound feed ปล่อยเฉพาะ record ที่ผ่าน validation และไม่เกิน `max_tlp` ของ partner
+servers:
+  - url: https://api.example.com
+    description: Production placeholder
+  - url: http://localhost:8000
+    description: Local backend
+security:
+  - externalApiKey: []
+tags:
+  - name: ExternalSharing
+  - name: ExternalLookups
+  - name: ExternalSubmissions
+  - name: ExternalExports
+paths:
+  /api/v1/external/profile:
+    get:
+      tags: [ExternalSharing]
+      summary: ดึงข้อมูล partner ปัจจุบัน
+      operationId: getExternalPartnerProfile
+      responses:
+        '200':
+          description: Partner profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerProfileResponse'
+              examples:
+                default:
+                  value:
+                    data:
+                      partner_id: partner-reader
+                      partner_name: Reader Partner
+                      permissions: [read_feed]
+                      max_tlp: amber
+                      allowed_ioc_types: [domain, ip, url, hash, cve]
+                      allowed_formats: [json]
+                      rate_limit: 60
+                    meta:
+                      generated_at: '2026-04-08T14:45:00+07:00'
+                      timezone: Asia/Bangkok
+                    error: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/external/lookups/ioc-types:
+    get:
+      tags: [ExternalLookups]
+      summary: รายการ IOC types ที่ partner ใช้ได้
+      operationId: listExternalIocTypes
+      responses:
+        '200':
+          $ref: '#/components/responses/LookupListOk'
+
+  /api/v1/external/lookups/threat-types:
+    get:
+      tags: [ExternalLookups]
+      summary: รายการ threat types
+      operationId: listExternalThreatTypes
+      responses:
+        '200':
+          $ref: '#/components/responses/LookupListOk'
+
+  /api/v1/external/lookups/severities:
+    get:
+      tags: [ExternalLookups]
+      summary: รายการ severity
+      operationId: listExternalSeverities
+      responses:
+        '200':
+          $ref: '#/components/responses/LookupListOk'
+
+  /api/v1/external/lookups/tlp-levels:
+    get:
+      tags: [ExternalLookups]
+      summary: รายการ TLP levels
+      operationId: listExternalTlpLevels
+      responses:
+        '200':
+          $ref: '#/components/responses/LookupListOk'
+
+  /api/v1/external/lookups/export-formats:
+    get:
+      tags: [ExternalLookups]
+      summary: รายการ export formats
+      operationId: listExternalExportFormats
+      responses:
+        '200':
+          $ref: '#/components/responses/LookupListOk'
+
+  /api/v1/external/changes:
+    get:
+      tags: [ExternalSharing]
+      summary: Incremental sync feed
+      operationId: listExternalChanges
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Since'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Tlp'
+        - $ref: '#/components/parameters/UpdatedAfter'
+        - $ref: '#/components/parameters/IocTypes'
+        - $ref: '#/components/parameters/ThreatTypes'
+        - $ref: '#/components/parameters/Severities'
+      responses:
+        '200':
+          description: Incremental changes grouped by state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeFeedResponse'
+              examples:
+                default:
+                  value:
+                    data:
+                      created:
+                        - change_type: created
+                          changed_at: '2026-04-08T07:05:00Z'
+                          indicator:
+                            indicator_id: domain::malicious.example
+                            ioc_type: domain
+                            ioc_value: malicious.example
+                            title: malicious.example
+                            description: Phishing domain impersonating government login
+                            risk_score: 92
+                            severity: Critical
+                            confidence: 50
+                            tlp: amber
+                            threat_types: [Phishing]
+                            threat_actors: [Lazarus]
+                            mitre_techniques: []
+                            source_names: [AbuseIPDB, ThreatFox]
+                            first_seen: '2026-03-10T08:00:00Z'
+                            last_seen: '2026-03-11T09:00:00Z'
+                            published_at: '2026-03-11T08:30:00Z'
+                            last_shared_at: '2026-03-11T08:30:00Z'
+                            sharing_status: active
+                      updated: []
+                      revoked: []
+                      next_cursor: '2026-04-08T07:05:00Z|domain::malicious.example'
+                    meta:
+                      generated_at: '2026-04-08T14:50:00+07:00'
+                      timezone: Asia/Bangkok
+                      next_cursor: '2026-04-08T07:05:00Z|domain::malicious.example'
+                    error: null
+
+  /api/v1/external/indicators:
+    get:
+      tags: [ExternalSharing]
+      summary: ค้นหาและ list IOC ที่แชร์ได้
+      operationId: listExternalIndicators
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/Tlp'
+        - $ref: '#/components/parameters/MinRiskScore'
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+        - $ref: '#/components/parameters/IocTypes'
+        - $ref: '#/components/parameters/ThreatTypes'
+        - $ref: '#/components/parameters/Severities'
+      responses:
+        '200':
+          description: Paged shared indicators
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SharedIndicatorListResponse'
+    post:
+      tags: [ExternalSubmissions]
+      summary: ส่ง IOC เดี่ยวเข้าระบบ
+      operationId: submitExternalIndicator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IndicatorSubmissionRequest'
+            examples:
+              phishingDomain:
+                value:
+                  ioc_value: new-submit.example
+                  ioc_type: domain
+                  title: Partner phishing domain
+                  description: Phishing infrastructure shared by partner
+                  threat_types: [Phishing]
+                  severity: high
+                  confidence: 85
+                  tlp: green
+                  tags: [credential-harvest, thai-gov]
+                  references:
+                    - https://partner.example/report/1
+                  observed_at: '2026-03-12T01:00:00Z'
+      responses:
+        '200':
+          description: Submission accepted/rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionReceiptResponse'
+
+  /api/v1/external/indicators/{indicator_id}:
+    get:
+      tags: [ExternalSharing]
+      summary: ดึงรายละเอียด IOC ที่แชร์ได้
+      operationId: getExternalIndicator
+      parameters:
+        - $ref: '#/components/parameters/IndicatorId'
+      responses:
+        '200':
+          description: Indicator detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SharedIndicatorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/external/indicators/{indicator_id}/observations:
+    get:
+      tags: [ExternalSharing]
+      summary: ดึง observation/sightings ของ IOC
+      operationId: listExternalObservations
+      parameters:
+        - $ref: '#/components/parameters/IndicatorId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Paged observations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SharedObservationListResponse'
+
+  /api/v1/external/indicators/{indicator_id}/relationships:
+    get:
+      tags: [ExternalSharing]
+      summary: ดึงความสัมพันธ์ของ IOC
+      operationId: getExternalRelationships
+      parameters:
+        - $ref: '#/components/parameters/IndicatorId'
+      responses:
+        '200':
+          description: Relationship summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelationshipSummaryResponse'
+
+  /api/v1/external/events:
+    post:
+      tags: [ExternalSubmissions]
+      summary: ส่ง event/observation ที่อ้างถึง IOC หลายตัว
+      operationId: submitExternalEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventSubmissionRequest'
+            examples:
+              observedCase:
+                value:
+                  event_type: incident_report
+                  title: Partner observed multiple indicators
+                  description: Callback and phishing indicators observed in same case
+                  severity: critical
+                  confidence: 90
+                  tlp: amber
+                  observed_at: '2026-03-12T02:00:00Z'
+                  indicators:
+                    - ioc_value: 203.0.113.200
+                      ioc_type: ip
+                    - ioc_value: https://evil.example/login
+                      ioc_type: url
+                  references:
+                    - https://partner.example/report/2
+      responses:
+        '200':
+          description: Event submission receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionReceiptResponse'
+
+  /api/v1/external/bulk:
+    post:
+      tags: [ExternalSubmissions]
+      summary: ส่งข้อมูลแบบ batch
+      operationId: submitExternalBulk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkSubmissionRequest'
+            examples:
+              mixedBatch:
+                value:
+                  default_tlp: amber
+                  dedupe_strategy: indicator_id
+                  items:
+                    - kind: indicator
+                      ioc_value: bulk-ip.example
+                      ioc_type: domain
+                      description: Bulk IOC
+                      severity: medium
+                      confidence: 70
+                    - kind: event
+                      event_type: bulk_event
+                      description: Bulk event IOC
+                      severity: high
+                      confidence: 80
+                      indicators:
+                        - ioc_value: 198.51.100.11
+                          ioc_type: ip
+      responses:
+        '200':
+          description: Bulk submission result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkSubmissionResultResponse'
+
+  /api/v1/external/submissions/{submission_id}:
+    get:
+      tags: [ExternalSubmissions]
+      summary: ดูสถานะ submission
+      operationId: getExternalSubmission
+      parameters:
+        - $ref: '#/components/parameters/SubmissionId'
+      responses:
+        '200':
+          description: Submission status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionReceiptResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/external/submissions/{submission_id}/revoke:
+    post:
+      tags: [ExternalSubmissions]
+      summary: ถอน submission ที่ partner เคยส่ง
+      operationId: revokeExternalSubmission
+      parameters:
+        - $ref: '#/components/parameters/SubmissionId'
+      responses:
+        '200':
+          description: Revoke result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeSubmissionResponse'
+
+  /api/v1/external/exports:
+    post:
+      tags: [ExternalExports]
+      summary: ขอ export แบบ machine-consumable
+      operationId: createExternalExport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportRequest'
+            examples:
+              suricataFeed:
+                value:
+                  format: suricata
+                  tlp: amber
+                  ioc_types: [domain, ip]
+                  threat_types: [Phishing]
+                  severities: [critical, high]
+                  min_risk_score: 80
+      responses:
+        '200':
+          description: Export job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJobResponse'
+
+  /api/v1/external/exports/{export_id}:
+    get:
+      tags: [ExternalExports]
+      summary: ดูสถานะ export job
+      operationId: getExternalExport
+      parameters:
+        - $ref: '#/components/parameters/ExportId'
+      responses:
+        '200':
+          description: Export job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJobResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/external/exports/{export_id}/download:
+    get:
+      tags: [ExternalExports]
+      summary: ดาวน์โหลด export file
+      operationId: downloadExternalExport
+      parameters:
+        - $ref: '#/components/parameters/ExportId'
+      responses:
+        '200':
+          description: Export file content
+          content:
+            application/json:
+              schema:
+                type: string
+            text/csv:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    externalApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+    Query:
+      name: query
+      in: query
+      schema:
+        type: string
+    StartDate:
+      name: start_date
+      in: query
+      schema:
+        type: string
+        format: date
+    EndDate:
+      name: end_date
+      in: query
+      schema:
+        type: string
+        format: date
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    Since:
+      name: since
+      in: query
+      schema:
+        type: string
+        format: date-time
+    UpdatedAfter:
+      name: updated_after
+      in: query
+      schema:
+        type: string
+        format: date-time
+    Tlp:
+      name: tlp
+      in: query
+      schema:
+        type: string
+        enum: [clear, green, amber, red]
+    MinRiskScore:
+      name: min_risk_score
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 100
+    IocTypes:
+      name: ioc_types
+      in: query
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          type: string
+    ThreatTypes:
+      name: threat_types
+      in: query
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          type: string
+    Severities:
+      name: severities
+      in: query
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          type: string
+    IndicatorId:
+      name: indicator_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: domain::malicious.example
+    SubmissionId:
+      name: submission_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: sub-20260408-0001
+    ExportId:
+      name: export_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: exp-20260408-0001
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Partner lacks required permission
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    LookupListOk:
+      description: Lookup list
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LookupListResponse'
+  schemas:
+    ApiMeta:
+      type: object
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        page:
+          type: integer
+          nullable: true
+        page_size:
+          type: integer
+          nullable: true
+        total:
+          type: integer
+          nullable: true
+        total_pages:
+          type: integer
+          nullable: true
+        next_cursor:
+          type: string
+          nullable: true
+      required: [generated_at, timezone]
+    ErrorObject:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+      required: [code, message]
+    ErrorEnvelope:
+      type: object
+      properties:
+        data:
+          nullable: true
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          $ref: '#/components/schemas/ErrorObject'
+      required: [meta, error]
+    LookupItem:
+      type: object
+      properties:
+        value:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+          nullable: true
+        active:
+          type: boolean
+      required: [value, label]
+    LookupListPayload:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LookupItem'
+      required: [items]
+    LookupListResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/LookupListPayload'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]
+    PartnerProfile:
+      type: object
+      properties:
+        partner_id:
+          type: string
+        partner_name:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        max_tlp:
+          type: string
+          enum: [clear, green, amber, red]
+        allowed_ioc_types:
+          type: array
+          items:
+            type: string
+        allowed_formats:
+          type: array
+          items:
+            type: string
+        rate_limit:
+          type: integer
+      required:
+        - partner_id
+        - partner_name
+        - permissions
+        - max_tlp
+        - allowed_ioc_types
+        - allowed_formats
+        - rate_limit
+    PartnerProfileResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/PartnerProfile'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]
+    SharedIndicator:
+      type: object
+      properties:
+        indicator_id:
+          type: string
+        ioc_type:
+          type: string
+        ioc_value:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        risk_score:
+          type: integer
+        severity:
+          type: string
+        confidence:
+          type: integer
+        tlp:
+          type: string
+        threat_types:
+          type: array
+          items:
+            type: string
+        threat_actors:
+          type: array
+          items:
+            type: string
+        mitre_techniques:
+          type: array
+          items:
+            type: string
+        source_names:
+          type: array
+          items:
+            type: string
+        submission_source:
+          type: string
+          nullable: true
+        first_seen:
+          type: string
+          format: date-time
+          nullable: true
+        last_seen:
+          type: string
+          format: date-time
+          nullable: true
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_shared_at:
+          type: string
+          format: date-time
+          nullable: true
+        sharing_status:
+          type: string
+      required:
+        - indicator_id
+        - ioc_type
+        - ioc_value
+        - title
+        - risk_score
+        - severity
+        - confidence
+        - tlp
+        - threat_types
+        - threat_actors
+        - mitre_techniques
+        - source_names
+        - sharing_status
+    SharedIndicatorPayload:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedIndicator'
+      required: [items]
+    SharedIndicatorListResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/SharedIndicatorPayload'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]
+    SharedIndicatorResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/SharedIndicator'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]
+    SharedObservation:
+      type: object
+      properties:
+        observation_id:
+          type: string
+        observed_at:
+          type: string
+          format: date-time
+          nullable: true
+        collected_at:
+          type: string
+          format: date-time
+          nullable: true
+        source_name:
+          type: string
+        source_type:
+          type: string
+          nullable: true
+        severity:
+          type: string
+        confidence:
+          type: integer
+        tlp:
+          type: string
+        reference:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+      required:
+        - observation_id
+        - source_name
+        - severity
+        - confidence
+        - tlp
+    SharedObservationPayload:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedObservation'
+      required: [items]
+    SharedObservationListResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/SharedObservationPayload'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]
+    GraphNode:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        label:
+          type: string
+      required: [id, type, label]
+    GraphEdge:
+      type: object
+      properties:
+        source:
+          type: string
+        target:
+          type: string
+        relation:
+          type: string
+      required: [source, target, relation]
+    RelationshipSummary:
+      type: object
+      properties:
+        indicator_id:
+          type: string
+        threat_types:
+          type: array
+          items:
+            type: string
+        threat_actors:
+          type: array
+          items:
+            type: string
+        mitre_techniques:
+          type: array
+          items:
+            type: string
+        campaigns:
+          type: array
+          items:
+            type: string
+        related_indicators:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedIndicator'
+        graph_summary:
+          type: object
+          properties:
+            nodes:
+              type: array
+              items:
+                $ref: '#/components/schemas/GraphNode'
+            edges:
+              type: array
+              items:
+                $ref: '#/components/schemas/GraphEdge'
+      required:
+        - indicator_id
+        - threat_types
+        - threat_actors
+        - mitre_techniques
+        - campaigns
+        - related_indicators
+        - graph_summary
+    RelationshipSummaryResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/RelationshipSummary'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]
+    ChangeEvent:
+      type: object
+      properties:
+        change_type:
+          type: string
+          enum: [created, updated, revoked]
+        changed_at:
+          type: string
+          format: date-time
+        indicator:
+          $ref: '#/components/schemas/SharedIndicator'
+      required: [change_type, changed_at, indicator]
+    ChangeFeedPayload:
+      type: object
+      properties:
+        created:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChangeEvent'
+        updated:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChangeEvent'
+        revoked:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChangeEvent'
+        next_cursor:
+          type: string
+          nullable: true
+      required: [created, updated, revoked]
+    ChangeFeedResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ChangeFeedPayload'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]
+    IndicatorSubmissionRequest:
+      type: object
+      properties:
+        ioc_value:
+          type: string
+        ioc_type:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        threat_types:
+          type: array
+          items:
+            type: string
+        severity:
+          type: string
+        confidence:
+          type: integer
+        tlp:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        references:
+          type: array
+          items:
+            type: string
+        observed_at:
+          type: string
+          format: date-time
+      required: [ioc_value, ioc_type]
+    EventIndicatorRef:
+      type: object
+      properties:
+        ioc_value:
+          type: string
+        ioc_type:
+          type: string
+      required: [ioc_value, ioc_type]
+    EventSubmissionRequest:
+      type: object
+      properties:
+        event_type:
+          type: string
+        title:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        severity:
+          type: string
+        confidence:
+          type: integer
+        tlp:
+          type: string
+        observed_at:
+          type: string
+          format: date-time
+        indicators:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventIndicatorRef'
+        references:
+          type: array
+          items:
+            type: string
+        source_context:
+          type: object
+          additionalProperties: true
+      required: [event_type, indicators]
+    BulkSubmissionRequest:
+      type: object
+      properties:
+        default_tlp:
+          type: string
+        dedupe_strategy:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      required: [items]
+    ValidationError:
+      type: object
+      properties:
+        code:
+          type: string
+        field:
+          type: string
+          nullable: true
+        message:
+          type: string
+      required: [code, message]
+    SubmissionReceipt:
+      type: object
+      properties:
+        submission_id:
+          type: string
+        status:
+          type: string
+          enum: [accepted, rejected, pending, revoked]
+        submission_type:
+          type: string
+        partner_id:
+          type: string
+        accepted_count:
+          type: integer
+        rejected_count:
+          type: integer
+        normalized_indicator_ids:
+          type: array
+          items:
+            type: string
+        validation_errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationError'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - submission_id
+        - status
+        - submission_type
+        - partner_id
+        - accepted_count
+        - rejected_count
+        - normalized_indicator_ids
+        - validation_errors
+        - created_at
+        - updated_at
+    SubmissionReceiptResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/SubmissionReceipt'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]
+    BulkSubmissionResult:
+      allOf:
+        - $ref: '#/components/schemas/SubmissionReceipt'
+    BulkSubmissionResultResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/BulkSubmissionResult'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]
+    RevokeSubmissionPayload:
+      type: object
+      properties:
+        submission_id:
+          type: string
+        status:
+          type: string
+        updated_count:
+          type: integer
+        revoked_at:
+          type: string
+          format: date-time
+      required: [submission_id, status, updated_count, revoked_at]
+    RevokeSubmissionResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/RevokeSubmissionPayload'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]
+    ExportRequest:
+      type: object
+      properties:
+        format:
+          type: string
+          enum: [json, csv, plain_text, suricata, snort]
+        query:
+          type: string
+          nullable: true
+        tlp:
+          type: string
+          nullable: true
+        ioc_types:
+          type: array
+          items:
+            type: string
+        threat_types:
+          type: array
+          items:
+            type: string
+        severities:
+          type: array
+          items:
+            type: string
+        min_risk_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+      required: [format]
+    ExportJob:
+      type: object
+      properties:
+        export_id:
+          type: string
+        format:
+          type: string
+        status:
+          type: string
+        record_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        download_url:
+          type: string
+          nullable: true
+      required:
+        - export_id
+        - format
+        - status
+        - record_count
+        - created_at
+    ExportJobResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ExportJob'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        error:
+          nullable: true
+      required: [data, meta, error]

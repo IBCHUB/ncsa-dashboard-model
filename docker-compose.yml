@@ -59,6 +59,7 @@ services:
       - ELASTICSEARCH_URL=http://elasticsearch:9200
       - DATALAKE_INDEX=tcti-datalake
       - WAREHOUSE_INDEX=tcti-warehouse
+      - EXTERNAL_PARTNER_REGISTRY_JSON=${EXTERNAL_PARTNER_REGISTRY_JSON:-[]}
       # OpenAI API Key for translation (loaded from host environment)
     volumes:
       # Cache HuggingFace models to avoid re-downloading

@@ -54,6 +54,12 @@ class FakeElasticClient:
                     "action_reason": "critical_threat",
                     "action_opened_at": "2026-03-11T08:05:00Z",
                     "action_updated_at": "2026-03-11T08:05:00Z",
+                    "validation_status": "validated",
+                    "warehouse_eligible": True,
+                    "tlp": "amber",
+                    "published_at": "2026-03-11T08:30:00Z",
+                    "last_shared_at": "2026-03-11T08:30:00Z",
+                    "sharing_status": "active",
                 },
                 "wh-2": {
                     "ioc_value": "185.10.10.10",
@@ -84,6 +90,12 @@ class FakeElasticClient:
                     "first_seen": "2026-03-11T06:00:00Z",
                     "last_seen": "2026-03-11T07:30:00Z",
                     "score_model_version": "v2.0.0",
+                    "validation_status": "validated",
+                    "warehouse_eligible": True,
+                    "tlp": "green",
+                    "published_at": "2026-03-11T07:35:00Z",
+                    "last_shared_at": "2026-03-11T09:10:00Z",
+                    "sharing_status": "active",
                 },
                 "wh-review-1": {
                     "ioc_value": "suspicious-review.example",
@@ -101,6 +113,31 @@ class FakeElasticClient:
                     "review_notes": None,
                     "first_seen": "2026-03-11T08:00:00Z",
                     "last_seen": "2026-03-11T08:30:00Z",
+                    "validation_status": "rejected",
+                    "warehouse_eligible": False,
+                    "tlp": "amber",
+                    "published_at": "2026-03-11T08:30:00Z",
+                    "last_shared_at": "2026-03-11T08:30:00Z",
+                    "sharing_status": "active",
+                },
+                "wh-red-1": {
+                    "ioc_value": "top-secret.example",
+                    "ioc_type": "domain",
+                    "description": "Highly sensitive red-tagged infrastructure",
+                    "source_name": "AbuseIPDB",
+                    "ai_risk_score": 95,
+                    "ai_severity": "critical",
+                    "ai_threat_types": ["Phishing"],
+                    "ai_threat_actors": ["APT29"],
+                    "event_time": "2026-03-11T09:00:00Z",
+                    "first_seen": "2026-03-11T09:00:00Z",
+                    "last_seen": "2026-03-11T09:05:00Z",
+                    "validation_status": "validated",
+                    "warehouse_eligible": True,
+                    "tlp": "red",
+                    "published_at": "2026-03-11T09:05:00Z",
+                    "last_shared_at": "2026-03-11T09:05:00Z",
+                    "sharing_status": "active",
                 },
             },
             self.datalake_index: {
@@ -124,6 +161,7 @@ class FakeElasticClient:
                     "whois": {"org": "Example Registrar", "registrant_email": "abuse@example.net"},
                     "asn_data": {"asn": "AS64500", "org": "Example Hosting"},
                     "cluster_label": 7,
+                    "tlp": "amber",
                 },
                 "dl-2": {
                     "ioc_value": "185.10.10.10",
@@ -139,6 +177,7 @@ class FakeElasticClient:
                     "target_ip": "172.16.0.10",
                     "enrichment": {"ip_info": {"country": "Singapore"}},
                     "asn_data": {"asn": "AS64510", "org": "Threat Hosting"},
+                    "tlp": "green",
                 },
                 "dl-3": {
                     "ioc_value": "https://news.example/article",
@@ -151,6 +190,7 @@ class FakeElasticClient:
                     "threat_type": ["Phishing"],
                     "event_time": "2026-03-11T04:00:00Z",
                     "collect_time": "2026-03-11T04:05:00Z",
+                    "tlp": "amber",
                 },
                 "dl-4": {
                     "ioc_value": "suspicious-review.example",
@@ -158,13 +198,27 @@ class FakeElasticClient:
                     "description": "Analyst needs to confirm this government phishing indicator",
                     "reference": "https://intel.example/review-1",
                     "source_name": "AbuseIPDB",
-                    "severity": "critical",
+                    "severity": "low",
                     "threat_type": ["Phishing"],
-                    "event_time": "2026-03-11T08:20:00Z",
-                    "collect_time": "2026-03-11T08:21:00Z",
+                    "event_time": "2026-02-11T08:20:00Z",
+                    "collect_time": "2026-02-11T08:21:00Z",
                     "source_ip": "203.0.113.10",
                     "target_ip": "10.10.99.10",
                     "enrichment": {"ip_info": {"country": "Thailand"}},
+                    "tlp": "amber",
+                },
+                "dl-red-1": {
+                    "ioc_value": "top-secret.example",
+                    "ioc_type": "domain",
+                    "description": "Red tagged sensitive observation with hidden operator details",
+                    "reference": "https://intel.example/red-1",
+                    "source_name": "AbuseIPDB",
+                    "severity": "critical",
+                    "threat_type": ["Phishing"],
+                    "event_time": "2026-03-11T09:00:00Z",
+                    "collect_time": "2026-03-11T09:01:00Z",
+                    "whois": {"org": "Secret Registrar", "registrant_email": "secret@example.net"},
+                    "tlp": "red",
                 },
             },
         }
@@ -294,3 +348,15 @@ class FakeElasticClient:
         doc_id = f"wh-{len(self.index_docs[self.warehouse_index]) + 1}"
         self.index_docs[self.warehouse_index][doc_id] = deepcopy(document)
         return doc_id
+
+    def bulk_index_datalake(self, documents):
+        success = 0
+        failed = 0
+        for document in documents:
+            try:
+                doc_id = f"dl-{len(self.index_docs[self.datalake_index]) + 1}"
+                self.index_docs[self.datalake_index][doc_id] = deepcopy(document)
+                success += 1
+            except Exception:
+                failed += 1
+        return {"success": success, "failed": failed}

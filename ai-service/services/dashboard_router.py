@@ -649,6 +649,7 @@ def _search_action_docs(
         offset=offset,
     )
     docs = _hits_to_docs(result)
+    docs = [doc for doc in docs if str(doc.get("tlp") or "amber").strip().lower() != "red"]
     docs = [doc for doc in docs if _is_action_document(doc)]
     docs.sort(
         key=lambda item: (

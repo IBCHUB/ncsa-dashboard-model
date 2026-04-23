@@ -1,0 +1,547 @@
+{
+  "base_url": "http://127.0.0.1:9000",
+  "indicator_id": "domain::smoke-1776399928.example",
+  "reader_key_present": true,
+  "writer_key_present": true,
+  "results": [
+    {
+      "name": "profile",
+      "method": "GET",
+      "path": "/api/v1/external/profile",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "active",
+        "allowed_formats",
+        "allowed_ioc_types",
+        "max_tlp",
+        "partner_id",
+        "partner_name",
+        "permissions",
+        "rate_limit"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "lookups_ioc_types",
+      "method": "GET",
+      "path": "/api/v1/external/lookups/ioc-types",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "lookups_threat_types",
+      "method": "GET",
+      "path": "/api/v1/external/lookups/threat-types",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "lookups_severities",
+      "method": "GET",
+      "path": "/api/v1/external/lookups/severities",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "lookups_tlp_levels",
+      "method": "GET",
+      "path": "/api/v1/external/lookups/tlp-levels",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "lookups_export_formats",
+      "method": "GET",
+      "path": "/api/v1/external/lookups/export-formats",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "changes",
+      "method": "GET",
+      "path": "/api/v1/external/changes",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "created",
+        "revoked",
+        "updated"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "next_cursor",
+        "returned",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "indicators",
+      "method": "GET",
+      "path": "/api/v1/external/indicators",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "ok": true
+    },
+    {
+      "name": "indicator_detail",
+      "method": "GET",
+      "path": "/api/v1/external/indicators/domain%3A%3Asmoke-1776399928.example",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "confidence",
+        "description",
+        "first_seen",
+        "indicator_id",
+        "ioc_type",
+        "ioc_value",
+        "last_seen",
+        "last_shared_at",
+        "mitre_techniques",
+        "published_at",
+        "references",
+        "revoked_at",
+        "risk_score",
+        "severity",
+        "sharing_status",
+        "sources",
+        "submission_source",
+        "threat_actors",
+        "threat_types",
+        "tlp"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "indicator_observations",
+      "method": "GET",
+      "path": "/api/v1/external/indicators/domain%3A%3Asmoke-1776399928.example/observations",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "items"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "page",
+        "page_size",
+        "timezone",
+        "total",
+        "total_pages"
+      ],
+      "ok": true
+    },
+    {
+      "name": "indicator_relationships",
+      "method": "GET",
+      "path": "/api/v1/external/indicators/domain%3A%3Asmoke-1776399928.example/relationships",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "campaigns",
+        "graph_summary",
+        "indicator_id",
+        "mitre_techniques",
+        "related_indicators",
+        "threat_actors",
+        "threat_types"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "submit_indicator",
+      "method": "POST",
+      "path": "/api/v1/external/indicators",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "accepted_count",
+        "created_at",
+        "normalized_indicator_ids",
+        "rejected_count",
+        "revoked_at",
+        "status",
+        "submission_id",
+        "submission_type",
+        "updated_at",
+        "validation_errors"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "submit_event",
+      "method": "POST",
+      "path": "/api/v1/external/events",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "accepted_count",
+        "created_at",
+        "normalized_indicator_ids",
+        "rejected_count",
+        "revoked_at",
+        "status",
+        "submission_id",
+        "submission_type",
+        "updated_at",
+        "validation_errors"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "submit_bulk",
+      "method": "POST",
+      "path": "/api/v1/external/bulk",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "accepted_count",
+        "normalized_indicator_ids",
+        "rejected_count",
+        "status",
+        "submission_id",
+        "validation_errors"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "submission_status",
+      "method": "GET",
+      "path": "/api/v1/external/submissions/sub-0c00a86c",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "accepted_count",
+        "created_at",
+        "normalized_indicator_ids",
+        "rejected_count",
+        "revoked_at",
+        "status",
+        "submission_id",
+        "submission_type",
+        "updated_at",
+        "validation_errors"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "revoke_submission",
+      "method": "POST",
+      "path": "/api/v1/external/submissions/sub-0c00a86c/revoke",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "revoked_at",
+        "status",
+        "submission_id",
+        "updated_count"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "cleanup_revoke_sub-f388e643",
+      "method": "POST",
+      "path": "/api/v1/external/submissions/sub-f388e643/revoke",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "revoked_at",
+        "status",
+        "submission_id",
+        "updated_count"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "cleanup_revoke_sub-619667a1",
+      "method": "POST",
+      "path": "/api/v1/external/submissions/sub-619667a1/revoke",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "revoked_at",
+        "status",
+        "submission_id",
+        "updated_count"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "create_export",
+      "method": "POST",
+      "path": "/api/v1/external/exports",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "completed_at",
+        "created_at",
+        "download_url",
+        "expires_at",
+        "export_id",
+        "file_name",
+        "filters",
+        "format",
+        "partner_id",
+        "partner_name",
+        "record_count",
+        "status"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "export_status",
+      "method": "GET",
+      "path": "/api/v1/external/exports/ext-exp-dece908a",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_keys": [
+        "data",
+        "error",
+        "meta"
+      ],
+      "sample_keys": [
+        "completed_at",
+        "created_at",
+        "download_url",
+        "expires_at",
+        "export_id",
+        "file_name",
+        "filters",
+        "format",
+        "partner_id",
+        "partner_name",
+        "record_count",
+        "status"
+      ],
+      "meta_keys": [
+        "generated_at",
+        "timezone"
+      ],
+      "ok": true
+    },
+    {
+      "name": "export_download",
+      "method": "GET",
+      "path": "/api/v1/external/exports/ext-exp-dece908a/download",
+      "status_code": 200,
+      "content_type": "application/json",
+      "top_level_type": "list",
+      "sample_keys": [
+        "confidence",
+        "description",
+        "first_seen",
+        "indicator_id",
+        "ioc_type",
+        "ioc_value",
+        "last_seen",
+        "last_shared_at",
+        "mitre_techniques",
+        "published_at",
+        "references",
+        "revoked_at",
+        "risk_score",
+        "severity",
+        "sharing_status",
+        "sources",
+        "submission_source",
+        "threat_actors",
+        "threat_types",
+        "tlp"
+      ],
+      "top_level_keys": [],
+      "ok": true
+    }
+  ]
+}
