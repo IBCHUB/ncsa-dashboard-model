@@ -24,6 +24,7 @@ from config import (
     SECTOR_LABELS,
     SECTOR_LABEL_MAPPING,
     SECTOR_CONFIDENCE_THRESHOLD,
+    MAX_CLASSIFIER_INPUT_CHARS,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,15 @@ def classify_threat(
             "language": "unknown",
             "sector_classifications": [],
         }
+
+    text = text.strip()
+    if len(text) > MAX_CLASSIFIER_INPUT_CHARS:
+        logger.info(
+            "Truncating classifier input from %s to %s chars",
+            len(text),
+            MAX_CLASSIFIER_INPUT_CHARS,
+        )
+        text = text[:MAX_CLASSIFIER_INPUT_CHARS]
 
     # Use configured labels if not provided
     threat_labels = candidate_labels or THREAT_LABELS
