@@ -25,8 +25,11 @@ DATALAKE_ELASTICSEARCH_URL = os.getenv("DATALAKE_ELASTICSEARCH_URL", ELASTICSEAR
 WAREHOUSE_ELASTICSEARCH_URL = os.getenv("WAREHOUSE_ELASTICSEARCH_URL", ELASTICSEARCH_URL)
 DATALAKE_INDEX = os.getenv("DATALAKE_INDEX", "cyber-logs-datalake")
 WAREHOUSE_INDEX = os.getenv("WAREHOUSE_INDEX", "cyber-logs-datawarehouse")
+PROCESSED_INDEX = os.getenv("PROCESSED_INDEX", "cyber-logs-processed")
 DATALAKE_QUERY_MODE = os.getenv("DATALAKE_QUERY_MODE", "ai_processed_false")
 DATALAKE_READONLY = os.getenv("DATALAKE_READONLY", "false").lower() == "true"
+DATALAKE_SCAN_BATCH_SIZE = int(os.getenv("DATALAKE_SCAN_BATCH_SIZE", "200"))
+DATALAKE_SCAN_MAX_PAGES = int(os.getenv("DATALAKE_SCAN_MAX_PAGES", "50"))
 
 # API Keys (Per-index access)
 DATALAKE_API_KEY = os.getenv("DATALAKE_API_KEY", "")
@@ -94,7 +97,7 @@ class ElasticClient:
         """Get API Key for specific index."""
         if index == self.datalake_index:
             return self.datalake_api_key
-        elif index == self.warehouse_index:
+        elif index in (self.warehouse_index, PROCESSED_INDEX):
             return self.warehouse_api_key
         return None
 
@@ -204,7 +207,7 @@ class ElasticClient:
         statuses: Dict[str, str] = {}
         available = 0
 
-        for index in [self.datalake_index, self.warehouse_index]:
+        for index in [self.datalake_index, self.warehouse_index, PROCESSED_INDEX]:
             try:
                 self._search_index(index, {"size": 0, "query": {"match_all": {}}})
                 statuses[index] = "available"
@@ -213,9 +216,9 @@ class ElasticClient:
                 logger.error(f"Health check failed for {index}: {e}")
                 statuses[index] = "error"
 
-        if available == 2:
+        if available >= 2 and statuses.get(self.datalake_index) == "available" and statuses.get(self.warehouse_index) == "available":
             status = "green"
-        elif available == 1:
+        elif available:
             status = "degraded"
         else:
             status = "unavailable"
@@ -253,6 +256,17 @@ class ElasticClient:
         )
         digest = hashlib.sha256(fingerprint_src.encode("utf-8")).hexdigest()[:24]
         return f"{ioc_type}:{ioc_value}:{digest}"
+
+    @staticmethod
+    def _build_processed_state_id(doc: Dict[str, Any]) -> str:
+        source_index = str(doc.get("_index") or DATALAKE_INDEX).strip()
+        source_id = str(doc.get("_id") or "").strip()
+        if source_id:
+            payload = f"{source_index}:{source_id}"
+        else:
+            payload = ElasticClient._build_datalake_doc_id(doc)
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return f"src:{digest[:32]}"
     
     def create_indexes(self) -> Dict[str, bool]:
         """Create indexes if they don't exist."""
@@ -370,11 +384,35 @@ class ElasticClient:
                 }
             }
         }
+
+        processed_mapping = {
+            "mappings": {
+                "properties": {
+                    "source_index": {"type": "keyword"},
+                    "source_doc_id": {"type": "keyword"},
+                    "source_fingerprint": {"type": "keyword"},
+                    "ioc_type": {"type": "keyword"},
+                    "ioc_value": {"type": "keyword"},
+                    "warehouse_doc_id": {"type": "keyword"},
+                    "status": {"type": "keyword"},
+                    "attempt_count": {"type": "integer"},
+                    "first_seen_at": {"type": "date"},
+                    "last_attempt_at": {"type": "date"},
+                    "processed_at": {"type": "date"},
+                    "error": {"type": "text"},
+                }
+            }
+        }
         
         for index, mapping in [
             (self.datalake_index, datalake_mapping),
             (self.warehouse_index, warehouse_mapping),
+            (PROCESSED_INDEX, processed_mapping),
         ]:
+            if index == self.datalake_index and DATALAKE_READONLY:
+                logger.info("Skipping datalake index create for read-only source: %s", index)
+                results[index] = True
+                continue
             try:
                 client = self._get_client(index)
                 if ES_CLIENT_AVAILABLE and client:
@@ -407,14 +445,74 @@ class ElasticClient:
                 results[index] = False
         
         return results
+
+    def create_processed_index(self) -> bool:
+        return self.create_indexes().get(PROCESSED_INDEX, False)
+
+    def _get_processed_state(self, doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        state_id = self._build_processed_state_id(doc)
+        try:
+            return self._get_document(PROCESSED_INDEX, state_id)
+        except Exception as e:
+            logger.error("Failed to read processed state for %s: %s", state_id, e)
+            return None
+
+    def is_source_processed(self, doc: Dict[str, Any]) -> bool:
+        state = self._get_processed_state(doc)
+        return bool(state and state.get("status") in {"processed", "rejected"})
+
+    def mark_source_state(
+        self,
+        doc: Dict[str, Any],
+        status: str,
+        warehouse_doc_id: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        state_id = self._build_processed_state_id(doc)
+        source_doc_id = str(doc.get("_id") or "")
+        source_index = str(doc.get("_index") or self.datalake_index)
+        state_doc = {
+            "source_index": source_index,
+            "source_doc_id": source_doc_id,
+            "source_fingerprint": state_id,
+            "ioc_type": doc.get("ioc_type"),
+            "ioc_value": doc.get("ioc_value"),
+            "warehouse_doc_id": warehouse_doc_id,
+            "status": status,
+            "last_attempt_at": now,
+            "processed_at": now if status in {"processed", "rejected"} else None,
+            "error": error,
+        }
+
+        try:
+            existing = self._get_document(PROCESSED_INDEX, state_id)
+            state_doc["first_seen_at"] = (existing or {}).get("first_seen_at") or now
+            state_doc["attempt_count"] = int((existing or {}).get("attempt_count") or 0) + 1
+        except Exception:
+            state_doc["first_seen_at"] = now
+            state_doc["attempt_count"] = 1
+
+        try:
+            client = self._get_client(PROCESSED_INDEX)
+            if ES_CLIENT_AVAILABLE and client:
+                client.index(index=PROCESSED_INDEX, id=state_id, body=state_doc)
+                return True
+
+            resp = httpx.put(
+                f"{self.warehouse_url}/{PROCESSED_INDEX}/_doc/{quote(state_id, safe='')}",
+                json=state_doc,
+                timeout=10,
+                headers=self._get_headers(PROCESSED_INDEX),
+            )
+            return resp.status_code in (200, 201)
+        except Exception as e:
+            logger.error("Failed to mark processed state for %s: %s", state_id, e)
+            return False
     
     def get_unprocessed_iocs(self, limit: int = 100) -> List[Dict[str, Any]]:
         if DATALAKE_QUERY_MODE == "all":
-            query = {
-                "query": {"match_all": {}},
-                "sort": [{"_doc": {"order": "asc"}}],
-                "size": limit
-            }
+            return self._get_unprocessed_iocs_from_readonly_feed(limit)
         else:
             query = {
                 "query": {"bool": {"must": [{"term": {"ai_processed": False}}]}},
@@ -434,6 +532,48 @@ class ElasticClient:
         except Exception as e:
             logger.error(f"Failed to get unprocessed IOCs: {e}")
             return []
+
+    def _get_unprocessed_iocs_from_readonly_feed(self, limit: int) -> List[Dict[str, Any]]:
+        documents: List[Dict[str, Any]] = []
+        batch_size = max(limit, DATALAKE_SCAN_BATCH_SIZE)
+        offset = 0
+
+        for _ in range(max(1, DATALAKE_SCAN_MAX_PAGES)):
+            query = {
+                "query": {"match_all": {}},
+                "sort": [{"_doc": {"order": "asc"}}],
+                "from": offset,
+                "size": batch_size,
+            }
+
+            try:
+                logger.info("Searching read-only datalake with query: %s", query)
+                result = self._search_index(self.datalake_index, query)
+                hits = result["hits"]["hits"]
+                logger.info("Found %s hits in read-only datalake page offset=%s", len(hits), offset)
+            except Exception as e:
+                logger.error(f"Failed to get read-only datalake IOCs: {e}")
+                return documents
+
+            if not hits:
+                return documents
+
+            for hit in hits:
+                doc = self._normalize_datalake_hit(hit)
+                if self.is_source_processed(doc):
+                    continue
+                documents.append(doc)
+                if len(documents) >= limit:
+                    return documents
+
+            offset += len(hits)
+
+        logger.warning(
+            "Reached DATALAKE_SCAN_MAX_PAGES=%s before collecting %s unprocessed docs",
+            DATALAKE_SCAN_MAX_PAGES,
+            limit,
+        )
+        return documents
 
     @staticmethod
     def _first_source(raw: Dict[str, Any]) -> Dict[str, Any]:

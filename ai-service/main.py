@@ -4,7 +4,8 @@ AI Service API
 FastAPI server for threat classification and risk scoring.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+import asyncio
 import logging
 import time
 import os
@@ -34,6 +35,13 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+PIPELINE_SCHEDULER_ENABLED = os.getenv("PIPELINE_SCHEDULER_ENABLED", "false").lower() == "true"
+PIPELINE_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("PIPELINE_SCHEDULER_INTERVAL_SECONDS", "3600"))
+PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS = int(os.getenv("PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS", "60"))
+PIPELINE_SCHEDULER_LIMIT = int(os.getenv("PIPELINE_SCHEDULER_LIMIT", "100"))
+_pipeline_lock = asyncio.Lock()
+_pipeline_scheduler_task: Optional[asyncio.Task] = None
 
 # Create FastAPI app
 app = FastAPI(
@@ -454,7 +462,151 @@ class ElasticsearchStatusResponse(BaseModel):
     warehouse_index: str
     datalake_count: int
     warehouse_count: int
+    processed_index: Optional[str] = None
+    processed_state_count: Optional[int] = None
+    scheduler_enabled: bool = False
+    scheduler_interval_seconds: int = 0
 
+
+async def _run_pipeline_once(limit: int) -> Dict[str, Any]:
+    if _pipeline_lock.locked():
+        return {
+            "processed": 0,
+            "rejected": 0,
+            "failed": 0,
+            "observations_updated": 0,
+            "processing_time_ms": 0,
+            "message": "Pipeline skipped: another run is already in progress"
+        }
+
+    async with _pipeline_lock:
+        from elastic_client import get_elastic_client
+
+        start = time.time()
+        es_client = get_elastic_client()
+        es_client.create_processed_index()
+
+        # Get unprocessed IOCs from Data Lake. For read-only sources, this is
+        # filtered by the local processed-state index on the warehouse cluster.
+        unprocessed = es_client.get_unprocessed_iocs(limit=limit)
+
+        if not unprocessed:
+            return {
+                "processed": 0,
+                "rejected": 0,
+                "failed": 0,
+                "observations_updated": 0,
+                "processing_time_ms": 0,
+                "message": "No unprocessed IOCs found in Data Lake"
+            }
+
+        # Group by IOC key to preserve all source-level observations (MOM requirement)
+        grouped_iocs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+        for ioc in unprocessed:
+            ioc_type = str(ioc.get("ioc_type", "unknown")).strip().lower()
+            ioc_value = str(ioc.get("ioc_value", "")).strip()
+            if not ioc_value:
+                es_client.mark_source_state(ioc, "failed", error="Missing IOC value")
+                continue
+            key = (ioc_type, ioc_value.lower())
+            grouped_iocs.setdefault(key, []).append(ioc)
+
+        processed = 0
+        rejected = 0
+        failed = 0
+        processed_observations = 0
+
+        for (_, _), ioc_docs in grouped_iocs.items():
+            try:
+                build_result = build_enriched_ioc_document(ioc_docs)
+                pipeline_doc = build_result["document"]
+                validation_status = pipeline_doc["validation_status"]
+                ioc_value = pipeline_doc["ioc_value"]
+
+                saved_id = es_client.save_to_warehouse(dict(pipeline_doc))
+                if not saved_id:
+                    logger.warning("Failed to save to warehouse for %s", ioc_value)
+                    for doc in ioc_docs:
+                        es_client.mark_source_state(doc, "failed", error="Failed to save to warehouse")
+                    failed += 1
+                    continue
+
+                mark_failed = False
+                state_status = "rejected" if validation_status == REJECTED else "processed"
+                for doc in ioc_docs:
+                    doc_id = doc.get("_id")
+                    if doc_id and not es_client.mark_as_processed(doc_id):
+                        mark_failed = True
+                        logger.warning(
+                            "Failed marking datalake doc as processed: %s (%s)",
+                            doc_id,
+                            ioc_value
+                        )
+                    if not es_client.mark_source_state(doc, state_status, warehouse_doc_id=saved_id):
+                        mark_failed = True
+                        logger.warning("Failed marking processed-state doc: %s (%s)", doc_id, ioc_value)
+
+                if mark_failed:
+                    failed += 1
+                    continue
+
+                if pipeline_doc["warehouse_eligible"]:
+                    processed += 1
+                elif validation_status == REJECTED:
+                    rejected += 1
+                processed_observations += len(ioc_docs)
+
+            except Exception as e:
+                logger.error(f"Pipeline error for {ioc_docs[0].get('ioc_value')}: {e}")
+                for doc in ioc_docs:
+                    es_client.mark_source_state(doc, "failed", error=str(e))
+                failed += 1
+
+        elapsed = int((time.time() - start) * 1000)
+
+        return {
+            "processed": processed,
+            "rejected": rejected,
+            "failed": failed,
+            "observations_updated": processed_observations,
+            "processing_time_ms": elapsed,
+            "message": (
+                f"Pipeline completed: {processed} auto-validated to warehouse, "
+                f"{rejected} rejected, "
+                f"{processed_observations} observations updated, {failed} failed"
+            )
+        }
+
+
+async def _pipeline_scheduler_loop() -> None:
+    logger.info(
+        "Pipeline scheduler enabled: interval=%ss initial_delay=%ss limit=%s",
+        PIPELINE_SCHEDULER_INTERVAL_SECONDS,
+        PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS,
+        PIPELINE_SCHEDULER_LIMIT,
+    )
+    if PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS > 0:
+        await asyncio.sleep(PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS)
+
+    while True:
+        try:
+            result = await _run_pipeline_once(PIPELINE_SCHEDULER_LIMIT)
+            logger.info("Scheduled pipeline result: %s", result)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Scheduled pipeline failed: %s", e, exc_info=True)
+
+        await asyncio.sleep(PIPELINE_SCHEDULER_INTERVAL_SECONDS)
+
+
+def _start_pipeline_scheduler() -> None:
+    global _pipeline_scheduler_task
+    if not PIPELINE_SCHEDULER_ENABLED:
+        return
+    if _pipeline_scheduler_task and not _pipeline_scheduler_task.done():
+        return
+    _pipeline_scheduler_task = asyncio.create_task(_pipeline_scheduler_loop())
 
 
 @app.post("/pipeline/run", response_model=PipelineRunResponse)
@@ -469,100 +621,16 @@ async def run_pipeline(
     1. Queries unprocessed IOCs from the configured Data Lake
     2. Runs classification and scoring on each
     3. Saves enriched results to the configured Data Warehouse
-    4. Marks source IOCs as processed
+    4. Marks source IOCs as processed or records processed-state for read-only sources
     """
-    from elastic_client import get_elastic_client
-    
-    start = time.time()
-    es_client = get_elastic_client()
-    
-    # Get unprocessed IOCs from Data Lake
-    unprocessed = es_client.get_unprocessed_iocs(limit=request.limit)
-    
-    if not unprocessed:
-        return {
-            "processed": 0,
-            "rejected": 0,
-            "failed": 0,
-            "observations_updated": 0,
-            "processing_time_ms": 0,
-            "message": "No unprocessed IOCs found in Data Lake"
-        }
-
-    # Group by IOC key to preserve all source-level observations (MOM requirement)
-    grouped_iocs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-    for ioc in unprocessed:
-        ioc_type = str(ioc.get("ioc_type", "unknown")).strip().lower()
-        ioc_value = str(ioc.get("ioc_value", "")).strip()
-        if not ioc_value:
-            continue
-        key = (ioc_type, ioc_value.lower())
-        grouped_iocs.setdefault(key, []).append(ioc)
-
-    processed = 0
-    rejected = 0
-    failed = 0
-    processed_observations = 0
-
-    for (_, _), ioc_docs in grouped_iocs.items():
-        try:
-            build_result = build_enriched_ioc_document(ioc_docs)
-            pipeline_doc = build_result["document"]
-            validation_status = pipeline_doc["validation_status"]
-            ioc_value = pipeline_doc["ioc_value"]
-
-            saved_id = es_client.save_to_warehouse(dict(pipeline_doc))
-            if not saved_id:
-                logger.warning("Failed to save to warehouse for %s", ioc_value)
-                failed += 1
-                continue
-
-            mark_failed = False
-            for doc in ioc_docs:
-                doc_id = doc.get("_id")
-                if doc_id and not es_client.mark_as_processed(doc_id):
-                    mark_failed = True
-                    logger.warning(
-                        "Failed marking datalake doc as processed: %s (%s)",
-                        doc_id,
-                        ioc_value
-                    )
-
-            if mark_failed:
-                failed += 1
-                continue
-
-            if pipeline_doc["warehouse_eligible"]:
-                processed += 1
-            elif validation_status == REJECTED:
-                rejected += 1
-            processed_observations += len(ioc_docs)
-                
-        except Exception as e:
-            logger.error(f"Pipeline error for {ioc_docs[0].get('ioc_value')}: {e}")
-            failed += 1
-    
-    elapsed = int((time.time() - start) * 1000)
-    
-    return {
-        "processed": processed,
-        "rejected": rejected,
-        "failed": failed,
-        "observations_updated": processed_observations,
-        "processing_time_ms": elapsed,
-        "message": (
-            f"Pipeline completed: {processed} auto-validated to warehouse, "
-            f"{rejected} rejected, "
-            f"{processed_observations} observations updated, {failed} failed"
-        )
-    }
+    return await _run_pipeline_once(request.limit)
 
 
 
 @app.get("/pipeline/status", response_model=ElasticsearchStatusResponse)
 async def pipeline_status(api_key: str = Depends(verify_api_key)):
     """Get Elasticsearch and pipeline status."""
-    from elastic_client import get_elastic_client, DATALAKE_INDEX, WAREHOUSE_INDEX
+    from elastic_client import get_elastic_client, DATALAKE_INDEX, WAREHOUSE_INDEX, PROCESSED_INDEX
     
     es_client = get_elastic_client()
     health = es_client.health_check()
@@ -570,13 +638,18 @@ async def pipeline_status(api_key: str = Depends(verify_api_key)):
     # Get document counts
     datalake_count = es_client.count_documents(DATALAKE_INDEX)
     warehouse_count = es_client.count_documents(WAREHOUSE_INDEX)
+    processed_state_count = es_client.count_documents(PROCESSED_INDEX)
     
     return {
         "status": health.get("status", "unknown"),
         "datalake_index": DATALAKE_INDEX,
         "warehouse_index": WAREHOUSE_INDEX,
         "datalake_count": datalake_count,
-        "warehouse_count": warehouse_count
+        "warehouse_count": warehouse_count,
+        "processed_index": PROCESSED_INDEX,
+        "processed_state_count": processed_state_count,
+        "scheduler_enabled": PIPELINE_SCHEDULER_ENABLED,
+        "scheduler_interval_seconds": PIPELINE_SCHEDULER_INTERVAL_SECONDS
     }
 
 
@@ -597,6 +670,8 @@ async def setup_elasticsearch(api_key: str = Depends(verify_api_key)):
 @app.on_event("startup")
 async def startup_event():
     """Pre-load models on startup."""
+    _start_pipeline_scheduler()
+
     if os.getenv("AI_SERVICE_SKIP_STARTUP_PRELOAD", "").lower() == "true":
         logger.info("Skipping startup preload and Elasticsearch initialization")
         return
@@ -628,6 +703,18 @@ async def startup_event():
             logger.warning(f"Elasticsearch not available: {health}")
     except Exception as e:
         logger.warning(f"Could not connect to Elasticsearch: {e}")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop background tasks gracefully."""
+    global _pipeline_scheduler_task
+    if _pipeline_scheduler_task and not _pipeline_scheduler_task.done():
+        _pipeline_scheduler_task.cancel()
+        try:
+            await _pipeline_scheduler_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":
