@@ -7,6 +7,7 @@ FastAPI server for threat classification and risk scoring.
 from typing import Any, Dict, List, Optional, Tuple
 import asyncio
 import logging
+import threading
 import time
 import os
 
@@ -40,7 +41,7 @@ PIPELINE_SCHEDULER_ENABLED = os.getenv("PIPELINE_SCHEDULER_ENABLED", "false").lo
 PIPELINE_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("PIPELINE_SCHEDULER_INTERVAL_SECONDS", "3600"))
 PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS = int(os.getenv("PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS", "60"))
 PIPELINE_SCHEDULER_LIMIT = int(os.getenv("PIPELINE_SCHEDULER_LIMIT", "100"))
-_pipeline_lock = asyncio.Lock()
+_pipeline_lock = threading.Lock()
 _pipeline_scheduler_task: Optional[asyncio.Task] = None
 
 # Create FastAPI app
@@ -468,8 +469,8 @@ class ElasticsearchStatusResponse(BaseModel):
     scheduler_interval_seconds: int = 0
 
 
-async def _run_pipeline_once(limit: int) -> Dict[str, Any]:
-    if _pipeline_lock.locked():
+def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
+    if not _pipeline_lock.acquire(blocking=False):
         return {
             "processed": 0,
             "rejected": 0,
@@ -479,7 +480,7 @@ async def _run_pipeline_once(limit: int) -> Dict[str, Any]:
             "message": "Pipeline skipped: another run is already in progress"
         }
 
-    async with _pipeline_lock:
+    try:
         from elastic_client import get_elastic_client
 
         start = time.time()
@@ -576,6 +577,12 @@ async def _run_pipeline_once(limit: int) -> Dict[str, Any]:
                 f"{processed_observations} observations updated, {failed} failed"
             )
         }
+    finally:
+        _pipeline_lock.release()
+
+
+async def _run_pipeline_once(limit: int) -> Dict[str, Any]:
+    return await asyncio.to_thread(_run_pipeline_once_sync, limit)
 
 
 async def _pipeline_scheduler_loop() -> None:

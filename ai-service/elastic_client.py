@@ -156,7 +156,12 @@ class ElasticClient:
     def _get_document(self, index: str, doc_id: str) -> Optional[Dict[str, Any]]:
         client = self._get_client(index)
         if ES_CLIENT_AVAILABLE and client:
-            result = client.get(index=index, id=doc_id)
+            try:
+                result = client.get(index=index, id=doc_id)
+            except Exception as e:
+                if getattr(e, "status_code", None) == 404:
+                    return None
+                raise
             if not result.get("found"):
                 return None
             return {"_id": result.get("_id"), **result.get("_source", {})}
@@ -454,7 +459,7 @@ class ElasticClient:
         try:
             return self._get_document(PROCESSED_INDEX, state_id)
         except Exception as e:
-            logger.error("Failed to read processed state for %s: %s", state_id, e)
+            logger.warning("Failed to read processed state for %s: %s", state_id, e)
             return None
 
     def is_source_processed(self, doc: Dict[str, Any]) -> bool:
