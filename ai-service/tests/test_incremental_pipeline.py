@@ -14,29 +14,56 @@ def _client_without_init():
     return client
 
 
-def test_processed_state_id_uses_source_index_and_doc_id():
+def test_processed_state_id_uses_canonical_ioc_key():
     first = ElasticClient._build_processed_state_id({
         "_index": "tcti-feeds",
         "_id": "abc-123",
         "ioc_type": "ip",
-        "ioc_value": "1.2.3.4",
+        "ioc_value": "1.2.3[.]4",
     })
     second = ElasticClient._build_processed_state_id({
+        "_index": "other-feed",
+        "_id": "different-source-doc",
+        "ioc_type": "ip_addresses",
+        "ioc_value": "1.2.3.4",
+    })
+    other_ioc = ElasticClient._build_processed_state_id({
         "_index": "tcti-feeds",
         "_id": "abc-123",
         "ioc_type": "ip",
         "ioc_value": "9.9.9.9",
     })
-    other_index = ElasticClient._build_processed_state_id({
-        "_index": "other-feed",
-        "_id": "abc-123",
-        "ioc_type": "ip",
-        "ioc_value": "1.2.3.4",
-    })
 
     assert first == second
-    assert first != other_index
-    assert first.startswith("src:")
+    assert first != other_ioc
+    assert first.startswith("ioc:ip:")
+
+
+def test_canonical_ioc_normalization():
+    assert ElasticClient.normalize_ioc_type("ip_addresses") == "ip"
+    assert ElasticClient.normalize_ioc_type("SHA-256") == "sha256"
+    assert ElasticClient.normalize_ioc_value("hxxps://evil[.]example/a b") == "https://evil.example/ab"
+    assert ElasticClient.canonical_ioc_key({
+        "ioc_type": "ip_addresses",
+        "ioc_value": "12.2.1[.]4",
+    }) == "ip:12.2.1.4"
+
+
+def test_normalize_external_hit_adds_canonical_fields():
+    doc = ElasticClient._normalize_datalake_hit({
+        "_index": "tcti-feeds",
+        "_id": "doc-1",
+        "_source": {
+            "ioc": {"type": "ip_addresses", "value": "12.2.1[.]4"},
+            "source": [{"name": "DarkReading", "description": "test"}],
+        },
+    })
+
+    assert doc["ioc_type"] == "ip"
+    assert doc["ioc_value"] == "12.2.1.4"
+    assert doc["original_ioc_type"] == "ip_addresses"
+    assert doc["original_ioc_value"] == "12.2.1[.]4"
+    assert doc["canonical_ioc_key"] == "ip:12.2.1.4"
 
 
 def test_readonly_feed_filters_docs_already_marked_processed(monkeypatch):

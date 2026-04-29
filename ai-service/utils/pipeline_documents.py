@@ -17,6 +17,7 @@ from models.classifier import (
     extract_threat_actors,
 )
 from models.actions import derive_action_metadata
+from elastic_client import ElasticClient
 from models.scorer import calculate_risk_score
 from models.validation import evaluate_validation_status
 from utils.sanitizer import sanitize_observation_fields
@@ -199,6 +200,7 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
     primary = ioc_docs[0]
     ioc_value = str(primary.get("ioc_value", "")).strip()
     ioc_type = str(primary.get("ioc_type", "unknown")).strip().lower()
+    canonical_ioc_key = ElasticClient.canonical_ioc_key(primary)
 
     source_names: List[str] = []
     source_objects: List[Dict[str, Any]] = []
@@ -213,10 +215,18 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
     first_seen_candidates: List[datetime] = []
     last_seen_candidates: List[datetime] = []
     domain_age_candidates: List[int] = []
+    original_ioc_values: List[str] = []
+    original_ioc_types: List[str] = []
 
     for doc in ioc_docs:
         source_name = str(doc.get("source_name", "")).strip()
         confidence = float(doc.get("confidence", 0) or 0)
+        original_ioc_value = str(doc.get("original_ioc_value") or doc.get("ioc_value") or "").strip()
+        original_ioc_type = str(doc.get("original_ioc_type") or doc.get("ioc_type") or "").strip()
+        if original_ioc_value:
+            original_ioc_values.append(original_ioc_value)
+        if original_ioc_type:
+            original_ioc_types.append(original_ioc_type)
 
         if source_name:
             if source_name not in source_names:
@@ -336,6 +346,9 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
     document = {
         "ioc_value": ioc_value,
         "ioc_type": ioc_type,
+        "canonical_ioc_key": canonical_ioc_key,
+        "original_ioc_values": _unique_non_empty(original_ioc_values),
+        "original_ioc_types": _unique_non_empty(original_ioc_types),
         "source_name": ", ".join(source_names) if source_names else "unknown",
         "source_type": "multi" if len(source_types) > 1 else (source_types[0] if source_types else "unknown"),
         "sources": sources,

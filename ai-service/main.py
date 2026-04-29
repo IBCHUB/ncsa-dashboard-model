@@ -481,7 +481,7 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
         }
 
     try:
-        from elastic_client import get_elastic_client
+        from elastic_client import ElasticClient, get_elastic_client
 
         start = time.time()
         es_client = get_elastic_client()
@@ -504,8 +504,8 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
         # Group by IOC key to preserve all source-level observations (MOM requirement)
         grouped_iocs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         for ioc in unprocessed:
-            ioc_type = str(ioc.get("ioc_type", "unknown")).strip().lower()
-            ioc_value = str(ioc.get("ioc_value", "")).strip()
+            ioc_type = ElasticClient.normalize_ioc_type(ioc.get("ioc_type"))
+            ioc_value = ElasticClient.normalize_ioc_value(ioc.get("ioc_value"))
             if not ioc_value:
                 es_client.mark_source_state(ioc, "failed", error="Missing IOC value")
                 continue

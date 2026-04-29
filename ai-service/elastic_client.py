@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 import hashlib
 import base64
+import re
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
@@ -239,17 +240,49 @@ class ElasticClient:
             return {"status": "unavailable", "error": str(e)}
 
     @staticmethod
+    def normalize_ioc_type(ioc_type: Any) -> str:
+        value = str(ioc_type or "unknown").strip().lower()
+        aliases = {
+            "ip_addresses": "ip",
+            "ip_address": "ip",
+            "ipv4": "ip",
+            "ipv6": "ip",
+            "hostname": "domain",
+            "domains": "domain",
+            "urls": "url",
+            "sha-1": "sha1",
+            "sha-256": "sha256",
+        }
+        return aliases.get(value, value or "unknown")
+
+    @staticmethod
+    def normalize_ioc_value(ioc_value: Any) -> str:
+        value = str(ioc_value or "").strip()
+        if not value:
+            return ""
+
+        value = value.replace("hxxps://", "https://").replace("hxxp://", "http://")
+        value = value.replace("[.]", ".").replace("(.)", ".").replace("{.}", ".")
+        value = value.replace("[://]", "://")
+        value = re.sub(r"\s+", "", value)
+        return value.lower()
+
+    @classmethod
+    def canonical_ioc_key(cls, doc: Dict[str, Any]) -> str:
+        return f"{cls.normalize_ioc_type(doc.get('ioc_type'))}:{cls.normalize_ioc_value(doc.get('ioc_value'))}"
+
+    @staticmethod
     def _build_warehouse_doc_id(ioc_data: Dict[str, Any]) -> str:
-        ioc_type = str(ioc_data.get("ioc_type", "unknown")).strip().lower()
-        ioc_value = str(ioc_data.get("ioc_value", "")).strip().lower()
+        ioc_type = ElasticClient.normalize_ioc_type(ioc_data.get("ioc_type"))
+        ioc_value = ElasticClient.normalize_ioc_value(ioc_data.get("ioc_value"))
         payload = f"{ioc_type}:{ioc_value}".encode("utf-8")
         digest = hashlib.sha256(payload).hexdigest()[:24]
         return f"{ioc_type}:{digest}"
 
     @staticmethod
     def _build_datalake_doc_id(doc: Dict[str, Any]) -> str:
-        ioc_type = str(doc.get("ioc_type", "unknown")).strip().lower()
-        ioc_value = str(doc.get("ioc_value", "")).strip().lower()
+        ioc_type = ElasticClient.normalize_ioc_type(doc.get("ioc_type"))
+        ioc_value = ElasticClient.normalize_ioc_value(doc.get("ioc_value"))
         source = str(doc.get("source_name", "unknown")).strip().lower()
         source_type = str(doc.get("source_type", "unknown")).strip().lower()
         event_time = str(doc.get("event_time", "")).strip()
@@ -264,14 +297,10 @@ class ElasticClient:
 
     @staticmethod
     def _build_processed_state_id(doc: Dict[str, Any]) -> str:
-        source_index = str(doc.get("_index") or DATALAKE_INDEX).strip()
-        source_id = str(doc.get("_id") or "").strip()
-        if source_id:
-            payload = f"{source_index}:{source_id}"
-        else:
-            payload = ElasticClient._build_datalake_doc_id(doc)
+        payload = ElasticClient.canonical_ioc_key(doc)
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        return f"src:{digest[:32]}"
+        ioc_type = ElasticClient.normalize_ioc_type(doc.get("ioc_type"))
+        return f"ioc:{ioc_type}:{digest[:32]}"
     
     def create_indexes(self) -> Dict[str, bool]:
         """Create indexes if they don't exist."""
@@ -287,6 +316,9 @@ class ElasticClient:
                 "properties": {
                     "ioc_value": {"type": "keyword"},
                     "ioc_type": {"type": "keyword"},
+                    "canonical_ioc_key": {"type": "keyword"},
+                    "original_ioc_values": {"type": "keyword"},
+                    "original_ioc_types": {"type": "keyword"},
                     "source_name": {"type": "keyword"},
                     "source_type": {"type": "keyword"},
                     "description": {"type": "text"},
@@ -398,6 +430,9 @@ class ElasticClient:
                     "source_fingerprint": {"type": "keyword"},
                     "ioc_type": {"type": "keyword"},
                     "ioc_value": {"type": "keyword"},
+                    "canonical_ioc_key": {"type": "keyword"},
+                    "original_ioc_type": {"type": "keyword"},
+                    "original_ioc_value": {"type": "keyword"},
                     "warehouse_doc_id": {"type": "keyword"},
                     "status": {"type": "keyword"},
                     "attempt_count": {"type": "integer"},
@@ -481,8 +516,11 @@ class ElasticClient:
             "source_index": source_index,
             "source_doc_id": source_doc_id,
             "source_fingerprint": state_id,
-            "ioc_type": doc.get("ioc_type"),
-            "ioc_value": doc.get("ioc_value"),
+            "ioc_type": ElasticClient.normalize_ioc_type(doc.get("ioc_type")),
+            "ioc_value": ElasticClient.normalize_ioc_value(doc.get("ioc_value")),
+            "canonical_ioc_key": ElasticClient.canonical_ioc_key(doc),
+            "original_ioc_type": doc.get("original_ioc_type") or doc.get("ioc_type"),
+            "original_ioc_value": doc.get("original_ioc_value") or doc.get("ioc_value"),
             "warehouse_doc_id": warehouse_doc_id,
             "status": status,
             "last_attempt_at": now,
@@ -594,7 +632,15 @@ class ElasticClient:
         """Normalize current and external feed documents into pipeline fields."""
         raw = hit.get("_source", {})
         if raw.get("ioc_value") and raw.get("ioc_type"):
-            return raw | {"_id": hit["_id"], "_index": hit.get("_index")}
+            doc = raw | {"_id": hit["_id"], "_index": hit.get("_index")}
+            original_type = doc.get("ioc_type")
+            original_value = doc.get("ioc_value")
+            doc["original_ioc_type"] = doc.get("original_ioc_type") or original_type
+            doc["original_ioc_value"] = doc.get("original_ioc_value") or original_value
+            doc["ioc_type"] = cls.normalize_ioc_type(original_type)
+            doc["ioc_value"] = cls.normalize_ioc_value(original_value)
+            doc["canonical_ioc_key"] = cls.canonical_ioc_key(doc)
+            return doc
 
         ioc = raw.get("ioc") if isinstance(raw.get("ioc"), dict) else {}
         first_source = cls._first_source(raw)
@@ -605,11 +651,19 @@ class ElasticClient:
         description = str(first_source.get("description") or raw.get("description") or "").strip()
         merged_description = "\n".join(part for part in [title, description] if part)
 
+        original_ioc_type = ioc.get("type") or raw.get("ioc_type") or "unknown"
+        original_ioc_value = ioc.get("value") or raw.get("ioc_value") or ""
+        normalized_ioc_type = cls.normalize_ioc_type(original_ioc_type)
+        normalized_ioc_value = cls.normalize_ioc_value(original_ioc_value)
+
         return {
             "_id": hit["_id"],
             "_index": hit.get("_index"),
-            "ioc_value": ioc.get("value") or raw.get("ioc_value") or "",
-            "ioc_type": ioc.get("type") or raw.get("ioc_type") or "unknown",
+            "ioc_value": normalized_ioc_value,
+            "ioc_type": normalized_ioc_type,
+            "original_ioc_value": original_ioc_value,
+            "original_ioc_type": original_ioc_type,
+            "canonical_ioc_key": f"{normalized_ioc_type}:{normalized_ioc_value}",
             "source_name": first_source.get("name") or raw.get("source_name") or raw.get("ref_doc_index") or "tcti-feeds",
             "source_type": raw.get("source_type") or "external-feed",
             "description": merged_description,
