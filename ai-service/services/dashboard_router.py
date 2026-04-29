@@ -12,16 +12,18 @@ from collections import Counter, defaultdict
 import csv
 from datetime import date, datetime, timedelta, timezone
 import hashlib
+import hmac
 import io
 import json
 import logging
 from math import floor
+import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 import zipfile
 from xml.sax.saxutils import escape as xml_escape
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -116,6 +118,25 @@ HIGH_CONFIDENCE_SOURCE_NAMES = {
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class SSOExchangeRequest(BaseModel):
+    sso_id: Optional[str] = None
+    id: Optional[str] = None
+    sub: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None
+    display_name: Optional[str] = None
+    phone: Optional[str] = None
+    phone_number: Optional[str] = None
+    pid: Optional[str] = None
+    national_id: Optional[str] = None
+    role: Optional[str] = None
+    role_name: Optional[str] = None
+    user_group: Optional[str] = None
+    group_id: Optional[str] = None
+    avatar_url: Optional[str] = None
 
 
 class AssignRequest(BaseModel):
@@ -487,6 +508,23 @@ def require_dashboard_user(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return user
+
+
+def require_internal_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")) -> str:
+    allowed_keys = {
+        key.strip()
+        for key in os.getenv("AI_SERVICE_API_KEYS", "").split(",")
+        if key.strip()
+    }
+    if not allowed_keys:
+        logger.error("SSO exchange is enabled but AI_SERVICE_API_KEYS is empty")
+        raise HTTPException(status_code=500, detail="Server authentication misconfigured.")
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing API Key. Include 'X-API-Key' header.")
+    if not any(hmac.compare_digest(x_api_key, key) for key in allowed_keys):
+        logger.warning("Invalid internal API key attempt on SSO exchange")
+        raise HTTPException(status_code=403, detail="Invalid API Key.")
+    return x_api_key
 
 
 def _safe_search(index: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -2324,6 +2362,24 @@ def dashboard_login(request: LoginRequest):
     payload = state.authenticate(request.username, request.password)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    response = JSONResponse(_success(payload))
+    response.set_cookie("token", payload["access_token"], httponly=True, samesite="strict")
+    return response
+
+
+@router.post("/auth/sso/session", tags=["Auth"])
+def dashboard_sso_session(
+    request: SSOExchangeRequest,
+    _: str = Depends(require_internal_api_key),
+):
+    request_data = (
+        request.model_dump(exclude_none=True)
+        if hasattr(request, "model_dump")
+        else request.dict(exclude_none=True)
+    )
+    payload = get_dashboard_state().authenticate_sso(request_data)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid SSO identity")
     response = JSONResponse(_success(payload))
     response.set_cookie("token", payload["access_token"], httponly=True, samesite="strict")
     return response

@@ -19,6 +19,7 @@ def client(monkeypatch):
     monkeypatch.setenv("DASHBOARD_BOOTSTRAP_PASSWORD", "admin123!")
     monkeypatch.setenv("DASHBOARD_SUPERADMIN_PASSWORD", "superadmin123!")
     monkeypatch.setenv("DASHBOARD_ANALYST_PASSWORD", "analyst123!")
+    monkeypatch.setenv("AI_SERVICE_API_KEYS", "test-internal-key")
     fake_client = FakeElasticClient()
     monkeypatch.setattr(dashboard_router, "get_elastic_client", lambda: fake_client)
     app = FastAPI()
@@ -58,6 +59,61 @@ def test_auth_and_lookup_contracts(client):
     source_values = [item["value"] for item in sources.json()["data"]["items"]]
     assert "AbuseIPDB" in source_values
     assert "TheHackerNews" in source_values
+
+
+def test_sso_exchange_creates_dashboard_session(client):
+    test_client, _ = client
+
+    direct_sso_token = test_client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.fake.sig"},
+    )
+    assert direct_sso_token.status_code == 401
+
+    response = test_client.post(
+        "/api/v1/auth/sso/session",
+        headers={"X-API-Key": "test-internal-key"},
+        json={
+            "sso_id": "sso-123",
+            "email": "sso.user@example.com",
+            "name": "SSO User",
+            "pid": "1234567890123",
+            "phone": "0812345678",
+            "role_name": "Admin",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["access_token"]
+    assert payload["token_type"] == "Bearer"
+    assert payload["user"]["username"] == "sso.user"
+    assert payload["user"]["name"] == "SSO User"
+    assert payload["user"]["role_name"] == "Admin"
+
+    me = test_client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {payload['access_token']}"},
+    )
+    assert me.status_code == 200
+    assert me.json()["data"]["name"] == "SSO User"
+
+
+def test_sso_exchange_requires_internal_api_key(client):
+    test_client, _ = client
+
+    missing_key = test_client.post(
+        "/api/v1/auth/sso/session",
+        json={"sso_id": "sso-123", "email": "sso.user@example.com"},
+    )
+    assert missing_key.status_code == 401
+
+    invalid_key = test_client.post(
+        "/api/v1/auth/sso/session",
+        headers={"X-API-Key": "wrong-key"},
+        json={"sso_id": "sso-123", "email": "sso.user@example.com"},
+    )
+    assert invalid_key.status_code == 403
 
 
 def test_executive_and_operations_dashboards(client):

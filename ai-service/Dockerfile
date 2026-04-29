@@ -11,7 +11,9 @@ RUN apt-get update && apt-get install -y \
 
 # Copy requirements first for better caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt \
+    && python -c "import numpy, torch; print('numpy', numpy.__version__); print('torch', torch.__version__)"
 
 # Copy application code
 COPY . .

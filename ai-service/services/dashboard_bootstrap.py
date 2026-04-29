@@ -214,19 +214,100 @@ class DashboardState:
         with self.lock:
             for user in self.users.values():
                 if user["username"] == username and user["password"] == password and user["status"] == "active":
-                    token = secrets.token_urlsafe(24)
-                    expires_at = _utcnow() + timedelta(seconds=self.token_ttl_seconds)
-                    self.sessions[token] = {
-                        "user_id": user["user_id"],
-                        "expires_at": expires_at,
-                    }
-                    return {
-                        "access_token": token,
-                        "token_type": "Bearer",
-                        "expires_in": self.token_ttl_seconds,
-                        "user": self.public_user(user),
-                    }
+                    return self._create_session_locked(user)
         return None
+
+    def _create_session_locked(self, user: Dict[str, Any]) -> Dict[str, Any]:
+        token = secrets.token_urlsafe(24)
+        expires_at = _utcnow() + timedelta(seconds=self.token_ttl_seconds)
+        self.sessions[token] = {
+            "user_id": user["user_id"],
+            "expires_at": expires_at,
+        }
+        return {
+            "access_token": token,
+            "token_type": "Bearer",
+            "expires_in": self.token_ttl_seconds,
+            "user": self.public_user(user),
+        }
+
+    def authenticate_sso(self, identity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        sso_id = str(identity.get("sso_id") or identity.get("id") or identity.get("sub") or "").strip()
+        email = str(identity.get("email") or "").strip()
+        if not sso_id and not email:
+            return None
+
+        with self.lock:
+            user = self._find_sso_user_locked(sso_id, email)
+            if not user:
+                user = self._create_sso_user_locked(identity, sso_id, email)
+            else:
+                self._update_sso_user_locked(user, identity, email)
+
+            if user.get("status") != "active":
+                return None
+            return self._create_session_locked(user)
+
+    def _find_sso_user_locked(self, sso_id: str, email: str) -> Optional[Dict[str, Any]]:
+        for user in self.users.values():
+            if sso_id and str(user.get("sso_id") or "") == sso_id:
+                return user
+            if email and str(user.get("email") or "").lower() == email.lower():
+                return user
+        return None
+
+    def _resolve_sso_group_locked(self, identity: Dict[str, Any]) -> Dict[str, Any]:
+        requested_group_id = str(identity.get("group_id") or "").strip()
+        if requested_group_id in self.groups:
+            return self.groups[requested_group_id]
+
+        requested_role = str(identity.get("role_name") or identity.get("user_group") or identity.get("role") or "").strip().lower()
+        for group in self.groups.values():
+            if str(group.get("name") or "").strip().lower() == requested_role:
+                return group
+
+        default_group_id = os.getenv("DASHBOARD_SSO_DEFAULT_GROUP_ID", "grp-general")
+        return self.groups.get(default_group_id) or self.groups["grp-general"]
+
+    def _create_sso_user_locked(self, identity: Dict[str, Any], sso_id: str, email: str) -> Dict[str, Any]:
+        group = self._resolve_sso_group_locked(identity)
+        stable_id = sso_id or email.lower()
+        user_id = f"usr-sso-{secrets.token_hex(4)}"
+        username = str(identity.get("username") or email.split("@")[0] or stable_id or user_id).strip()
+        user = {
+            "user_id": user_id,
+            "sso_id": sso_id or None,
+            "username": username,
+            "password": "",
+            "name": str(identity.get("name") or identity.get("display_name") or username or "SSO User").strip(),
+            "role_name": group["name"],
+            "email": email or f"{user_id}@sso.local",
+            "group_id": group["group_id"],
+            "user_group": group["name"],
+            "national_id": identity.get("national_id") or identity.get("pid"),
+            "phone_number": identity.get("phone_number") or identity.get("phone"),
+            "avatar_url": identity.get("avatar_url") or "/user.png",
+            "status": "active",
+            "last_password_reset_at": None,
+        }
+        self.users[user_id] = user
+        return user
+
+    def _update_sso_user_locked(self, user: Dict[str, Any], identity: Dict[str, Any], email: str) -> None:
+        for field, source_keys in {
+            "sso_id": ["sso_id", "id", "sub"],
+            "name": ["name", "display_name"],
+            "national_id": ["national_id", "pid"],
+            "phone_number": ["phone_number", "phone"],
+            "avatar_url": ["avatar_url"],
+        }.items():
+            for source_key in source_keys:
+                value = identity.get(source_key)
+                if value:
+                    user[field] = value
+                    break
+        if email:
+            user["email"] = email
 
     def logout(self, token: str) -> bool:
         with self.lock:
