@@ -14,18 +14,27 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 import hashlib
+import base64
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
 # Configuration
 ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
+DATALAKE_ELASTICSEARCH_URL = os.getenv("DATALAKE_ELASTICSEARCH_URL", ELASTICSEARCH_URL)
+WAREHOUSE_ELASTICSEARCH_URL = os.getenv("WAREHOUSE_ELASTICSEARCH_URL", ELASTICSEARCH_URL)
 DATALAKE_INDEX = os.getenv("DATALAKE_INDEX", "cyber-logs-datalake")
 WAREHOUSE_INDEX = os.getenv("WAREHOUSE_INDEX", "cyber-logs-datawarehouse")
+DATALAKE_QUERY_MODE = os.getenv("DATALAKE_QUERY_MODE", "ai_processed_false")
+DATALAKE_READONLY = os.getenv("DATALAKE_READONLY", "false").lower() == "true"
 
 # API Keys (Per-index access)
 DATALAKE_API_KEY = os.getenv("DATALAKE_API_KEY", "")
 WAREHOUSE_API_KEY = os.getenv("WAREHOUSE_API_KEY", "")
+DATALAKE_USERNAME = os.getenv("DATALAKE_USERNAME", "")
+DATALAKE_PASSWORD = os.getenv("DATALAKE_PASSWORD", "")
+WAREHOUSE_USERNAME = os.getenv("WAREHOUSE_USERNAME", "")
+WAREHOUSE_PASSWORD = os.getenv("WAREHOUSE_PASSWORD", "")
 
 # Try to import elasticsearch, fallback to httpx if not available
 try:
@@ -47,17 +56,38 @@ class ElasticClient:
     
     def __init__(self, url: str = ELASTICSEARCH_URL):
         self.url = url
+        self.datalake_url = DATALAKE_ELASTICSEARCH_URL
+        self.warehouse_url = WAREHOUSE_ELASTICSEARCH_URL
         self.datalake_index = DATALAKE_INDEX
         self.warehouse_index = WAREHOUSE_INDEX
         
         self.datalake_api_key = DATALAKE_API_KEY
         self.warehouse_api_key = WAREHOUSE_API_KEY
+        self.datalake_basic_auth = (
+            (DATALAKE_USERNAME, DATALAKE_PASSWORD)
+            if DATALAKE_USERNAME and DATALAKE_PASSWORD
+            else None
+        )
+        self.warehouse_basic_auth = (
+            (WAREHOUSE_USERNAME, WAREHOUSE_PASSWORD)
+            if WAREHOUSE_USERNAME and WAREHOUSE_PASSWORD
+            else None
+        )
         
         if ES_CLIENT_AVAILABLE:
-            # Base client without headers (auth applied per request)
-            self.client = Elasticsearch(url)
+            self.datalake_client = Elasticsearch(
+                self.datalake_url,
+                basic_auth=self.datalake_basic_auth,
+            )
+            self.warehouse_client = Elasticsearch(
+                self.warehouse_url,
+                basic_auth=self.warehouse_basic_auth,
+            )
+            self.client = self.warehouse_client
         else:
             self.client = None
+            self.datalake_client = None
+            self.warehouse_client = None
             logger.warning("elasticsearch-py not installed, using httpx fallback")
     
     def _get_api_key(self, index: str) -> Optional[str]:
@@ -70,13 +100,23 @@ class ElasticClient:
 
     def _get_client(self, index: str):
         """Get Elasticsearch client configured for specific index."""
-        if not ES_CLIENT_AVAILABLE or not self.client:
+        if not ES_CLIENT_AVAILABLE:
             return None
-        
+
+        client = self.datalake_client if index == self.datalake_index else self.warehouse_client
+        if not client:
+            return None
+
         api_key = self._get_api_key(index)
         if api_key:
-            return self.client.options(api_key=api_key)
-        return self.client
+            return client.options(api_key=api_key)
+        return client
+
+    def _get_url(self, index: str) -> str:
+        return self.datalake_url if index == self.datalake_index else self.warehouse_url
+
+    def _get_basic_auth(self, index: str) -> Optional[tuple]:
+        return self.datalake_basic_auth if index == self.datalake_index else self.warehouse_basic_auth
 
     def _get_headers(self, index: str) -> Dict[str, str]:
         """Get HTTP headers for httpx fallback."""
@@ -84,6 +124,11 @@ class ElasticClient:
         api_key = self._get_api_key(index)
         if api_key:
             headers["Authorization"] = f"ApiKey {api_key}"
+            return headers
+        basic_auth = self._get_basic_auth(index)
+        if basic_auth:
+            raw = f"{basic_auth[0]}:{basic_auth[1]}".encode("utf-8")
+            headers["Authorization"] = f"Basic {base64.b64encode(raw).decode('ascii')}"
         return headers
 
     def _search_index(self, index: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -93,7 +138,7 @@ class ElasticClient:
             return client.search(index=index, body=body)
 
         response = httpx.post(
-            f"{self.url}/{index}/_search",
+            f"{self._get_url(index)}/{index}/_search",
             json=body,
             timeout=30,
             headers=self._get_headers(index)
@@ -114,7 +159,7 @@ class ElasticClient:
             return {"_id": result.get("_id"), **result.get("_source", {})}
 
         response = httpx.get(
-            f"{self.url}/{index}/_doc/{quote(doc_id, safe='')}",
+            f"{self._get_url(index)}/{index}/_doc/{quote(doc_id, safe='')}",
             timeout=30,
             headers=self._get_headers(index)
         )
@@ -137,7 +182,7 @@ class ElasticClient:
             return True
 
         response = httpx.post(
-            f"{self.url}/{index}/_update/{quote(doc_id, safe='')}",
+            f"{self._get_url(index)}/{index}/_update/{quote(doc_id, safe='')}",
             json={"doc": fields},
             timeout=30,
             headers=self._get_headers(index)
@@ -343,13 +388,13 @@ class ElasticClient:
                 else:
                     # Check if exists
                     check = httpx.head(
-                        f"{self.url}/{index}", 
+                        f"{self._get_url(index)}/{index}", 
                         timeout=10, 
                         headers=self._get_headers(index)
                     )
                     if check.status_code == 404:
                         resp = httpx.put(
-                            f"{self.url}/{index}",
+                            f"{self._get_url(index)}/{index}",
                             json=mapping,
                             timeout=30,
                             headers=self._get_headers(index)
@@ -364,24 +409,78 @@ class ElasticClient:
         return results
     
     def get_unprocessed_iocs(self, limit: int = 100) -> List[Dict[str, Any]]:
-        query = {
-            "query": {"bool": {"must": [{"term": {"ai_processed": False}}]}},
-            "sort": [
-                {"event_time": {"order": "asc", "missing": "_last"}},
-                {"collect_time": {"order": "asc", "missing": "_last"}}
-            ],
-            "size": limit
-        }
+        if DATALAKE_QUERY_MODE == "all":
+            query = {
+                "query": {"match_all": {}},
+                "sort": [{"_doc": {"order": "asc"}}],
+                "size": limit
+            }
+        else:
+            query = {
+                "query": {"bool": {"must": [{"term": {"ai_processed": False}}]}},
+                "sort": [
+                    {"event_time": {"order": "asc", "missing": "_last"}},
+                    {"collect_time": {"order": "asc", "missing": "_last"}}
+                ],
+                "size": limit
+            }
         
         try:
             logger.info(f"Searching datalake with query: {query}")
             result = self._search_index(self.datalake_index, query)
             hits = result["hits"]["hits"]
             logger.info(f"Found {len(hits)} hits in datalake")
-            return [hit["_source"] | {"_id": hit["_id"]} for hit in hits]
+            return [self._normalize_datalake_hit(hit) for hit in hits]
         except Exception as e:
             logger.error(f"Failed to get unprocessed IOCs: {e}")
             return []
+
+    @staticmethod
+    def _first_source(raw: Dict[str, Any]) -> Dict[str, Any]:
+        source = raw.get("source")
+        if isinstance(source, list) and source:
+            return source[0] if isinstance(source[0], dict) else {}
+        if isinstance(source, dict):
+            return source
+        return {}
+
+    @classmethod
+    def _normalize_datalake_hit(cls, hit: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize current and external feed documents into pipeline fields."""
+        raw = hit.get("_source", {})
+        if raw.get("ioc_value") and raw.get("ioc_type"):
+            return raw | {"_id": hit["_id"], "_index": hit.get("_index")}
+
+        ioc = raw.get("ioc") if isinstance(raw.get("ioc"), dict) else {}
+        first_source = cls._first_source(raw)
+        enrichment = raw.get("enrichment") if isinstance(raw.get("enrichment"), dict) else {}
+        geo_ip = enrichment.get("geo_ip") if isinstance(enrichment.get("geo_ip"), dict) else {}
+
+        title = str(first_source.get("title") or raw.get("title") or "").strip()
+        description = str(first_source.get("description") or raw.get("description") or "").strip()
+        merged_description = "\n".join(part for part in [title, description] if part)
+
+        return {
+            "_id": hit["_id"],
+            "_index": hit.get("_index"),
+            "ioc_value": ioc.get("value") or raw.get("ioc_value") or "",
+            "ioc_type": ioc.get("type") or raw.get("ioc_type") or "unknown",
+            "source_name": first_source.get("name") or raw.get("source_name") or raw.get("ref_doc_index") or "tcti-feeds",
+            "source_type": raw.get("source_type") or "external-feed",
+            "description": merged_description,
+            "threat_type": raw.get("threat_type") or [],
+            "severity": raw.get("severity") or "low",
+            "tags": raw.get("tags") or first_source.get("tags") or [],
+            "reference": first_source.get("url") or raw.get("reference") or raw.get("ref_doc_id") or raw.get("doc_hash") or "",
+            "collect_time": first_source.get("collect_time") or raw.get("@timestamp") or raw.get("processed_at"),
+            "event_time": raw.get("@timestamp") or raw.get("processed_at") or first_source.get("collect_time"),
+            "geo_country": geo_ip.get("country_code") or geo_ip.get("country") or raw.get("geo_country"),
+            "confidence": raw.get("confidence", 0),
+            "source_url": first_source.get("url") or "",
+            "source_id": raw.get("ref_doc_id") or raw.get("doc_hash") or hit.get("_id"),
+            "enrichment": enrichment,
+            "ai_processed": bool(raw.get("ai_processed", False)),
+        }
 
     def search_datalake_documents(
         self,
@@ -436,6 +535,9 @@ class ElasticClient:
             return []
     
     def mark_as_processed(self, doc_id: str) -> bool:
+        if DATALAKE_READONLY:
+            logger.info("Skipping mark_as_processed for read-only datalake doc %s", doc_id)
+            return True
         try:
             client = self._get_client(self.datalake_index)
             if ES_CLIENT_AVAILABLE and client:
@@ -447,7 +549,7 @@ class ElasticClient:
                 return True
             else:
                 resp = httpx.post(
-                    f"{self.url}/{self.datalake_index}/_update/{quote(doc_id, safe='')}",
+                    f"{self.datalake_url}/{self.datalake_index}/_update/{quote(doc_id, safe='')}",
                     json={"doc": {"ai_processed": True}},
                     timeout=10,
                     headers=self._get_headers(self.datalake_index)
@@ -508,7 +610,7 @@ class ElasticClient:
                 return result.get("_id")
             else:
                 resp = httpx.put(
-                    f"{self.url}/{self.warehouse_index}/_doc/{quote(doc_id, safe='')}",
+                    f"{self.warehouse_url}/{self.warehouse_index}/_doc/{quote(doc_id, safe='')}",
                     json=warehouse_doc,
                     timeout=10,
                     headers=self._get_headers(self.warehouse_index)
@@ -542,7 +644,7 @@ class ElasticClient:
                     success += 1
                 else:
                     resp = httpx.put(
-                        f"{self.url}/{self.datalake_index}/_doc/{quote(ioc_id, safe='')}",
+                        f"{self.datalake_url}/{self.datalake_index}/_doc/{quote(ioc_id, safe='')}",
                         json=doc,
                         timeout=10,
                         headers=self._get_headers(self.datalake_index)
