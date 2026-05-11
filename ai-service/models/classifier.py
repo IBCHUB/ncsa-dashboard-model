@@ -101,7 +101,7 @@ def classify_threat(
         }
 
     text = text.strip()
-    if len(text) > MAX_CLASSIFIER_INPUT_CHARS:
+    if MAX_CLASSIFIER_INPUT_CHARS > 0 and len(text) > MAX_CLASSIFIER_INPUT_CHARS:
         logger.info(
             "Truncating classifier input from %s to %s chars",
             len(text),

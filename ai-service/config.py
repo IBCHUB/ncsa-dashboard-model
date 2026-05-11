@@ -39,7 +39,7 @@ MODEL_MULTI = os.getenv(
 
 # Use CPU by default (no CUDA)
 DEVICE = os.getenv("DEVICE", "cpu")
-MAX_CLASSIFIER_INPUT_CHARS = int(os.getenv("MAX_CLASSIFIER_INPUT_CHARS", "4000"))
+MAX_CLASSIFIER_INPUT_CHARS = int(os.getenv("MAX_CLASSIFIER_INPUT_CHARS", "0") or "0")
 
 # Threat Categories (Used for Zero-shot Classification)
 # NOTE: Lowercase for model input, mapped to Title Case for scoring
