@@ -1,125 +1,105 @@
-# แพลตฟอร์ม Thailand Cyber Threat Intelligence (TCTI)
+# TCTI AI Service and Data Pipeline
 
-> อัพเดทล่าสุด: 2026-03-27
+Last updated: 2026-05-13
 
-รีโปนี้เป็นชุดงานหลักของระบบ `AI / ML` และ `Threat Data Warehouse` สำหรับโครงการ TCTI โดยรับข้อมูลดิบจาก `Threat Data Lake` ที่มาจากระบบภายนอก แล้วประมวลผลผ่าน AI Service ก่อนบันทึกลง `Threat Data Warehouse`
+This repository contains the backend AI service, datalake adapters, pipeline, Elasticsearch client, dashboard API, and external sharing API for the TCTI cyber intelligence platform.
 
-## ภาพรวม
-
-องค์ประกอบหลักของรีโปนี้มีดังนี้
-
-| องค์ประกอบ | เทคโนโลยี | หน้าที่ |
-|------------|-----------|---------|
-| `ai-service` | FastAPI + Python 3.11 | จัดหมวดหมู่ภัยคุกคาม, คำนวณคะแนนความเสี่ยง, ตรวจสอบความถูกต้อง, clustering, forecasting, และเปิด API |
-| `Elasticsearch` | Elasticsearch 8.12 | เก็บ `Data Lake` และ `Data Warehouse` |
-
-ความสามารถหลักในปัจจุบัน
-
-- วิเคราะห์ IOC เช่น IP, domain, URL, hash, CVE
-- จัดหมวดหมู่ภัยคุกคามด้วย hybrid zero-shot models (DeBERTa + BGE-M3)
-- คำนวณคะแนนความเสี่ยงจากหลายปัจจัย (8 weighted factors + sector multiplier)
-- sanitize ข้อมูลก่อนเข้า AI / Warehouse
-- แยกผลลัพธ์เป็น `validated` และ `rejected` โดย news source ผ่านได้ถ้า AI confidence ≥ 0.60
-- จัดกลุ่ม IOC เป็น campaign ด้วย HDBSCAN clustering
-- สร้าง attack relationship graph (actors, IOCs, malware, CVEs, infrastructure)
-- พยากรณ์แนวโน้มการโจมตีด้วย Holt-Winters forecasting
-- เตรียม Dashboard API สำหรับ executive/operations/IOC analytics
-- เปิด External Threat Sharing API สำหรับ partner ภายนอกด้วย `X-API-Key`
-- แปลข้อความภัยคุกคามด้วย Hugging Face (opus-mt-en-th)
-
-## สถาปัตยกรรม
+## Current Production Topology
 
 ```text
-External Threat Data Lake
-          |
-          v
-  Elasticsearch Data Lake
-          |
-          v
-      AI Service
-  1. sanitize content
-  2. aggregate observations
-  3. classify context (threat, sector, actor, mitre)
-  4. score risk (multi-factor)
-  5. validation gate
-          |
-          v
-    Data Warehouse
-          |
-          v
-  rebuild_warehouse.py
-  6. cluster campaigns (HDBSCAN)
-  7. build relationship graph
-  8. forecast trends (Holt-Winters)
-          |
-          v
-  Dashboard API (/api/v1) + External Consumers
+Customer Data Lake
+  http://192.168.100.41:9201
+  index/alias: tcti-feeds
+        |
+        v
+AI Service on 192.168.100.44
+  FastAPI container: tcti-ai-service
+  local port: 127.0.0.1:9000
+        |
+        v
+Warehouse Elasticsearch on 192.168.100.43
+  warehouse: cyber-logs-datawarehouse
+  processed state: cyber-logs-processed
+  quarantine: cyber-logs-quarantine
+        |
+        v
+Dashboard on 192.168.100.44
+  local port: 127.0.0.1:9001
+  HTTPS via Nginx: https://ctidashboard.worldinfinity.co.th
 ```
 
-ลำดับการไหลของข้อมูล
+The datalake is treated as read-only in UAT/production. The pipeline tracks processed source records in `cyber-logs-processed`.
 
-1. ระบบภายนอกส่งข้อมูลดิบเข้ามาที่ `Data Lake`
-2. `ai-service` อ่านเอกสารที่ยังไม่ถูกประมวลผล
-3. ท่อประมวลผล **AI Service** จะทำงาน 5 ขั้นตอนอัตโนมัติ:
-   - `Sanitize` (ลบข้อมูลส่วนตัว/ข้อมูลความลับ)
-   - `Aggregate` (มัดรวมเบาะแสจากหลายแหล่ง)
-   - `Classify Context` (จัดหมวดหมู่ภัยคุกคาม, อุตสาหกรรมเป้าหมาย, กลุ่มแฮ็กเกอร์, และเทคนิค MITRE)
-   - `Score Risk` (ให้คะแนนความเสี่ยงเพื่อจัดลำดับ)
-   - `Validate` (คัดกรองทิ้งข้อมูลที่ไม่ได้มาตรฐาน)
-4. ผลลัพธ์บันทึกลง `Threat Data Warehouse` พร้อม metadata ของ validation
-5. `rebuild_warehouse.py` รันการวิเคราะห์ขั้นสูงหลัง warehouse พร้อมแล้ว:
-   - `Cluster Campaigns` (จัดกลุ่มพฤติกรรมเป็นแคมเปญด้วย HDBSCAN)
-   - `Build Graph` (สร้างแผนผังความสัมพันธ์หาต้นตอ)
-   - `Forecast Trends` (พยากรณ์แนวโน้มด้วย Holt-Winters)
-6. Dashboard API อ่านจาก warehouse เพื่อแสดงผล executive/operations/IOC analytics
+## Runtime Components
 
-## โครงสร้างรีโป
+| Path | Purpose |
+| --- | --- |
+| `ai-service/main.py` | FastAPI entrypoint, core AI endpoints, pipeline run/status, scheduler |
+| `ai-service/elastic_client.py` | Elasticsearch access, mappings, bulk writes, processed-state tracking, datalake cursor |
+| `ai-service/datalake_adapters.py` | Raw datalake shape normalizers into canonical IOC documents |
+| `ai-service/pipeline_classification_policy.py` | ML/rule/skipped classification policy |
+| `ai-service/utils/pipeline_documents.py` | IOC aggregation, enrichment, scoring, validation document builder |
+| `ai-service/models/scorer.py` | Risk score formula and score breakdown |
+| `ai-service/models/validation.py` | Warehouse eligibility / validation policy |
+| `ai-service/services/dashboard_router.py` | `/api/v1` dashboard API |
+| `ai-service/services/external_sharing_router.py` | `/api/v1/external` partner sharing API |
+
+## Pipeline Summary
 
 ```text
-Cyber/
-├── ai-service/               # โค้ด runtime หลักของระบบ AI Service
-│   ├── main.py               # FastAPI application + core AI endpoints
-│   ├── config.py             # ค่ากำหนดโมเดล, scoring weights, sectors, actors
-│   ├── elastic_client.py     # Elasticsearch dual-index client
-│   ├── models/
-│   │   ├── classifier.py     # NLP zero-shot classification
-│   │   ├── scorer.py         # Multi-factor risk scoring
-│   │   ├── validation.py     # Validation policy (validated / rejected)
-│   │   ├── sector_classifier.py  # Target sector detection
-│   │   ├── campaign_clusterer.py # HDBSCAN campaign clustering
-│   │   ├── forecaster.py     # Holt-Winters trend forecasting
-│   │   └── relationship_graph.py # Attack relationship graph builder
-│   ├── services/
-│   │   ├── dashboard_router.py       # /api/v1 dashboard
-│   │   ├── dashboard_compat_router.py # Legacy route compatibility
-│   │   ├── dashboard_bootstrap.py    # In-process admin/user store
-│   │   ├── external_sharing_router.py # /api/v1/external partner sharing API
-│   │   └── external_sharing_bootstrap.py # In-process partner/submission/export store
-│   ├── utils/                # sanitizer, pipeline builder, translator
-│   ├── scripts/ops/          # import, backfill, rebuild
-│   ├── scripts/dev/          # verification, seeding, smoke tests
-│   └── tests/                # pytest test suite
-├── docs/                     # เอกสารคู่มือและเอกสารอ้างอิง
-├── data_lake/                # ตัวอย่างไฟล์ JSON สำหรับ import
-├── docker-compose.yml        # local stack (ES + AI Service)
-└── docker-compose.remote.yml # remote ELK stack (AI Service only)
+raw datalake record
+-> datalake adapter
+-> canonical IOC fields
+-> processed-state dedup
+-> aggregate observations by canonical IOC
+-> classification policy
+   - source_rule for IOC feeds, MISP, sandbox, Zone-H style feeds
+   - ml for news/report/context-rich text
+   - skipped for insufficient/generic/non-incident context
+-> risk scoring
+-> validation policy
+-> bulk write warehouse
+-> bulk write processed-state
 ```
 
-## เริ่มต้นใช้งานเร็ว
+The current production backfill path is optimized for large IOC feeds:
 
-### แบบ Docker
+- bulk warehouse writes
+- bulk processed-state writes
+- datalake cursor with `search_after`
+- chunked Elasticsearch bulk requests to avoid `413 Request Entity Too Large`
+- Docker resource limits on `.44`
 
-```bash
-cd /path/to/Cyber
-docker-compose up -d
-```
+## Important Environment Variables
 
-บริการหลักที่ได้
+| Variable | Production/UAT value or behavior |
+| --- | --- |
+| `DATALAKE_ELASTICSEARCH_URL` | `http://192.168.100.41:9201` |
+| `DATALAKE_INDEX` | `tcti-feeds` |
+| `DATALAKE_READONLY` | `true` |
+| `DATALAKE_QUERY_MODE` | `all` |
+| `DATALAKE_SCAN_USE_CURSOR` | `true` |
+| `DATALAKE_SCAN_CURSOR_ID` | stable cursor name, currently `tcti-feeds-prod` on UAT |
+| `DATALAKE_SCAN_BATCH_SIZE` | `1000` |
+| `DATALAKE_SCAN_MAX_PAGES` | `50` |
+| `WAREHOUSE_ELASTICSEARCH_URL` | `http://192.168.100.43:9200` |
+| `WAREHOUSE_INDEX` | `cyber-logs-datawarehouse` |
+| `PROCESSED_INDEX` | `cyber-logs-processed` |
+| `QUARANTINE_INDEX` | `cyber-logs-quarantine` |
+| `ELASTIC_BULK_CHUNK_SIZE` | `500` |
+| `PIPELINE_CLASSIFICATION_MODE` | `auto` |
+| `PIPELINE_ML_SOURCE_TYPES` | `news,rss,article,report,advisory,blog` |
+| `PIPELINE_RULE_SOURCE_TYPES` | `customer-datalake,misp,external-feed,sandbox` |
+| `PIPELINE_ML_MIN_CONTEXT_CHARS` | `300` |
+| `PIPELINE_ML_MAX_INPUT_CHARS` | default `1800` in policy unless overridden |
+| `PIPELINE_SCHEDULER_ENABLED` | disabled during manual backfill; enable after backfill |
+| `PIPELINE_SCHEDULER_LIMIT` | recommended `10000` after backfill |
+| `MODEL_EN` | `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` |
+| `MODEL_EN_FALLBACK_LARGE` | `MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli` |
 
-- `AI Service` ที่ `http://localhost:8000` (API docs: `http://localhost:8000/docs`)
-- `Elasticsearch` ที่ `http://localhost:9200`
+Do not commit `.env` files or secrets.
 
-### แบบ local development
+## Development
 
 ```bash
 cd ai-service
@@ -129,35 +109,25 @@ pip install -r requirements.txt
 python main.py
 ```
 
-หมายเหตุ
+Run the core regression suite:
 
-- startup ครั้งแรกอาจใช้เวลานานเพราะต้องโหลดโมเดลจาก Hugging Face
-- ถ้าใช้ remote ELK ให้ตั้งค่า `ELASTICSEARCH_URL`, `DATALAKE_API_KEY`, `WAREHOUSE_API_KEY` ให้ถูกต้องก่อนเริ่มระบบ
+```bash
+cd ai-service
+pytest -q \
+  tests/test_incremental_pipeline.py \
+  tests/test_validation.py \
+  tests/test_pipeline_classification_policy.py \
+  tests/test_pipeline_documents_evidence.py \
+  tests/test_golden_news_fixture.py \
+  tests/test_sector_nlp.py::test_threat_labels_cover_current_datalake_news_taxonomy
+```
 
-## ตัวแปรแวดล้อมสำคัญ
+## Documentation
 
-| ตัวแปร | ค่าเริ่มต้น | ความหมาย |
-|--------|-------------|-----------|
-| `AI_SERVICE_API_KEYS` | ว่าง (ต้องตั้ง) | รายการ API key ที่อนุญาต (comma-separated) |
-| `AI_SERVICE_REQUIRE_AUTH` | `true` | บังคับตรวจ `X-API-Key` หรือไม่ |
-| `ELASTICSEARCH_URL` | `http://localhost:9200` | URL ของ Elasticsearch |
-| `DATALAKE_INDEX` | `cyber-logs-datalake` | index ข้อมูลดิบ |
-| `WAREHOUSE_INDEX` | `cyber-logs-datawarehouse` | index ผลลัพธ์สำหรับใช้งานต่อ |
-| `DATALAKE_API_KEY` | ว่าง | API key สำหรับอ่าน/เขียน datalake (remote ELK) |
-| `WAREHOUSE_API_KEY` | ว่าง | API key สำหรับ warehouse (remote ELK) |
-| `EXTERNAL_PARTNER_REGISTRY_JSON` | ว่าง | JSON array สำหรับ map `X-API-Key -> partner -> permissions -> max_tlp` |
-| `DEVICE` | `cpu` | `cpu` หรือ `cuda` |
+| Document | Purpose |
+| --- | --- |
+| `docs/PIPELINE_ARCHITECTURE.md` | Current datalake, adapter, pipeline, ML/rule policy, warehouse fields |
+| `docs/RUNBOOK.md` | Live operations commands for `.44` and backfill monitoring |
+| `docs/PRODUCTION_READINESS.md` | Production readiness status, remaining checklist, go-live rules |
+| `docs/API_REFERENCE.md` | Current API groups from FastAPI routers |
 
-ดูตัวแปรแวดล้อมทั้งหมดใน [docs/CONTRIB.md](docs/CONTRIB.md)
-
-## เอกสารที่ควรอ่านต่อ
-
-| ลำดับ | ไฟล์ | เนื้อหา |
-|-------|------|---------|
-| 1 | [docs/CODEMAPS/architecture.md](docs/CODEMAPS/architecture.md) | Module dependency graph, design decisions |
-| 2 | [docs/CONTRIB.md](docs/CONTRIB.md) | วิธี setup, env vars, scripts, project structure |
-| 3 | [docs/CODEMAPS/backend.md](docs/CODEMAPS/backend.md) | API endpoints ทั้งหมด, models/services layer |
-| 4 | [docs/CODEMAPS/data.md](docs/CODEMAPS/data.md) | ES schema, scoring config, graph schema |
-| 5 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Deploy, monitoring, troubleshooting, rollback |
-| 6 | [docs/api-spec/ncsa-external-sharing-openapi.yaml](docs/api-spec/ncsa-external-sharing-openapi.yaml) | partner-facing OpenAPI สำหรับ external sharing |
-| 7 | [ai-service/.env.external-sharing.example](ai-service/.env.external-sharing.example) | ตัวอย่าง env สำหรับ partner registry และ local testing |
