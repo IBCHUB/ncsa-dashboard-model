@@ -2,7 +2,7 @@
 
 Last updated: 2026-05-13
 
-This is a code-derived high-level reference. For exact request/response schemas, inspect FastAPI OpenAPI at `/docs` on the running service.
+This is a code-derived high-level reference. For the complete route-by-route inventory, see [API_INVENTORY.md](API_INVENTORY.md). For exact request/response schemas, inspect FastAPI OpenAPI at `/docs` on the running service.
 
 ## Core AI Service
 
@@ -97,4 +97,3 @@ Main groups:
 | `POST` | `/exports` | create export |
 | `GET` | `/exports/{export_id}` | export status |
 | `GET` | `/exports/{export_id}/download` | download export |
-

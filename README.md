@@ -130,4 +130,4 @@ pytest -q \
 | `docs/RUNBOOK.md` | Live operations commands for `.44` and backfill monitoring |
 | `docs/PRODUCTION_READINESS.md` | Production readiness status, remaining checklist, go-live rules |
 | `docs/API_REFERENCE.md` | Current API groups from FastAPI routers |
-
+| `docs/API_INVENTORY.md` | Complete route-by-route FastAPI inventory |
