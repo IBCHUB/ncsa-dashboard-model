@@ -169,3 +169,15 @@ These routes preserve old PoC path names and response casing. Prefer `/api/v1/*`
 - Exact request and response schemas are available from FastAPI OpenAPI on the running service at `/docs` and `/openapi.json`.
 - This document is source-derived and should be refreshed whenever route decorators change.
 - Dashboard web local API routes are documented in `ncsa-dashboard-web/docs/API_INVENTORY.md`.
+
+## Framework-Generated Endpoints
+
+FastAPI also exposes documentation/schema endpoints unless disabled in app configuration:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/docs` | Swagger UI |
+| `GET` | `/redoc` | ReDoc UI |
+| `GET` | `/openapi.json` | OpenAPI schema |
+
+These are framework-generated endpoints, not business API handlers declared in the route source files above.
