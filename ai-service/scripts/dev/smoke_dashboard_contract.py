@@ -30,7 +30,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Smoke test all dashboard API routes with a fake backend")
     parser.add_argument(
         "--output",
-        default=str(REPO_ROOT / "docs" / "api-spec" / "full-contract-smoke-results.json"),
+        default=str(REPO_ROOT / "tmp" / "full-contract-smoke-results.json"),
         help="Path to JSON artifact output",
     )
     return parser.parse_args()
