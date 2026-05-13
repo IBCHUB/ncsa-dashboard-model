@@ -18,6 +18,8 @@ import base64
 import re
 from urllib.parse import quote
 
+from datalake_adapters import normalize_datalake_hit
+
 logger = logging.getLogger(__name__)
 
 # Configuration
@@ -27,6 +29,7 @@ WAREHOUSE_ELASTICSEARCH_URL = os.getenv("WAREHOUSE_ELASTICSEARCH_URL", ELASTICSE
 DATALAKE_INDEX = os.getenv("DATALAKE_INDEX", "cyber-logs-datalake")
 WAREHOUSE_INDEX = os.getenv("WAREHOUSE_INDEX", "cyber-logs-datawarehouse")
 PROCESSED_INDEX = os.getenv("PROCESSED_INDEX", "cyber-logs-processed")
+QUARANTINE_INDEX = os.getenv("QUARANTINE_INDEX", "cyber-logs-quarantine")
 DATALAKE_QUERY_MODE = os.getenv("DATALAKE_QUERY_MODE", "ai_processed_false")
 DATALAKE_READONLY = os.getenv("DATALAKE_READONLY", "false").lower() == "true"
 DATALAKE_SCAN_BATCH_SIZE = int(os.getenv("DATALAKE_SCAN_BATCH_SIZE", "200"))
@@ -46,7 +49,10 @@ try:
     ES_CLIENT_AVAILABLE = True
 except ImportError:
     ES_CLIENT_AVAILABLE = False
-    import httpx
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - tests can exercise pure helpers without HTTP clients
+        httpx = None
 
 
 class ElasticClient:
@@ -98,7 +104,7 @@ class ElasticClient:
         """Get API Key for specific index."""
         if index == self.datalake_index:
             return self.datalake_api_key
-        elif index in (self.warehouse_index, PROCESSED_INDEX):
+        elif index in (self.warehouse_index, PROCESSED_INDEX, QUARANTINE_INDEX):
             return self.warehouse_api_key
         return None
 
@@ -245,13 +251,28 @@ class ElasticClient:
         aliases = {
             "ip_addresses": "ip",
             "ip_address": "ip",
+            "ip-src": "ip",
+            "ip-dst": "ip",
             "ipv4": "ip",
             "ipv6": "ip",
             "hostname": "domain",
+            "domain|ip": "domain",
             "domains": "domain",
             "urls": "url",
+            "uri": "url",
+            "link": "url",
+            "md5": "md5",
+            "sha1": "sha1",
+            "sha256": "sha256",
             "sha-1": "sha1",
             "sha-256": "sha256",
+            "filename|md5": "md5",
+            "filename|sha1": "sha1",
+            "filename|sha256": "sha256",
+            "file/sha1": "sha1",
+            "file/sha256": "sha256",
+            "hash/sha1": "sha1",
+            "hash/sha256": "sha256",
         }
         return aliases.get(value, value or "unknown")
 
@@ -297,10 +318,18 @@ class ElasticClient:
 
     @staticmethod
     def _build_processed_state_id(doc: Dict[str, Any]) -> str:
-        payload = ElasticClient.canonical_ioc_key(doc)
+        source_index = str(doc.get("_index") or doc.get("source_index") or DATALAKE_INDEX).strip()
+        source_doc_id = str(
+            doc.get("_id")
+            or doc.get("source_doc_id")
+            or doc.get("source_id")
+            or doc.get("id")
+            or doc.get("source_fingerprint")
+            or ElasticClient.canonical_ioc_key(doc)
+        ).strip()
+        payload = f"{source_index}:{source_doc_id}"
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        ioc_type = ElasticClient.normalize_ioc_type(doc.get("ioc_type"))
-        return f"ioc:{ioc_type}:{digest[:32]}"
+        return f"src:{digest[:40]}"
     
     def create_indexes(self) -> Dict[str, bool]:
         """Create indexes if they don't exist."""
@@ -387,6 +416,10 @@ class ElasticClient:
                     "ai_threat_actors": {"type": "keyword"},
                     "ai_mitre_techniques": {"type": "keyword"},
                     "ai_classification_confidence": {"type": "float"},
+                    "classification_mode": {"type": "keyword"},
+                    "classification_reason": {"type": "keyword"},
+                    "classifier_input_chars": {"type": "integer"},
+                    "classification_time_ms": {"type": "integer"},
                     "ai_score_breakdown": {"type": "object", "enabled": False},
                     "ai_top_factors": {"type": "object", "enabled": False},
                     "validation_status": {"type": "keyword"},
@@ -440,6 +473,23 @@ class ElasticClient:
                     "last_attempt_at": {"type": "date"},
                     "processed_at": {"type": "date"},
                     "error": {"type": "text"},
+                    "adapter_name": {"type": "keyword"},
+                }
+            }
+        }
+
+        quarantine_mapping = {
+            "mappings": {
+                "properties": {
+                    "source_index": {"type": "keyword"},
+                    "source_doc_id": {"type": "keyword"},
+                    "source_fingerprint": {"type": "keyword"},
+                    "adapter_name": {"type": "keyword"},
+                    "adapter_status": {"type": "keyword"},
+                    "quarantine_reason": {"type": "keyword"},
+                    "raw_keys": {"type": "keyword"},
+                    "raw_sample": {"type": "object", "enabled": False},
+                    "created_at": {"type": "date"},
                 }
             }
         }
@@ -448,6 +498,7 @@ class ElasticClient:
             (self.datalake_index, datalake_mapping),
             (self.warehouse_index, warehouse_mapping),
             (PROCESSED_INDEX, processed_mapping),
+            (QUARANTINE_INDEX, quarantine_mapping),
         ]:
             if index == self.datalake_index and DATALAKE_READONLY:
                 logger.info("Skipping datalake index create for read-only source: %s", index)
@@ -489,6 +540,9 @@ class ElasticClient:
     def create_processed_index(self) -> bool:
         return self.create_indexes().get(PROCESSED_INDEX, False)
 
+    def create_quarantine_index(self) -> bool:
+        return self.create_indexes().get(QUARANTINE_INDEX, False)
+
     def _get_processed_state(self, doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         state_id = self._build_processed_state_id(doc)
         try:
@@ -499,7 +553,7 @@ class ElasticClient:
 
     def is_source_processed(self, doc: Dict[str, Any]) -> bool:
         state = self._get_processed_state(doc)
-        return bool(state and state.get("status") in {"processed", "rejected"})
+        return bool(state and state.get("status") in {"processed", "rejected", "quarantined"})
 
     def mark_source_state(
         self,
@@ -518,14 +572,15 @@ class ElasticClient:
             "source_fingerprint": state_id,
             "ioc_type": ElasticClient.normalize_ioc_type(doc.get("ioc_type")),
             "ioc_value": ElasticClient.normalize_ioc_value(doc.get("ioc_value")),
-            "canonical_ioc_key": ElasticClient.canonical_ioc_key(doc),
+            "canonical_ioc_key": ElasticClient.canonical_ioc_key(doc) if doc.get("ioc_value") else None,
             "original_ioc_type": doc.get("original_ioc_type") or doc.get("ioc_type"),
             "original_ioc_value": doc.get("original_ioc_value") or doc.get("ioc_value"),
             "warehouse_doc_id": warehouse_doc_id,
             "status": status,
             "last_attempt_at": now,
-            "processed_at": now if status in {"processed", "rejected"} else None,
+            "processed_at": now if status in {"processed", "rejected", "quarantined"} else None,
             "error": error,
+            "adapter_name": doc.get("adapter_name"),
         }
 
         try:
@@ -551,6 +606,39 @@ class ElasticClient:
             return resp.status_code in (200, 201)
         except Exception as e:
             logger.error("Failed to mark processed state for %s: %s", state_id, e)
+            return False
+
+    def save_quarantine(self, doc: Dict[str, Any], reason: Optional[str] = None) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        state_id = self._build_processed_state_id(doc)
+        quarantine_doc = {
+            "source_index": str(doc.get("_index") or self.datalake_index),
+            "source_doc_id": str(doc.get("_id") or ""),
+            "source_fingerprint": state_id,
+            "adapter_name": doc.get("adapter_name") or "unknown",
+            "adapter_status": "quarantined",
+            "quarantine_reason": reason or doc.get("quarantine_reason") or "unsupported_datalake_schema",
+            "raw_keys": doc.get("raw_keys") or [],
+            "raw_sample": doc.get("raw") or {},
+            "created_at": now,
+        }
+
+        try:
+            client = self._get_client(QUARANTINE_INDEX)
+            if ES_CLIENT_AVAILABLE and client:
+                client.index(index=QUARANTINE_INDEX, id=state_id, body=quarantine_doc)
+            else:
+                resp = httpx.put(
+                    f"{self.warehouse_url}/{QUARANTINE_INDEX}/_doc/{quote(state_id, safe='')}",
+                    json=quarantine_doc,
+                    timeout=10,
+                    headers=self._get_headers(QUARANTINE_INDEX),
+                )
+                if resp.status_code not in (200, 201):
+                    return False
+            return self.mark_source_state(doc, "quarantined", error=quarantine_doc["quarantine_reason"])
+        except Exception as e:
+            logger.error("Failed to save quarantine for %s: %s", state_id, e)
             return False
     
     def get_unprocessed_iocs(self, limit: int = 100) -> List[Dict[str, Any]]:
@@ -630,56 +718,7 @@ class ElasticClient:
     @classmethod
     def _normalize_datalake_hit(cls, hit: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize current and external feed documents into pipeline fields."""
-        raw = hit.get("_source", {})
-        if raw.get("ioc_value") and raw.get("ioc_type"):
-            doc = raw | {"_id": hit["_id"], "_index": hit.get("_index")}
-            original_type = doc.get("ioc_type")
-            original_value = doc.get("ioc_value")
-            doc["original_ioc_type"] = doc.get("original_ioc_type") or original_type
-            doc["original_ioc_value"] = doc.get("original_ioc_value") or original_value
-            doc["ioc_type"] = cls.normalize_ioc_type(original_type)
-            doc["ioc_value"] = cls.normalize_ioc_value(original_value)
-            doc["canonical_ioc_key"] = cls.canonical_ioc_key(doc)
-            return doc
-
-        ioc = raw.get("ioc") if isinstance(raw.get("ioc"), dict) else {}
-        first_source = cls._first_source(raw)
-        enrichment = raw.get("enrichment") if isinstance(raw.get("enrichment"), dict) else {}
-        geo_ip = enrichment.get("geo_ip") if isinstance(enrichment.get("geo_ip"), dict) else {}
-
-        title = str(first_source.get("title") or raw.get("title") or "").strip()
-        description = str(first_source.get("description") or raw.get("description") or "").strip()
-        merged_description = "\n".join(part for part in [title, description] if part)
-
-        original_ioc_type = ioc.get("type") or raw.get("ioc_type") or "unknown"
-        original_ioc_value = ioc.get("value") or raw.get("ioc_value") or ""
-        normalized_ioc_type = cls.normalize_ioc_type(original_ioc_type)
-        normalized_ioc_value = cls.normalize_ioc_value(original_ioc_value)
-
-        return {
-            "_id": hit["_id"],
-            "_index": hit.get("_index"),
-            "ioc_value": normalized_ioc_value,
-            "ioc_type": normalized_ioc_type,
-            "original_ioc_value": original_ioc_value,
-            "original_ioc_type": original_ioc_type,
-            "canonical_ioc_key": f"{normalized_ioc_type}:{normalized_ioc_value}",
-            "source_name": first_source.get("name") or raw.get("source_name") or raw.get("ref_doc_index") or "tcti-feeds",
-            "source_type": raw.get("source_type") or "external-feed",
-            "description": merged_description,
-            "threat_type": raw.get("threat_type") or [],
-            "severity": raw.get("severity") or "low",
-            "tags": raw.get("tags") or first_source.get("tags") or [],
-            "reference": first_source.get("url") or raw.get("reference") or raw.get("ref_doc_id") or raw.get("doc_hash") or "",
-            "collect_time": first_source.get("collect_time") or raw.get("@timestamp") or raw.get("processed_at"),
-            "event_time": raw.get("@timestamp") or raw.get("processed_at") or first_source.get("collect_time"),
-            "geo_country": geo_ip.get("country_code") or geo_ip.get("country") or raw.get("geo_country"),
-            "confidence": raw.get("confidence", 0),
-            "source_url": first_source.get("url") or "",
-            "source_id": raw.get("ref_doc_id") or raw.get("doc_hash") or hit.get("_id"),
-            "enrichment": enrichment,
-            "ai_processed": bool(raw.get("ai_processed", False)),
-        }
+        return normalize_datalake_hit(hit, cls.normalize_ioc_type, cls.normalize_ioc_value)
 
     def search_datalake_documents(
         self,

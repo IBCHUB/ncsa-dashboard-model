@@ -8,6 +8,7 @@ before the document is persisted to the warehouse index.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -20,6 +21,11 @@ from models.actions import derive_action_metadata
 from elastic_client import ElasticClient
 from models.scorer import calculate_risk_score
 from models.validation import evaluate_validation_status
+from pipeline_classification_policy import (
+    build_rule_classification,
+    build_skipped_classification,
+    decide_classification_mode,
+)
 from utils.sanitizer import sanitize_observation_fields
 
 
@@ -193,6 +199,49 @@ def build_classifier_context(
     return "\n".join(parts)
 
 
+def classify_pipeline_context(
+    *,
+    classifier_input: str,
+    source_types: Sequence[str],
+    adapter_names: Sequence[str],
+    threat_types_raw: Sequence[str],
+    ioc_docs: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Classify an IOC using ML only when the policy says it is useful."""
+    start = time.time()
+    decision = decide_classification_mode(
+        source_types=source_types,
+        adapter_names=adapter_names,
+        threat_types_raw=threat_types_raw,
+        classifier_input=classifier_input,
+    )
+
+    if decision.mode == "ml":
+        classification = classify_threat(classifier_input)
+    elif decision.mode == "source_rule":
+        classification = build_rule_classification(
+            threat_types_raw=threat_types_raw,
+            ioc_docs=ioc_docs,
+        )
+    else:
+        classification = build_skipped_classification()
+
+    # These extractors are rule/keyword-based and inexpensive compared with ML.
+    threat_actors = extract_threat_actors(classifier_input)
+    mitre_techniques = extract_mitre_techniques(classifier_input)
+    elapsed_ms = int((time.time() - start) * 1000)
+
+    return {
+        "classification": classification,
+        "threat_actors": threat_actors,
+        "mitre_techniques": mitre_techniques,
+        "classification_mode": decision.mode,
+        "classification_reason": decision.reason,
+        "classifier_input_chars": decision.classifier_input_chars,
+        "classification_time_ms": elapsed_ms,
+    }
+
+
 def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     if not ioc_docs:
         raise ValueError("ioc_docs must not be empty")
@@ -206,6 +255,7 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
     source_objects: List[Dict[str, Any]] = []
     source_types: List[str] = []
     source_urls: List[str] = []
+    adapter_names: List[str] = []
     descriptions: List[str] = []
     references: List[str] = []
     raw_tags: List[str] = []
@@ -247,6 +297,10 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         source_type = str(doc.get("source_type", "")).strip()
         if source_type and source_type not in source_types:
             source_types.append(source_type)
+
+        adapter_name = str(doc.get("adapter_name", "")).strip()
+        if adapter_name and adapter_name not in adapter_names:
+            adapter_names.append(adapter_name)
 
         description = str(doc.get("description", "")).strip()
         if description:
@@ -315,9 +369,16 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         source_types=source_types,
         ioc_docs=ioc_docs,
     )
-    classification = classify_threat(classifier_input)
-    threat_actors = extract_threat_actors(classifier_input)
-    mitre_techniques = extract_mitre_techniques(classifier_input)
+    classification_result = classify_pipeline_context(
+        classifier_input=classifier_input,
+        source_types=source_types,
+        adapter_names=adapter_names,
+        threat_types_raw=threat_types_raw,
+        ioc_docs=ioc_docs,
+    )
+    classification = classification_result["classification"]
+    threat_actors = classification_result["threat_actors"]
+    mitre_techniques = classification_result["mitre_techniques"]
 
     score_result = calculate_risk_score(
         ioc_value=ioc_value,
@@ -373,6 +434,10 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "ai_threat_actors": threat_actors,
         "ai_mitre_techniques": mitre_techniques,
         "ai_classification_confidence": classification["confidence"],
+        "classification_mode": classification_result["classification_mode"],
+        "classification_reason": classification_result["classification_reason"],
+        "classifier_input_chars": classification_result["classifier_input_chars"],
+        "classification_time_ms": classification_result["classification_time_ms"],
         "ai_score_breakdown": score_result.get("breakdown", {}),
         "ai_top_factors": score_result.get("top_factors", []),
         "score_model_version": score_result.get("score_model_version"),

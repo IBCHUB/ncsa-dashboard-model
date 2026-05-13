@@ -452,6 +452,13 @@ class PipelineRunResponse(BaseModel):
     processed: int
     rejected: int
     failed: int
+    normalized: int = 0
+    quarantined: int = 0
+    skipped_duplicate: int = 0
+    ml_classified: int = 0
+    rule_classified: int = 0
+    ml_skipped: int = 0
+    avg_ms_per_ioc: float = 0.0
     observations_updated: int
     processing_time_ms: int
     message: str
@@ -465,6 +472,8 @@ class ElasticsearchStatusResponse(BaseModel):
     warehouse_count: int
     processed_index: Optional[str] = None
     processed_state_count: Optional[int] = None
+    quarantine_index: Optional[str] = None
+    quarantine_count: Optional[int] = None
     scheduler_enabled: bool = False
     scheduler_interval_seconds: int = 0
 
@@ -475,6 +484,13 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
             "processed": 0,
             "rejected": 0,
             "failed": 0,
+            "normalized": 0,
+            "quarantined": 0,
+            "skipped_duplicate": 0,
+            "ml_classified": 0,
+            "rule_classified": 0,
+            "ml_skipped": 0,
+            "avg_ms_per_ioc": 0.0,
             "observations_updated": 0,
             "processing_time_ms": 0,
             "message": "Pipeline skipped: another run is already in progress"
@@ -486,6 +502,7 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
         start = time.time()
         es_client = get_elastic_client()
         es_client.create_processed_index()
+        es_client.create_quarantine_index()
 
         # Get unprocessed IOCs from Data Lake. For read-only sources, this is
         # filtered by the local processed-state index on the warehouse cluster.
@@ -496,31 +513,61 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 "processed": 0,
                 "rejected": 0,
                 "failed": 0,
+                "normalized": 0,
+                "quarantined": 0,
+                "skipped_duplicate": 0,
+                "ml_classified": 0,
+                "rule_classified": 0,
+                "ml_skipped": 0,
+                "avg_ms_per_ioc": 0.0,
                 "observations_updated": 0,
                 "processing_time_ms": 0,
                 "message": "No unprocessed IOCs found in Data Lake"
             }
 
+        normalized = 0
+        quarantined = 0
+        skipped_duplicate = 0
+
         # Group by IOC key to preserve all source-level observations (MOM requirement)
         grouped_iocs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         for ioc in unprocessed:
+            if ioc.get("adapter_status") == "quarantined":
+                if es_client.save_quarantine(ioc, reason=ioc.get("quarantine_reason")):
+                    quarantined += 1
+                else:
+                    skipped_duplicate += 1
+                continue
+
             ioc_type = ElasticClient.normalize_ioc_type(ioc.get("ioc_type"))
             ioc_value = ElasticClient.normalize_ioc_value(ioc.get("ioc_value"))
             if not ioc_value:
-                es_client.mark_source_state(ioc, "failed", error="Missing IOC value")
+                if es_client.save_quarantine(ioc, reason="missing_ioc_value"):
+                    quarantined += 1
                 continue
             key = (ioc_type, ioc_value.lower())
             grouped_iocs.setdefault(key, []).append(ioc)
+            normalized += 1
 
         processed = 0
         rejected = 0
         failed = 0
         processed_observations = 0
+        ml_classified = 0
+        rule_classified = 0
+        ml_skipped = 0
 
         for (_, _), ioc_docs in grouped_iocs.items():
             try:
                 build_result = build_enriched_ioc_document(ioc_docs)
                 pipeline_doc = build_result["document"]
+                classification_mode = pipeline_doc.get("classification_mode")
+                if classification_mode == "ml":
+                    ml_classified += 1
+                elif classification_mode == "source_rule":
+                    rule_classified += 1
+                else:
+                    ml_skipped += 1
                 validation_status = pipeline_doc["validation_status"]
                 ioc_value = pipeline_doc["ioc_value"]
 
@@ -564,17 +611,28 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 failed += 1
 
         elapsed = int((time.time() - start) * 1000)
+        classified_iocs = ml_classified + rule_classified + ml_skipped
+        avg_ms_per_ioc = round(elapsed / classified_iocs, 2) if classified_iocs else 0.0
 
         return {
             "processed": processed,
             "rejected": rejected,
             "failed": failed,
+            "normalized": normalized,
+            "quarantined": quarantined,
+            "skipped_duplicate": skipped_duplicate,
+            "ml_classified": ml_classified,
+            "rule_classified": rule_classified,
+            "ml_skipped": ml_skipped,
+            "avg_ms_per_ioc": avg_ms_per_ioc,
             "observations_updated": processed_observations,
             "processing_time_ms": elapsed,
             "message": (
                 f"Pipeline completed: {processed} auto-validated to warehouse, "
                 f"{rejected} rejected, "
-                f"{processed_observations} observations updated, {failed} failed"
+                f"{processed_observations} observations updated, "
+                f"ML={ml_classified}, rule={rule_classified}, skipped={ml_skipped}, "
+                f"{quarantined} quarantined, {failed} failed"
             )
         }
     finally:
@@ -637,7 +695,7 @@ async def run_pipeline(
 @app.get("/pipeline/status", response_model=ElasticsearchStatusResponse)
 async def pipeline_status(api_key: str = Depends(verify_api_key)):
     """Get Elasticsearch and pipeline status."""
-    from elastic_client import get_elastic_client, DATALAKE_INDEX, WAREHOUSE_INDEX, PROCESSED_INDEX
+    from elastic_client import get_elastic_client, DATALAKE_INDEX, WAREHOUSE_INDEX, PROCESSED_INDEX, QUARANTINE_INDEX
     
     es_client = get_elastic_client()
     health = es_client.health_check()
@@ -646,6 +704,7 @@ async def pipeline_status(api_key: str = Depends(verify_api_key)):
     datalake_count = es_client.count_documents(DATALAKE_INDEX)
     warehouse_count = es_client.count_documents(WAREHOUSE_INDEX)
     processed_state_count = es_client.count_documents(PROCESSED_INDEX)
+    quarantine_count = es_client.count_documents(QUARANTINE_INDEX)
     
     return {
         "status": health.get("status", "unknown"),
@@ -655,6 +714,8 @@ async def pipeline_status(api_key: str = Depends(verify_api_key)):
         "warehouse_count": warehouse_count,
         "processed_index": PROCESSED_INDEX,
         "processed_state_count": processed_state_count,
+        "quarantine_index": QUARANTINE_INDEX,
+        "quarantine_count": quarantine_count,
         "scheduler_enabled": PIPELINE_SCHEDULER_ENABLED,
         "scheduler_interval_seconds": PIPELINE_SCHEDULER_INTERVAL_SECONDS
     }
