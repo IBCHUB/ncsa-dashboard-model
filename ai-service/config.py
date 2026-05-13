@@ -110,6 +110,8 @@ THREAT_TYPE_SEVERITY = {
     "Wiper": {"level": 1, "score": 80, "description": "มัลแวร์ลบข้อมูล"},
     "Supply Chain Attack": {"level": 1, "score": 90, "description": "การโจมตีผ่านห่วงโซ่อุปทาน"},
     "Zero-day Exploit": {"level": 1, "score": 90, "description": "การโจมตีช่องโหว่ใหม่ที่ไม่เคยพบมาก่อน"},
+    "Exploited Vulnerability": {"level": 1, "score": 75, "description": "ช่องโหว่ที่ถูกนำไปใช้โจมตีจริง"},
+    "Remote Code Execution": {"level": 1, "score": 75, "description": "ช่องโหว่ที่ทำให้รันคำสั่งระยะไกลได้"},
     
     # Level 2 - High (Max 70)
     "Malware": {"level": 2, "score": 60, "description": "มัลแวร์ทั่วไป"},

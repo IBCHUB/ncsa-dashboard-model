@@ -60,3 +60,56 @@ def test_source_evidence_is_merged_into_warehouse_doc_and_scoring_inputs():
     assert doc["ai_threat_actors"] == ["TeamTNT"]
     assert doc["ai_mitre_techniques"] == ["T1587.001 Malware"]
     assert doc["source_count"] == 2
+
+
+def test_vulnerability_news_uses_context_rule_without_ml():
+    result = build_enriched_ioc_document([
+        {
+            "_id": "news-1",
+            "_index": "tcti-feeds-thehackernews-16032026",
+            "adapter_name": "legacy_external",
+            "ioc_type": "ip",
+            "ioc_value": "20.12.5.3",
+            "source_name": "The Hacker News",
+            "source_type": "news",
+            "description": (
+                "Cisco confirms active exploitation of CVE-2026-20122. "
+                "The vulnerability can allow remote code execution and arbitrary commands."
+            ),
+            "threat_type": [],
+            "severity": "high",
+            "confidence": 0,
+            "event_time": "2026-03-05T00:00:00+00:00",
+            "collect_time": "2026-03-05T00:00:00+00:00",
+        }
+    ])
+
+    doc = result["document"]
+    assert doc["classification_mode"] == "source_rule"
+    assert doc["classification_reason"] == "context_rule_threat_metadata"
+    assert doc["ai_threat_types"] == ["Remote Code Execution", "Exploited Vulnerability"]
+
+
+def test_raw_source_threat_types_are_mapped_before_ai_threat_types():
+    result = build_enriched_ioc_document([
+        {
+            "_id": "hash-1",
+            "_index": "tcti-feeds",
+            "adapter_name": "existing_canonical",
+            "ioc_type": "sha256",
+            "ioc_value": "a" * 64,
+            "source_name": "tcti-feeds",
+            "source_type": "customer-datalake",
+            "description": "Recognized as Malicious.",
+            "threat_type": ["malware_payload"],
+            "severity": "critical",
+            "confidence": 80,
+            "event_time": "2025-03-10T22:33:39+00:00",
+            "collect_time": "2025-11-11T10:27:31+00:00",
+        }
+    ])
+
+    doc = result["document"]
+    assert doc["classification_mode"] == "source_rule"
+    assert doc["ai_threat_types"] == ["Malware"]
+    assert "malware_payload" not in doc["ai_threat_types"]

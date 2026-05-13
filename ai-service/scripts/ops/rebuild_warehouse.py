@@ -160,6 +160,11 @@ def main() -> int:
         help="Overwrite warehouse docs even if review metadata already exists",
     )
     parser.add_argument(
+        "--skip-existing-check",
+        action="store_true",
+        help="Skip per-IOC warehouse lookup. Use for fast dry-run throughput/readiness audits only.",
+    )
+    parser.add_argument(
         "--allow-zero-eligible-write",
         action="store_true",
         help="Allow write mode even when dry-run finds zero warehouse-eligible documents",
@@ -219,10 +224,11 @@ def main() -> int:
                 )
 
             doc_id = ElasticClient._build_warehouse_doc_id(pipeline_doc)
-            existing_document = client.get_warehouse_document(doc_id)
-            if has_review_metadata(existing_document) and not args.overwrite_existing_review_metadata:
-                skipped_existing_metadata += 1
-                continue
+            if not args.skip_existing_check:
+                existing_document = client.get_warehouse_document(doc_id)
+                if has_review_metadata(existing_document) and not args.overwrite_existing_review_metadata:
+                    skipped_existing_metadata += 1
+                    continue
 
             built_documents.append({"doc_id": doc_id, "document": dict(pipeline_doc)})
         except Exception as exc:

@@ -505,7 +505,7 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
         }
 
     try:
-        from elastic_client import ElasticClient, get_elastic_client
+        from elastic_client import DATALAKE_READONLY, ElasticClient, get_elastic_client
 
         start = time.time()
         es_client = get_elastic_client()
@@ -572,6 +572,9 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
         vt_evidence_count = 0
         misp_risk_score_count = 0
         correlation_evidence_count = 0
+        warehouse_items: List[Dict[str, Any]] = []
+        processed_state_items: List[Dict[str, Any]] = []
+        datalake_doc_ids_to_mark: List[str] = []
 
         for (_, _), ioc_docs in grouped_iocs.items():
             try:
@@ -595,32 +598,21 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 validation_status = pipeline_doc["validation_status"]
                 ioc_value = pipeline_doc["ioc_value"]
 
-                saved_id = es_client.save_to_warehouse(dict(pipeline_doc))
-                if not saved_id:
-                    logger.warning("Failed to save to warehouse for %s", ioc_value)
-                    for doc in ioc_docs:
-                        es_client.mark_source_state(doc, "failed", error="Failed to save to warehouse")
-                    failed += 1
-                    continue
-
-                mark_failed = False
+                warehouse_doc_id = ElasticClient._build_warehouse_doc_id(pipeline_doc)
+                warehouse_items.append({
+                    "doc_id": warehouse_doc_id,
+                    "document": dict(pipeline_doc),
+                })
                 state_status = "rejected" if validation_status == REJECTED else "processed"
                 for doc in ioc_docs:
                     doc_id = doc.get("_id")
-                    if doc_id and not es_client.mark_as_processed(doc_id):
-                        mark_failed = True
-                        logger.warning(
-                            "Failed marking datalake doc as processed: %s (%s)",
-                            doc_id,
-                            ioc_value
-                        )
-                    if not es_client.mark_source_state(doc, state_status, warehouse_doc_id=saved_id):
-                        mark_failed = True
-                        logger.warning("Failed marking processed-state doc: %s (%s)", doc_id, ioc_value)
-
-                if mark_failed:
-                    failed += 1
-                    continue
+                    if doc_id:
+                        datalake_doc_ids_to_mark.append(str(doc_id))
+                    processed_state_items.append({
+                        "doc": doc,
+                        "status": state_status,
+                        "warehouse_doc_id": warehouse_doc_id,
+                    })
 
                 if pipeline_doc["warehouse_eligible"]:
                     processed += 1
@@ -633,6 +625,25 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 for doc in ioc_docs:
                     es_client.mark_source_state(doc, "failed", error=str(e))
                 failed += 1
+
+        failed_warehouse_doc_ids: set[str] = set()
+        if warehouse_items:
+            warehouse_result = es_client.bulk_save_to_warehouse(warehouse_items)
+            failed_warehouse_doc_ids = set(warehouse_result.get("failed_ids") or [])
+            failed += int(warehouse_result.get("failed", 0) or 0)
+
+        if processed_state_items:
+            state_items_to_write = [
+                item for item in processed_state_items
+                if item.get("warehouse_doc_id") not in failed_warehouse_doc_ids
+            ]
+            state_result = es_client.bulk_mark_source_states(state_items_to_write)
+            failed += int(state_result.get("failed", 0) or 0)
+
+        if not DATALAKE_READONLY:
+            for doc_id in datalake_doc_ids_to_mark:
+                if not es_client.mark_as_processed(doc_id):
+                    failed += 1
 
         elapsed = int((time.time() - start) * 1000)
         classified_iocs = ml_classified + rule_classified + ml_skipped

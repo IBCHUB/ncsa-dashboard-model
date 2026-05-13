@@ -128,3 +128,80 @@ def test_validation_auto_validates_curated_editorial_multi_source_signal():
 
     assert result["validation_status"] == VALIDATED
     assert result["warehouse_eligible"] is True
+
+
+def test_validation_auto_validates_internal_rule_feed_signal():
+    result = evaluate_validation_status(
+        ioc_value="d8fe25a9ad08ac12617ac75839d6bd2d09985701e664113e23a40514cfd09f5a",
+        ioc_type="sha256",
+        score_result={
+            "risk_score": 49,
+            "breakdown": {
+                "source_quality": {"trusted": 0, "news": 0, "other": 1},
+                "cross_source": {"count": 1, "source_diversity": 1},
+                "policy_gate": {"triggered": True},
+            },
+        },
+        ai_confidence=0.8,
+        sanitization_summary={"sanitized": False},
+        validation_context={
+            "classification_mode": "source_rule",
+            "source_types": ["customer-datalake"],
+            "ai_threat_types": ["Malware"],
+        },
+    )
+
+    assert result["validation_status"] == VALIDATED
+    assert result["warehouse_eligible"] is True
+    assert result["auto_validation_basis"]["internal_rule"] is True
+
+
+def test_validation_auto_validates_curated_context_rule_even_when_risk_is_capped():
+    result = evaluate_validation_status(
+        ioc_value="8.8.8.8",
+        ioc_type="ip",
+        score_result={
+            "risk_score": 49,
+            "breakdown": {
+                "source_quality": {"trusted": 0, "news": 1, "other": 0},
+                "cross_source": {"count": 1, "source_diversity": 1},
+                "policy_gate": {"triggered": True},
+            },
+        },
+        ai_confidence=0.5,
+        sanitization_summary={"sanitized": False},
+        validation_context={
+            "classification_mode": "source_rule",
+            "source_types": ["news"],
+            "ai_threat_types": ["Remote Code Execution", "Exploited Vulnerability"],
+        },
+    )
+
+    assert result["validation_status"] == VALIDATED
+    assert result["warehouse_eligible"] is True
+    assert result["auto_validation_basis"]["curated_context_rule"] is True
+
+
+def test_validation_still_rejects_weak_single_source_other_signal():
+    result = evaluate_validation_status(
+        ioc_value="weak.example",
+        ioc_type="domain",
+        score_result={
+            "risk_score": 12,
+            "breakdown": {
+                "source_quality": {"trusted": 0, "news": 0, "other": 1},
+                "cross_source": {"count": 1, "source_diversity": 1},
+                "policy_gate": {"triggered": False},
+            },
+        },
+        ai_confidence=0.3,
+        sanitization_summary={"sanitized": False},
+        validation_context={
+            "classification_mode": "source_rule",
+            "source_types": ["external-feed"],
+            "ai_threat_types": ["Other"],
+        },
+    )
+
+    assert result["validation_status"] == REJECTED
+    assert result["warehouse_eligible"] is False

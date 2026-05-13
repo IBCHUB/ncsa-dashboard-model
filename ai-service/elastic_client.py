@@ -10,8 +10,9 @@ Supports external ELK stack with per-index API key authentication.
 
 import os
 import copy
+import json
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Sequence
 from datetime import datetime, timezone
 import hashlib
 import base64
@@ -20,7 +21,16 @@ from urllib.parse import quote
 
 from datalake_adapters import normalize_datalake_hit
 
+try:
+    import httpx
+except ImportError:  # pragma: no cover - tests can exercise pure helpers without HTTP clients
+    httpx = None
+
 logger = logging.getLogger(__name__)
+
+
+def json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 # Configuration
 ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
@@ -30,10 +40,14 @@ DATALAKE_INDEX = os.getenv("DATALAKE_INDEX", "cyber-logs-datalake")
 WAREHOUSE_INDEX = os.getenv("WAREHOUSE_INDEX", "cyber-logs-datawarehouse")
 PROCESSED_INDEX = os.getenv("PROCESSED_INDEX", "cyber-logs-processed")
 QUARANTINE_INDEX = os.getenv("QUARANTINE_INDEX", "cyber-logs-quarantine")
+ML_FEEDBACK_INDEX = os.getenv("ML_FEEDBACK_INDEX", "cyber-logs-ml-feedback")
 DATALAKE_QUERY_MODE = os.getenv("DATALAKE_QUERY_MODE", "ai_processed_false")
 DATALAKE_READONLY = os.getenv("DATALAKE_READONLY", "false").lower() == "true"
 DATALAKE_SCAN_BATCH_SIZE = int(os.getenv("DATALAKE_SCAN_BATCH_SIZE", "200"))
 DATALAKE_SCAN_MAX_PAGES = int(os.getenv("DATALAKE_SCAN_MAX_PAGES", "50"))
+DATALAKE_SCAN_USE_CURSOR = os.getenv("DATALAKE_SCAN_USE_CURSOR", "true").lower() == "true"
+DATALAKE_SCAN_CURSOR_ID = os.getenv("DATALAKE_SCAN_CURSOR_ID", "datalake-readonly-default")
+ELASTIC_BULK_CHUNK_SIZE = int(os.getenv("ELASTIC_BULK_CHUNK_SIZE", "500"))
 
 # API Keys (Per-index access)
 DATALAKE_API_KEY = os.getenv("DATALAKE_API_KEY", "")
@@ -49,10 +63,6 @@ try:
     ES_CLIENT_AVAILABLE = True
 except ImportError:
     ES_CLIENT_AVAILABLE = False
-    try:
-        import httpx
-    except ImportError:  # pragma: no cover - tests can exercise pure helpers without HTTP clients
-        httpx = None
 
 
 class ElasticClient:
@@ -104,7 +114,7 @@ class ElasticClient:
         """Get API Key for specific index."""
         if index == self.datalake_index:
             return self.datalake_api_key
-        elif index in (self.warehouse_index, PROCESSED_INDEX, QUARANTINE_INDEX):
+        elif index in (self.warehouse_index, PROCESSED_INDEX, QUARANTINE_INDEX, ML_FEEDBACK_INDEX):
             return self.warehouse_api_key
         return None
 
@@ -140,6 +150,93 @@ class ElasticClient:
             raw = f"{basic_auth[0]}:{basic_auth[1]}".encode("utf-8")
             headers["Authorization"] = f"Basic {base64.b64encode(raw).decode('ascii')}"
         return headers
+
+    def _bulk_request(self, index: str, operations: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        """Execute Elasticsearch bulk operations with the correct endpoint/auth."""
+        if not operations:
+            return {"success": 0, "failed": 0, "failed_ids": []}
+
+        lines: List[str] = []
+        for operation in operations:
+            lines.append(json_dumps(operation["action"]))
+            source = operation.get("source")
+            if source is not None:
+                lines.append(json_dumps(source))
+        payload = "\n".join(lines) + "\n"
+
+        if httpx is None:
+            raise RuntimeError("httpx is required for bulk requests")
+
+        response = httpx.post(
+            f"{self._get_url(index)}/_bulk",
+            content=payload,
+            timeout=60,
+            headers={**self._get_headers(index), "Content-Type": "application/x-ndjson"},
+        )
+        response.raise_for_status()
+        body = response.json()
+        success = 0
+        failed_ids: List[str] = []
+        for item in body.get("items", []) or []:
+            result = next(iter(item.values()), {})
+            status = int(result.get("status") or 0)
+            doc_id = str(result.get("_id") or "")
+            if 200 <= status < 300:
+                success += 1
+            else:
+                if doc_id:
+                    failed_ids.append(doc_id)
+                logger.error("Bulk operation failed for %s: %s", doc_id, result.get("error"))
+        return {
+            "success": success,
+            "failed": len(failed_ids),
+            "failed_ids": failed_ids,
+            "errors": bool(body.get("errors")),
+        }
+
+    @staticmethod
+    def _bulk_operation_id(operation: Dict[str, Any]) -> str:
+        action = operation.get("action") or {}
+        for body in action.values():
+            if isinstance(body, dict) and body.get("_id"):
+                return str(body["_id"])
+        return ""
+
+    def _bulk_request_chunked(
+        self,
+        index: str,
+        operations: Sequence[Dict[str, Any]],
+        *,
+        chunk_size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        chunk_size = max(1, chunk_size or ELASTIC_BULK_CHUNK_SIZE)
+        total_success = 0
+        failed_ids: List[str] = []
+        for start in range(0, len(operations), chunk_size):
+            chunk = list(operations[start:start + chunk_size])
+            try:
+                result = self._bulk_request(index, chunk)
+                total_success += int(result.get("success", 0) or 0)
+                failed_ids.extend(str(item) for item in result.get("failed_ids", []) or [])
+            except Exception as e:
+                chunk_failed_ids = [
+                    doc_id
+                    for doc_id in (self._bulk_operation_id(operation) for operation in chunk)
+                    if doc_id
+                ]
+                logger.error(
+                    "Bulk chunk failed for index=%s size=%s: %s",
+                    index,
+                    len(chunk),
+                    e,
+                )
+                failed_ids.extend(chunk_failed_ids)
+        return {
+            "success": total_success,
+            "failed": len(failed_ids),
+            "failed_ids": failed_ids,
+            "errors": bool(failed_ids),
+        }
 
     def _search_index(self, index: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a search against a specific index."""
@@ -206,10 +303,19 @@ class ElasticClient:
 
     def count_documents(self, index: str) -> int:
         """Count documents in a specific index with the correct API key."""
-        body = {"size": 0, "query": {"match_all": {}}}
         try:
-            result = self._search_index(index, body)
-            return int(result.get("hits", {}).get("total", {}).get("value", 0))
+            client = self._get_client(index)
+            if ES_CLIENT_AVAILABLE and client:
+                result = client.count(index=index, query={"match_all": {}})
+                return int(result.get("count", 0))
+
+            response = httpx.get(
+                f"{self._get_url(index)}/{index}/_count",
+                headers=self._get_headers(index),
+                timeout=30,
+            )
+            response.raise_for_status()
+            return int(response.json().get("count", 0))
         except Exception as e:
             logger.error(f"Failed to count index {index}: {e}")
             return 0
@@ -429,6 +535,7 @@ class ElasticClient:
                     "classification_mode": {"type": "keyword"},
                     "classification_reason": {"type": "keyword"},
                     "classifier_input_chars": {"type": "integer"},
+                    "classifier_effective_input_chars": {"type": "integer"},
                     "classification_time_ms": {"type": "integer"},
                     "ai_score_breakdown": {"type": "object", "enabled": False},
                     "ai_top_factors": {"type": "object", "enabled": False},
@@ -503,12 +610,33 @@ class ElasticClient:
                 }
             }
         }
+
+        ml_feedback_mapping = {
+            "mappings": {
+                "properties": {
+                    "feedback_id": {"type": "keyword"},
+                    "warehouse_doc_id": {"type": "keyword"},
+                    "ioc_type": {"type": "keyword"},
+                    "ioc_value": {"type": "keyword"},
+                    "current_labels": {"type": "keyword"},
+                    "expected_labels": {"type": "keyword"},
+                    "feedback_type": {"type": "keyword"},
+                    "reviewer": {"type": "keyword"},
+                    "note": {"type": "text"},
+                    "source": {"type": "keyword"},
+                    "status": {"type": "keyword"},
+                    "created_at": {"type": "date"},
+                    "updated_at": {"type": "date"},
+                }
+            }
+        }
         
         for index, mapping in [
             (self.datalake_index, datalake_mapping),
             (self.warehouse_index, warehouse_mapping),
             (PROCESSED_INDEX, processed_mapping),
             (QUARANTINE_INDEX, quarantine_mapping),
+            (ML_FEEDBACK_INDEX, ml_feedback_mapping),
         ]:
             if index == self.datalake_index and DATALAKE_READONLY:
                 logger.info("Skipping datalake index create for read-only source: %s", index)
@@ -553,6 +681,72 @@ class ElasticClient:
     def create_quarantine_index(self) -> bool:
         return self.create_indexes().get(QUARANTINE_INDEX, False)
 
+    def create_ml_feedback_index(self) -> bool:
+        return self.create_indexes().get(ML_FEEDBACK_INDEX, False)
+
+    @staticmethod
+    def _build_feedback_doc_id(feedback: Dict[str, Any]) -> str:
+        seed = "|".join(
+            [
+                str(feedback.get("warehouse_doc_id") or ""),
+                str(feedback.get("ioc_type") or ""),
+                str(feedback.get("ioc_value") or ""),
+                str(feedback.get("feedback_type") or ""),
+                str(feedback.get("created_at") or ""),
+            ]
+        )
+        return f"fb:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:32]}"
+
+    def save_ml_feedback(self, feedback: Dict[str, Any]) -> Optional[str]:
+        now = datetime.now(timezone.utc).isoformat()
+        document = copy.deepcopy(feedback)
+        document.setdefault("created_at", now)
+        document.setdefault("updated_at", now)
+        document.setdefault("status", "open")
+        doc_id = document.get("feedback_id") or self._build_feedback_doc_id(document)
+        document["feedback_id"] = doc_id
+        try:
+            self.create_ml_feedback_index()
+            client = self._get_client(ML_FEEDBACK_INDEX)
+            if ES_CLIENT_AVAILABLE and client:
+                client.index(index=ML_FEEDBACK_INDEX, id=doc_id, body=document)
+                return doc_id
+            response = httpx.put(
+                f"{self._get_url(ML_FEEDBACK_INDEX)}/{ML_FEEDBACK_INDEX}/_doc/{quote(doc_id, safe='')}",
+                json=document,
+                timeout=30,
+                headers=self._get_headers(ML_FEEDBACK_INDEX),
+            )
+            if response.status_code in (200, 201):
+                return doc_id
+            logger.error("Failed saving ML feedback: %s", response.text)
+            return None
+        except Exception as e:
+            logger.error("Failed saving ML feedback: %s", e)
+            return None
+
+    def search_ml_feedback(
+        self,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        filters: List[Dict[str, Any]] = []
+        if status:
+            filters.append({"term": {"status": status}})
+        body = {
+            "query": {"bool": {"filter": filters}} if filters else {"match_all": {}},
+            "sort": [{"created_at": {"order": "desc", "missing": "_last", "unmapped_type": "date"}}],
+            "from": offset,
+            "size": limit,
+        }
+        try:
+            self.create_ml_feedback_index()
+            return self._search_index(ML_FEEDBACK_INDEX, body)
+        except Exception as e:
+            logger.error("Failed searching ML feedback: %s", e)
+            return {"hits": {"total": {"value": 0}, "hits": []}}
+
     def _get_processed_state(self, doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         state_id = self._build_processed_state_id(doc)
         try:
@@ -565,6 +759,87 @@ class ElasticClient:
         state = self._get_processed_state(doc)
         return bool(state and state.get("status") in {"processed", "rejected", "quarantined"})
 
+    def get_processed_state_map(self, docs: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Fetch processed-state documents for a batch of source documents."""
+        ids = [self._build_processed_state_id(doc) for doc in docs]
+        if not ids:
+            return {}
+        try:
+            client = self._get_client(PROCESSED_INDEX)
+            if ES_CLIENT_AVAILABLE and client:
+                result = client.mget(index=PROCESSED_INDEX, ids=ids)
+                return {
+                    str(item.get("_id")): item.get("_source", {})
+                    for item in result.get("docs", []) or []
+                    if item.get("found")
+                }
+
+            if httpx is None:
+                return {}
+            response = httpx.post(
+                f"{self.warehouse_url}/{PROCESSED_INDEX}/_mget",
+                json={"ids": ids},
+                timeout=30,
+                headers=self._get_headers(PROCESSED_INDEX),
+            )
+            response.raise_for_status()
+            return {
+                str(item.get("_id")): item.get("_source", {})
+                for item in response.json().get("docs", []) or []
+                if item.get("found")
+            }
+        except Exception as e:
+            logger.warning("Failed to bulk-read processed state: %s", e)
+            return {}
+
+    def _pipeline_cursor_doc_id(self) -> str:
+        raw = f"cursor:{DATALAKE_SCAN_CURSOR_ID}:{self.datalake_index}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def get_datalake_scan_cursor(self) -> Optional[List[Any]]:
+        if not DATALAKE_SCAN_USE_CURSOR:
+            return None
+        try:
+            doc = self._get_document(PROCESSED_INDEX, self._pipeline_cursor_doc_id()) or {}
+            last_sort = doc.get("last_sort")
+            return last_sort if isinstance(last_sort, list) and last_sort else None
+        except Exception as e:
+            logger.warning("Failed to read datalake scan cursor: %s", e)
+            return None
+
+    def save_datalake_scan_cursor(self, last_sort: Optional[List[Any]]) -> bool:
+        if not DATALAKE_SCAN_USE_CURSOR:
+            return True
+        now = datetime.now(timezone.utc).isoformat()
+        doc_id = self._pipeline_cursor_doc_id()
+        body = {
+            "source_index": self.datalake_index,
+            "source_doc_id": doc_id,
+            "source_fingerprint": doc_id,
+            "status": "cursor",
+            "adapter_name": "pipeline_cursor",
+            "last_sort": last_sort or [],
+            "last_attempt_at": now,
+            "processed_at": None,
+        }
+        try:
+            client = self._get_client(PROCESSED_INDEX)
+            if ES_CLIENT_AVAILABLE and client:
+                client.index(index=PROCESSED_INDEX, id=doc_id, body=body)
+                return True
+            if httpx is None:
+                return False
+            response = httpx.put(
+                f"{self.warehouse_url}/{PROCESSED_INDEX}/_doc/{quote(doc_id, safe='')}",
+                json=body,
+                timeout=10,
+                headers=self._get_headers(PROCESSED_INDEX),
+            )
+            return response.status_code in (200, 201)
+        except Exception as e:
+            logger.warning("Failed to save datalake scan cursor: %s", e)
+            return False
+
     def mark_source_state(
         self,
         doc: Dict[str, Any],
@@ -573,25 +848,13 @@ class ElasticClient:
         error: Optional[str] = None,
     ) -> bool:
         now = datetime.now(timezone.utc).isoformat()
-        state_id = self._build_processed_state_id(doc)
-        source_doc_id = str(doc.get("_id") or "")
-        source_index = str(doc.get("_index") or self.datalake_index)
-        state_doc = {
-            "source_index": source_index,
-            "source_doc_id": source_doc_id,
-            "source_fingerprint": state_id,
-            "ioc_type": ElasticClient.normalize_ioc_type(doc.get("ioc_type")),
-            "ioc_value": ElasticClient.normalize_ioc_value(doc.get("ioc_value")),
-            "canonical_ioc_key": ElasticClient.canonical_ioc_key(doc) if doc.get("ioc_value") else None,
-            "original_ioc_type": doc.get("original_ioc_type") or doc.get("ioc_type"),
-            "original_ioc_value": doc.get("original_ioc_value") or doc.get("ioc_value"),
-            "warehouse_doc_id": warehouse_doc_id,
-            "status": status,
-            "last_attempt_at": now,
-            "processed_at": now if status in {"processed", "rejected", "quarantined"} else None,
-            "error": error,
-            "adapter_name": doc.get("adapter_name"),
-        }
+        state_id, state_doc = self._build_source_state_doc(
+            doc,
+            status=status,
+            warehouse_doc_id=warehouse_doc_id,
+            error=error,
+            now=now,
+        )
 
         try:
             existing = self._get_document(PROCESSED_INDEX, state_id)
@@ -617,6 +880,68 @@ class ElasticClient:
         except Exception as e:
             logger.error("Failed to mark processed state for %s: %s", state_id, e)
             return False
+
+    def _build_source_state_doc(
+        self,
+        doc: Dict[str, Any],
+        *,
+        status: str,
+        warehouse_doc_id: Optional[str] = None,
+        error: Optional[str] = None,
+        now: Optional[str] = None,
+    ) -> tuple[str, Dict[str, Any]]:
+        now = now or datetime.now(timezone.utc).isoformat()
+        state_id = self._build_processed_state_id(doc)
+        source_doc_id = str(doc.get("_id") or "")
+        source_index = str(doc.get("_index") or self.datalake_index)
+        return state_id, {
+            "source_index": source_index,
+            "source_doc_id": source_doc_id,
+            "source_fingerprint": state_id,
+            "ioc_type": ElasticClient.normalize_ioc_type(doc.get("ioc_type")),
+            "ioc_value": ElasticClient.normalize_ioc_value(doc.get("ioc_value")),
+            "canonical_ioc_key": ElasticClient.canonical_ioc_key(doc) if doc.get("ioc_value") else None,
+            "original_ioc_type": doc.get("original_ioc_type") or doc.get("ioc_type"),
+            "original_ioc_value": doc.get("original_ioc_value") or doc.get("ioc_value"),
+            "warehouse_doc_id": warehouse_doc_id,
+            "status": status,
+            "first_seen_at": now,
+            "last_attempt_at": now,
+            "processed_at": now if status in {"processed", "rejected", "quarantined"} else None,
+            "attempt_count": 1,
+            "error": error,
+            "adapter_name": doc.get("adapter_name"),
+        }
+
+    def bulk_mark_source_states(
+        self,
+        items: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Mark many source records in the processed-state index in one bulk call."""
+        now = datetime.now(timezone.utc).isoformat()
+        operations: List[Dict[str, Any]] = []
+        for item in items:
+            state_id, state_doc = self._build_source_state_doc(
+                item["doc"],
+                status=item["status"],
+                warehouse_doc_id=item.get("warehouse_doc_id"),
+                error=item.get("error"),
+                now=now,
+            )
+            operations.append({
+                "action": {"index": {"_index": PROCESSED_INDEX, "_id": state_id}},
+                "source": state_doc,
+            })
+        try:
+            return self._bulk_request_chunked(PROCESSED_INDEX, operations)
+        except Exception as e:
+            logger.error("Bulk processed-state write failed: %s", e)
+            failed_ids = [
+                doc_id
+                for doc_id in (self._bulk_operation_id(operation) for operation in operations)
+                if doc_id
+            ]
+            return {"success": 0, "failed": len(failed_ids), "failed_ids": failed_ids}
 
     def save_quarantine(self, doc: Dict[str, Any], reason: Optional[str] = None) -> bool:
         now = datetime.now(timezone.utc).isoformat()
@@ -676,38 +1001,52 @@ class ElasticClient:
 
     def _get_unprocessed_iocs_from_readonly_feed(self, limit: int) -> List[Dict[str, Any]]:
         documents: List[Dict[str, Any]] = []
-        batch_size = max(limit, DATALAKE_SCAN_BATCH_SIZE)
-        offset = 0
+        batch_size = max(DATALAKE_SCAN_BATCH_SIZE, min(limit, 1000))
+        search_after = self.get_datalake_scan_cursor()
 
         for _ in range(max(1, DATALAKE_SCAN_MAX_PAGES)):
             query = {
                 "query": {"match_all": {}},
-                "sort": [{"_doc": {"order": "asc"}}],
-                "from": offset,
+                "sort": [
+                    {"event_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}},
+                    {"collect_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}},
+                    {"_doc": {"order": "asc"}},
+                ],
                 "size": batch_size,
             }
+            if search_after:
+                query["search_after"] = search_after
 
             try:
                 logger.info("Searching read-only datalake with query: %s", query)
                 result = self._search_index(self.datalake_index, query)
                 hits = result["hits"]["hits"]
-                logger.info("Found %s hits in read-only datalake page offset=%s", len(hits), offset)
+                logger.info("Found %s hits in read-only datalake page search_after=%s", len(hits), search_after)
             except Exception as e:
                 logger.error(f"Failed to get read-only datalake IOCs: {e}")
                 return documents
 
             if not hits:
+                if search_after:
+                    self.save_datalake_scan_cursor(None)
                 return documents
 
-            for hit in hits:
-                doc = self._normalize_datalake_hit(hit)
-                if self.is_source_processed(doc):
+            last_sort = hits[-1].get("sort")
+            search_after = last_sort if isinstance(last_sort, list) else None
+            if search_after:
+                self.save_datalake_scan_cursor(search_after)
+
+            normalized_page = [self._normalize_datalake_hit(hit) for hit in hits]
+            processed_state = self.get_processed_state_map(normalized_page)
+            finished_statuses = {"processed", "rejected", "quarantined"}
+            for doc in normalized_page:
+                state_id = self._build_processed_state_id(doc)
+                state = processed_state.get(state_id)
+                if state and state.get("status") in finished_statuses:
                     continue
                 documents.append(doc)
                 if len(documents) >= limit:
                     return documents
-
-            offset += len(hits)
 
         logger.warning(
             "Reached DATALAKE_SCAN_MAX_PAGES=%s before collecting %s unprocessed docs",
@@ -768,8 +1107,8 @@ class ElasticClient:
                 }
             } if filters else {"match_all": {}},
             "sort": [
-                {"event_time": {"order": "asc", "missing": "_last"}},
-                {"collect_time": {"order": "asc", "missing": "_last"}}
+                {"event_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}},
+                {"collect_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}}
             ],
             "from": offset,
             "size": limit
@@ -869,6 +1208,32 @@ class ElasticClient:
         except Exception as e:
             logger.error(f"Failed to save to warehouse: {e}")
             return None
+
+    def bulk_save_to_warehouse(self, items: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        """Save many warehouse documents in one bulk request.
+
+        Each item can provide a precomputed ``doc_id`` and ``document``.  The
+        document is still passed through the same warehouse preparation path as
+        single-document writes.
+        """
+        operations: List[Dict[str, Any]] = []
+        for item in items:
+            warehouse_doc = self._prepare_warehouse_document(dict(item["document"]))
+            doc_id = str(item.get("doc_id") or self._build_warehouse_doc_id(warehouse_doc))
+            operations.append({
+                "action": {"index": {"_index": self.warehouse_index, "_id": doc_id}},
+                "source": warehouse_doc,
+            })
+        try:
+            return self._bulk_request_chunked(self.warehouse_index, operations)
+        except Exception as e:
+            logger.error("Bulk warehouse write failed: %s", e)
+            failed_ids = [
+                doc_id
+                for doc_id in (self._bulk_operation_id(operation) for operation in operations)
+                if doc_id
+            ]
+            return {"success": 0, "failed": len(failed_ids), "failed_ids": failed_ids}
 
     def bulk_index_datalake(self, documents: List[Dict]) -> Dict[str, int]:
         success = 0

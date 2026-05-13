@@ -15,7 +15,9 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import (
+    LABEL_MAPPING,
     THREAT_LABELS,
+    THREAT_TYPE_SEVERITY,
     SECTOR_LABELS,
     SECTOR_LABEL_MAPPING,
     SECTOR_CONFIDENCE_THRESHOLD,
@@ -31,6 +33,33 @@ def _make_zero_shot_result(labels_scores: list[tuple[str, float]]) -> dict:
         "labels": [l for l, _ in labels_scores],
         "scores": [s for _, s in labels_scores],
     }
+
+
+def test_threat_labels_cover_current_datalake_news_taxonomy():
+    expected_labels = {
+        "ransomware": "Ransomware",
+        "phishing": "Phishing",
+        "data breach": "Data Breach",
+        "supply chain attack": "Supply Chain Attack",
+        "zero-day exploit": "Zero-day Exploit",
+        "APT": "APT",
+    }
+
+    for raw_label, mapped_label in expected_labels.items():
+        assert raw_label in THREAT_LABELS
+        assert LABEL_MAPPING[raw_label] == mapped_label
+        assert mapped_label in THREAT_TYPE_SEVERITY
+
+    rule_only_labels = {
+        "Malware",
+        "Credential Theft",
+        "Exploited Vulnerability",
+        "Remote Code Execution",
+        "Defacement",
+    }
+    assert not any(raw in THREAT_LABELS for raw in {"malware", "credential theft", "exploited vulnerability", "remote code execution", "defacement"})
+    for mapped_label in rule_only_labels:
+        assert mapped_label in THREAT_TYPE_SEVERITY
 
 
 class TestClassifyThreatReturnsSectorClassifications:

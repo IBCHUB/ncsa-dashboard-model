@@ -121,6 +121,41 @@ def _unique(values: List[Any]) -> List[str]:
     return result
 
 
+def _infer_external_source_type(raw: Dict[str, Any], source_name: str, source_index: str) -> str:
+    explicit = _as_text(raw.get("source_type")).lower()
+    if explicit:
+        return explicit
+
+    source_key = f"{source_name} {source_index}".lower()
+    if any(marker in source_key for marker in ("bleepingcomputer", "thehackernews", "hacker news", "darkreading")):
+        return "news"
+    if "sandbox" in source_key:
+        return "sandbox"
+    if "zone-h" in source_key or "zoneh" in source_key:
+        return "external-feed"
+    return "external-feed"
+
+
+def _sanitize_malware_family(value: Any) -> Optional[str]:
+    family = _as_text(value)
+    if not family:
+        return None
+    lowered = family.lower()
+    invalid_markers = (
+        "read more",
+        "http://",
+        "https://",
+        "threatcloud intelligence",
+        "click here",
+        "learn more",
+    )
+    if any(marker in lowered for marker in invalid_markers):
+        return None
+    if len(family) > 80:
+        return None
+    return family
+
+
 def _compact_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
     return {
         key: value
@@ -252,14 +287,15 @@ def extract_sandbox_evidence(raw: Dict[str, Any]) -> Dict[str, Any]:
     suspicious = raw.get("suspicious_activities")
     if not isinstance(suspicious, list):
         suspicious = []
+    malware_family = _sanitize_malware_family(raw.get("malware_family"))
     evidence = {
         "evidence_type": "sandbox",
-        "external_evidence_sources": ["Sandbox"] if raw.get("verdict") or raw.get("malware_family") else [],
-        "source_malware_family": raw.get("malware_family"),
+        "external_evidence_sources": ["Sandbox"] if raw.get("verdict") or malware_family else [],
+        "source_malware_family": malware_family,
         "sandbox_verdict": raw.get("verdict"),
         "sandbox_state": raw.get("state"),
         "sandbox_suspicious_activities": suspicious[:25],
-        "source_threat_types": [raw.get("malware_family")] if raw.get("malware_family") else [],
+        "source_threat_types": [malware_family] if malware_family else [],
     }
     return _compact_evidence(evidence)
 
@@ -390,6 +426,9 @@ def _existing_canonical_adapter(hit: Dict[str, Any], normalize_type, normalize_v
 
     original_type = raw.get("ioc_type")
     original_value = raw.get("ioc_value")
+    detected_activity = _as_text(raw.get("detected_activity"))
+    raw_threat_types = _unique(_as_list(raw.get("threat_type")) + ([detected_activity] if detected_activity else []))
+    source_type = raw.get("source_type") or ("customer-datalake" if detected_activity else "canonical")
     return _finalize(
         hit,
         raw,
@@ -399,11 +438,11 @@ def _existing_canonical_adapter(hit: Dict[str, Any], normalize_type, normalize_v
         normalize_type,
         normalize_value,
         source_name=raw.get("source_name") or raw.get("ref_doc_index") or "tcti-feeds",
-        source_type=raw.get("source_type") or "canonical",
+        source_type=source_type,
         description=raw.get("description") or "",
-        threat_type=raw.get("threat_type") or [],
+        threat_type=raw_threat_types,
         severity=raw.get("severity") or _normalize_severity(raw.get("severity_score")),
-        tags=raw.get("tags") or [],
+        tags=_unique(_as_list(raw.get("tags")) + ([detected_activity] if detected_activity else [])),
         reference=raw.get("reference") or raw.get("ref_doc_id") or raw.get("doc_hash") or "",
         collect_time=raw.get("collect_time") or raw.get("@timestamp") or raw.get("processed_at"),
         event_time=raw.get("event_time") or raw.get("observation_date") or raw.get("@timestamp") or raw.get("processed_at"),
@@ -511,6 +550,8 @@ def _legacy_external_adapter(hit: Dict[str, Any], normalize_type, normalize_valu
     geo_ip = enrichment.get("geo_ip") if isinstance(enrichment.get("geo_ip"), dict) else {}
     title = _as_text(first_source.get("title") or raw.get("title"))
     description = _as_text(first_source.get("description") or raw.get("description"))
+    source_name = first_source.get("name") or raw.get("source_name") or raw.get("ref_doc_index") or "tcti-feeds"
+    source_type = _infer_external_source_type(raw, _as_text(source_name), _as_text(hit.get("_index")))
     evidence = _merge_evidence(
         extract_virustotal_evidence(enrichment),
         extract_cyberint_evidence(enrichment),
@@ -529,8 +570,8 @@ def _legacy_external_adapter(hit: Dict[str, Any], normalize_type, normalize_valu
         ioc.get("value"),
         normalize_type,
         normalize_value,
-        source_name=first_source.get("name") or raw.get("source_name") or raw.get("ref_doc_index") or "tcti-feeds",
-        source_type=raw.get("source_type") or "external-feed",
+        source_name=source_name,
+        source_type=source_type,
         description="\n".join(part for part in [title, description] if part),
         threat_type=_unique(_as_list(raw.get("threat_type")) + _as_list(evidence.get("source_threat_types"))),
         severity=raw.get("severity") or "low",

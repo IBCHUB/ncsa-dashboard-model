@@ -25,9 +25,11 @@ def evaluate_validation_status(
     ioc_type: str,
     score_result: Dict[str, Any],
     ai_confidence: float,
-    sanitization_summary: Dict[str, Any] | None = None
+    sanitization_summary: Dict[str, Any] | None = None,
+    validation_context: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     sanitization_summary = sanitization_summary or {}
+    validation_context = validation_context or {}
 
     breakdown = score_result.get("breakdown", {})
     source_quality = breakdown.get("source_quality", {})
@@ -44,6 +46,24 @@ def evaluate_validation_status(
     policy_triggered = bool(policy_gate.get("triggered", False))
     is_private_ip = _is_private_ip_indicator(ioc_type, ioc_value)
     normalized_ioc_type = str(ioc_type or "").strip().lower()
+    classification_mode = str(validation_context.get("classification_mode") or "").strip().lower()
+    source_types = {
+        str(item or "").strip().lower()
+        for item in validation_context.get("source_types", []) or []
+        if str(item or "").strip()
+    }
+    threat_types = {
+        str(item or "").strip()
+        for item in validation_context.get("ai_threat_types", []) or []
+        if str(item or "").strip()
+    }
+    evidence_sources = {
+        str(item or "").strip()
+        for item in validation_context.get("external_evidence_sources", []) or []
+        if str(item or "").strip()
+    }
+    actionable = bool(validation_context.get("source_actionable"))
+    has_meaningful_threat_type = bool(threat_types - {"Other"})
 
     reasons: List[str] = []
     if not str(ioc_value or "").strip():
@@ -79,11 +99,44 @@ def evaluate_validation_status(
         or confidence >= 0.60  # single news source ผ่านได้ถ้า AI confidence สูงพอ
     ) if curated_editorial_signal else False
 
+    internal_rule_signal = (
+        classification_mode == "source_rule" and
+        bool(source_types & {"customer-datalake", "misp", "sandbox"}) and
+        has_meaningful_threat_type and
+        confidence >= 0.50 and
+        risk_score >= 10
+    )
+
+    evidence_backed_signal = (
+        bool(evidence_sources) and
+        has_meaningful_threat_type and
+        (trusted >= 1 or actionable or confidence >= 0.50) and
+        risk_score >= 20
+    )
+
+    curated_context_rule_signal = (
+        classification_mode == "source_rule" and
+        news >= 1 and
+        trusted == 0 and
+        other == 0 and
+        has_meaningful_threat_type and
+        not is_private_ip and
+        (
+            source_count >= 2 or
+            confidence >= 0.50 or
+            normalized_ioc_type == "cve" or
+            bool(threat_types & {"Remote Code Execution", "Exploited Vulnerability"})
+        )
+    )
+
     rejected = (
         "missing_ioc_value" in reasons or
         "missing_source_observations" in reasons or
         (
             not curated_editorial_auto_validated and
+            not internal_rule_signal and
+            not evidence_backed_signal and
+            not curated_context_rule_signal and
             trusted == 0 and
             source_count <= 1 and
             confidence < 0.2 and
@@ -93,15 +146,24 @@ def evaluate_validation_status(
 
     auto_validated = (
         not rejected and
-        (trusted >= 1 or curated_editorial_auto_validated) and
-        not policy_triggered and
-        (confidence >= 0.45 or curated_editorial_auto_validated) and
+        (
+            trusted >= 1 or
+            curated_editorial_auto_validated or
+            internal_rule_signal or
+            evidence_backed_signal or
+            curated_context_rule_signal
+        ) and
+        (not policy_triggered or internal_rule_signal or evidence_backed_signal or curated_context_rule_signal) and
+        (confidence >= 0.45 or curated_editorial_auto_validated or internal_rule_signal or evidence_backed_signal or curated_context_rule_signal) and
         not is_private_ip and
         (
             risk_score >= 25 or
             source_count >= 2 or
             source_diversity >= 2 or
-            curated_editorial_auto_validated
+            curated_editorial_auto_validated or
+            internal_rule_signal or
+            evidence_backed_signal or
+            curated_context_rule_signal
         )
     )
 
@@ -121,5 +183,11 @@ def evaluate_validation_status(
         "source_count": source_count,
         "source_diversity": source_diversity,
         "policy_gate_triggered": policy_triggered,
-        "ai_confidence": round(confidence, 3)
+        "ai_confidence": round(confidence, 3),
+        "auto_validation_basis": {
+            "curated_editorial": curated_editorial_auto_validated,
+            "internal_rule": internal_rule_signal,
+            "evidence_backed": evidence_backed_signal,
+            "curated_context_rule": curated_context_rule_signal,
+        },
     }

@@ -22,9 +22,13 @@ from elastic_client import ElasticClient
 from models.scorer import calculate_risk_score
 from models.validation import evaluate_validation_status
 from pipeline_classification_policy import (
+    build_ml_classifier_input,
     build_rule_classification,
     build_skipped_classification,
     decide_classification_mode,
+    detect_context_rule_threat_types,
+    map_rule_threat_types,
+    strict_ml_classification,
 )
 from utils.sanitizer import sanitize_observation_fields
 
@@ -237,22 +241,41 @@ def classify_pipeline_context(
 ) -> Dict[str, Any]:
     """Classify an IOC using ML only when the policy says it is useful."""
     start = time.time()
+    ml_input = classifier_input
+    context_rule_threat_types = detect_context_rule_threat_types(classifier_input)
+    effective_threat_types_raw = _unique_non_empty(
+        list(threat_types_raw) + context_rule_threat_types
+    )
     decision = decide_classification_mode(
         source_types=source_types,
         adapter_names=adapter_names,
-        threat_types_raw=threat_types_raw,
+        threat_types_raw=effective_threat_types_raw,
         classifier_input=classifier_input,
     )
 
-    if decision.mode == "ml":
-        classification = classify_threat(classifier_input)
-    elif decision.mode == "source_rule":
+    if context_rule_threat_types:
         classification = build_rule_classification(
-            threat_types_raw=threat_types_raw,
+            threat_types_raw=effective_threat_types_raw,
             ioc_docs=ioc_docs,
         )
+        classification_mode = "source_rule"
+        classification_reason = "context_rule_threat_metadata"
+    elif decision.mode == "ml":
+        ml_input = build_ml_classifier_input(classifier_input)
+        classification = strict_ml_classification(classify_threat(ml_input))
+        classification_mode = decision.mode
+        classification_reason = decision.reason
+    elif decision.mode == "source_rule":
+        classification = build_rule_classification(
+            threat_types_raw=effective_threat_types_raw,
+            ioc_docs=ioc_docs,
+        )
+        classification_mode = decision.mode
+        classification_reason = decision.reason
     else:
         classification = build_skipped_classification()
+        classification_mode = decision.mode
+        classification_reason = decision.reason
 
     # These extractors are rule/keyword-based and inexpensive compared with ML.
     threat_actors = extract_threat_actors(classifier_input)
@@ -263,10 +286,12 @@ def classify_pipeline_context(
         "classification": classification,
         "threat_actors": threat_actors,
         "mitre_techniques": mitre_techniques,
-        "classification_mode": decision.mode,
-        "classification_reason": decision.reason,
+        "classification_mode": classification_mode,
+        "classification_reason": classification_reason,
         "classifier_input_chars": decision.classifier_input_chars,
+        "classifier_effective_input_chars": len(ml_input) if classification_mode == "ml" else decision.classifier_input_chars,
         "classification_time_ms": elapsed_ms,
+        "context_rule_threat_types": context_rule_threat_types,
     }
 
 
@@ -463,8 +488,9 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
     source_threat_actors = _unique_non_empty(source_threat_actors)
     source_mitre_techniques = _unique_non_empty(source_mitre_techniques)
     source_threat_types = _unique_non_empty(threat_types_raw)
+    mapped_source_threat_types = map_rule_threat_types(source_threat_types) if source_threat_types else []
     classification_threat_types = _unique_non_empty(
-        list(classification["threat_types"]) + source_threat_types
+        list(classification["threat_types"]) + mapped_source_threat_types
     )
     threat_actors = _unique_non_empty(
         list(classification_result["threat_actors"]) + source_threat_actors
@@ -495,6 +521,14 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         score_result=score_result,
         ai_confidence=classification["confidence"],
         sanitization_summary=sanitization_summary,
+        validation_context={
+            "classification_mode": classification_result["classification_mode"],
+            "classification_reason": classification_result["classification_reason"],
+            "source_types": source_types,
+            "ai_threat_types": classification_threat_types,
+            "external_evidence_sources": evidence_source_names,
+            "source_actionable": source_actionable,
+        },
     )
 
     document = {
@@ -540,6 +574,7 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "classification_mode": classification_result["classification_mode"],
         "classification_reason": classification_result["classification_reason"],
         "classifier_input_chars": classification_result["classifier_input_chars"],
+        "classifier_effective_input_chars": classification_result["classifier_effective_input_chars"],
         "classification_time_ms": classification_result["classification_time_ms"],
         "ai_score_breakdown": score_result.get("breakdown", {}),
         "ai_top_factors": score_result.get("top_factors", []),

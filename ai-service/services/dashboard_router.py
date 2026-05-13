@@ -291,6 +291,17 @@ class BulkNotificationReadRequest(BaseModel):
     type: Optional[str] = None
 
 
+class MLFeedbackRequest(BaseModel):
+    warehouse_doc_id: Optional[str] = None
+    ioc_type: str = Field(..., min_length=1)
+    ioc_value: str = Field(..., min_length=1)
+    current_labels: List[str] = Field(default_factory=list)
+    expected_labels: List[str] = Field(default_factory=list)
+    feedback_type: str = Field(default="wrong_label", pattern="^(wrong_label|missing_label|false_positive|false_negative|other)$")
+    note: Optional[str] = None
+    source: str = "dashboard"
+
+
 def _meta(**extra: Any) -> Dict[str, Any]:
     return {
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -655,7 +666,10 @@ def _search_datalake_docs(
         filters=filters,
         limit=limit,
         offset=offset,
-        sort=[{"event_time": {"order": "desc", "missing": "_last"}}, {"collect_time": {"order": "desc", "missing": "_last"}}],
+        sort=[
+            {"event_time": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
+            {"collect_time": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
+        ],
         fields=["ioc_value^3", "description", "reference", "source_name", "threat_type"],
     )
 
@@ -3536,3 +3550,30 @@ def mark_all_notifications_read(payload: Optional[BulkNotificationReadRequest] =
     notification_type = payload.type if payload else None
     result = get_dashboard_state().mark_all_notifications_read(notification_type=notification_type)
     return _success(result)
+
+
+@router.post("/ml/feedback", tags=["ML Feedback"], status_code=201)
+def create_ml_feedback(request: MLFeedbackRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+    reviewer = str(current_user.get("email") or current_user.get("name") or current_user.get("user_id") or "unknown")
+    payload = request.model_dump()
+    payload["reviewer"] = reviewer
+    feedback_id = get_elastic_client().save_ml_feedback(payload)
+    if not feedback_id:
+        raise HTTPException(status_code=500, detail="Failed to save ML feedback")
+    return _success({"feedback_id": feedback_id, "status": "open"})
+
+
+@router.get("/ml/feedback", tags=["ML Feedback"])
+def list_ml_feedback(
+    page: int = 1,
+    page_size: int = 20,
+    status: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    offset = max(page - 1, 0) * page_size
+    result = get_elastic_client().search_ml_feedback(status=status, limit=page_size, offset=offset)
+    hits = result.get("hits", {})
+    total_raw = hits.get("total", 0)
+    total = total_raw.get("value", 0) if isinstance(total_raw, dict) else int(total_raw or 0)
+    items = _hits_to_docs(result)
+    return _paged({"items": items}, page=page, page_size=page_size, total=total)
