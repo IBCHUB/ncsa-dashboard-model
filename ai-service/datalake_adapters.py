@@ -83,6 +83,20 @@ def _extract_threats_from_tags(tags: List[str]) -> List[str]:
     return threats
 
 
+def _extract_misp_galaxy_value(tag: str, galaxy: str) -> Optional[str]:
+    pattern = rf'misp-galaxy:{re.escape(galaxy)}="([^"]+)"'
+    match = re.search(pattern, tag, flags=re.IGNORECASE)
+    return match.group(1).strip() if match else None
+
+
+def _extract_risk_score_from_tags(tags: List[str]) -> Optional[int]:
+    for tag in tags:
+        match = re.search(r"risk-score:(\d+)", tag, flags=re.IGNORECASE)
+        if match:
+            return max(0, min(100, _parse_int(match.group(1), 0)))
+    return None
+
+
 def _confidence_from_tags(tags: List[str]) -> int:
     for tag in tags:
         lowered = tag.lower()
@@ -93,6 +107,241 @@ def _confidence_from_tags(tags: List[str]) -> int:
         if lowered == "confidence:low":
             return 20
     return 0
+
+
+def _unique(values: List[Any]) -> List[str]:
+    seen = set()
+    result: List[str] = []
+    for value in values:
+        cleaned = _as_text(value)
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+    return result
+
+
+def _compact_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in evidence.items()
+        if value not in (None, "", [], {}, False)
+    }
+
+
+def _flatten_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "source_evidence": evidence,
+        "source_risk_score": evidence.get("source_risk_score"),
+        "source_actionable": bool(evidence.get("source_actionable", False)),
+        "external_evidence_sources": evidence.get("external_evidence_sources", []),
+        "virustotal_malicious": evidence.get("virustotal_malicious"),
+        "virustotal_suspicious": evidence.get("virustotal_suspicious"),
+        "related_doc_count": evidence.get("related_doc_count", 0),
+        "source_campaigns": evidence.get("source_campaigns", []),
+        "source_target_countries": evidence.get("source_target_countries", []),
+        "source_malware_family": evidence.get("source_malware_family"),
+        "source_threat_actors": evidence.get("source_threat_actors", []),
+        "source_mitre_techniques": evidence.get("source_mitre_techniques", []),
+        "source_threat_types": evidence.get("source_threat_types", []),
+    }
+
+
+def extract_misp_evidence(raw: Dict[str, Any], tags: Optional[List[str]] = None) -> Dict[str, Any]:
+    tags = tags if tags is not None else _tag_names(raw)
+    event = raw.get("Event") if isinstance(raw.get("Event"), dict) else {}
+    threat_level = event.get("ThreatLevel") if isinstance(event.get("ThreatLevel"), dict) else {}
+    actors: List[str] = []
+    sectors: List[str] = []
+    target_countries: List[str] = []
+    for tag in tags:
+        actor = _extract_misp_galaxy_value(tag, "threat-actor")
+        sector = _extract_misp_galaxy_value(tag, "sector")
+        target = _extract_misp_galaxy_value(tag, "target-information")
+        if actor:
+            actors.append(actor)
+        if sector:
+            sectors.append(sector)
+        if target:
+            target_countries.append(target)
+
+    risk_score = _extract_risk_score_from_tags(tags)
+    confidence = _confidence_from_tags(tags)
+    evidence = {
+        "evidence_type": "misp",
+        "external_evidence_sources": ["MISP"],
+        "source_risk_score": risk_score,
+        "source_actionable": bool(raw.get("to_ids", False)),
+        "source_confidence": confidence or risk_score,
+        "misp_category": raw.get("category"),
+        "misp_threat_level": threat_level.get("name"),
+        "source_threat_types": _extract_threats_from_tags(tags),
+        "source_threat_actors": _unique(actors),
+        "source_sectors": _unique(sectors),
+        "source_target_countries": _unique(target_countries),
+        "raw_tags": tags,
+    }
+    return _compact_evidence(evidence)
+
+
+def extract_virustotal_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
+    vt = enrichment.get("virustotal") if isinstance(enrichment.get("virustotal"), dict) else {}
+    attributes = vt.get("attributes") if isinstance(vt.get("attributes"), dict) else {}
+    stats = attributes.get("last_analysis_stats") if isinstance(attributes.get("last_analysis_stats"), dict) else {}
+    if not stats:
+        return {}
+    malicious = _parse_int(stats.get("malicious"), 0)
+    suspicious = _parse_int(stats.get("suspicious"), 0)
+    harmless = _parse_int(stats.get("harmless"), 0)
+    undetected = _parse_int(stats.get("undetected"), 0)
+    sources = ["VirusTotal"] if malicious > 0 or suspicious > 0 else []
+    evidence = {
+        "evidence_type": "virustotal",
+        "external_evidence_sources": sources,
+        "virustotal_malicious": malicious,
+        "virustotal_suspicious": suspicious,
+        "virustotal_harmless": harmless,
+        "virustotal_undetected": undetected,
+        "virustotal_reputation": attributes.get("reputation"),
+        "virustotal_meaningful_name": attributes.get("meaningful_name"),
+    }
+    return _compact_evidence(evidence)
+
+
+def extract_cyberint_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
+    cyberint = enrichment.get("cyberint") if isinstance(enrichment.get("cyberint"), dict) else {}
+    if not cyberint:
+        return {}
+    source_indicators = cyberint.get("source_indicators")
+    if not isinstance(source_indicators, list):
+        source_indicators = []
+    risk = cyberint.get("risk")
+    evidence = {
+        "evidence_type": "cyberint_enrichment",
+        "external_evidence_sources": ["Cyberint"] if risk is not None else [],
+        "source_risk_score": _parse_int(risk, 0) if risk is not None else None,
+        "source_confidence": _parse_int(risk, 0) if risk is not None else None,
+        "cyberint_ref": cyberint.get("ref"),
+        "cyberint_source_indicator_count": len(source_indicators),
+    }
+    return _compact_evidence(evidence)
+
+
+def extract_correlation_evidence(raw: Dict[str, Any]) -> Dict[str, Any]:
+    correlations = raw.get("correlations") if isinstance(raw.get("correlations"), dict) else {}
+    related_docs = correlations.get("related_docs") if isinstance(correlations.get("related_docs"), list) else []
+    related_iocs: List[str] = []
+    related_types: List[str] = []
+    for related in related_docs:
+        if not isinstance(related, dict):
+            continue
+        if related.get("original_ioc"):
+            related_iocs.append(related["original_ioc"])
+        if related.get("type"):
+            related_types.append(related["type"])
+    evidence = {
+        "evidence_type": "correlation",
+        "related_doc_count": len(related_docs),
+        "related_iocs": _unique(related_iocs[:50]),
+        "related_ioc_types": _unique(related_types),
+    }
+    return _compact_evidence(evidence)
+
+
+def extract_sandbox_evidence(raw: Dict[str, Any]) -> Dict[str, Any]:
+    suspicious = raw.get("suspicious_activities")
+    if not isinstance(suspicious, list):
+        suspicious = []
+    evidence = {
+        "evidence_type": "sandbox",
+        "external_evidence_sources": ["Sandbox"] if raw.get("verdict") or raw.get("malware_family") else [],
+        "source_malware_family": raw.get("malware_family"),
+        "sandbox_verdict": raw.get("verdict"),
+        "sandbox_state": raw.get("state"),
+        "sandbox_suspicious_activities": suspicious[:25],
+        "source_threat_types": [raw.get("malware_family")] if raw.get("malware_family") else [],
+    }
+    return _compact_evidence(evidence)
+
+
+def _merge_evidence(*items: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {
+        "external_evidence_sources": [],
+        "source_threat_types": [],
+        "source_threat_actors": [],
+        "source_mitre_techniques": [],
+        "source_campaigns": [],
+        "source_target_countries": [],
+        "source_sectors": [],
+    }
+    raw_items = []
+    for item in items:
+        if not item:
+            continue
+        raw_items.append(item)
+        for key in (
+            "external_evidence_sources",
+            "source_threat_types",
+            "source_threat_actors",
+            "source_mitre_techniques",
+            "source_campaigns",
+            "source_target_countries",
+            "source_sectors",
+        ):
+            merged[key].extend(_as_list(item.get(key)))
+        for key in (
+            "source_risk_score",
+            "source_confidence",
+            "virustotal_malicious",
+            "virustotal_suspicious",
+            "virustotal_harmless",
+            "virustotal_undetected",
+            "related_doc_count",
+        ):
+            if item.get(key) is None:
+                continue
+            current = merged.get(key)
+            if key == "related_doc_count":
+                merged[key] = _parse_int(current, 0) + _parse_int(item.get(key), 0)
+            else:
+                merged[key] = max(_parse_int(current, 0), _parse_int(item.get(key), 0))
+        if item.get("source_actionable"):
+            merged["source_actionable"] = True
+        for key in ("source_malware_family", "sandbox_verdict", "sandbox_state", "virustotal_meaningful_name"):
+            if not merged.get(key) and item.get(key):
+                merged[key] = item.get(key)
+    for key, value in list(merged.items()):
+        if isinstance(value, list):
+            merged[key] = _unique(value)
+    if raw_items:
+        merged["raw_evidence"] = raw_items
+    return _compact_evidence(merged)
+
+
+def _extract_summary_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
+    summary = enrichment.get("summary") if isinstance(enrichment.get("summary"), dict) else {}
+    if not summary:
+        return {}
+    evidence = {
+        "evidence_type": "enrichment_summary",
+        "source_threat_actors": _as_list(summary.get("actor_groups")),
+        "source_campaigns": _as_list(summary.get("campaign_names")),
+        "source_target_countries": _as_list(summary.get("countries")),
+    }
+    return _compact_evidence(evidence)
+
+
+def _extract_mitre_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
+    mitre = enrichment.get("mitre") if isinstance(enrichment.get("mitre"), dict) else {}
+    if not mitre:
+        return {}
+    technique = " ".join(part for part in [_as_text(mitre.get("external_id")), _as_text(mitre.get("name"))] if part)
+    evidence = {
+        "evidence_type": "mitre",
+        "source_mitre_techniques": [technique] if technique else [],
+        "mitre_tactics": _as_list(mitre.get("tactics")),
+    }
+    return _compact_evidence(evidence)
 
 
 def _raw_fingerprint(raw: Dict[str, Any]) -> str:
@@ -215,6 +464,8 @@ def _misp_attribute_adapter(hit: Dict[str, Any], normalize_type, normalize_value
     description = "\n".join(part for part in [event_info, comment] if part)
     event_time = raw.get("first_seen") or _epoch_to_iso(raw.get("timestamp")) or raw.get("@timestamp")
     collect_time = raw.get("@timestamp") or raw.get("last_seen") or event_time
+    evidence = extract_misp_evidence(raw, tags)
+    confidence = evidence.get("source_confidence") or _confidence_from_tags(tags)
 
     return _finalize(
         hit,
@@ -227,18 +478,19 @@ def _misp_attribute_adapter(hit: Dict[str, Any], normalize_type, normalize_value
         source_name=orgc.get("name") or "MISP",
         source_type="misp",
         description=description,
-        threat_type=_extract_threats_from_tags(tags),
+        threat_type=evidence.get("source_threat_types") or _extract_threats_from_tags(tags),
         severity=_normalize_severity(threat_level.get("name")),
         tags=tags,
         reference=raw.get("uuid") or event.get("uuid") or hit.get("_id") or "",
         collect_time=collect_time,
         event_time=event_time,
         geo_country=None,
-        confidence=_confidence_from_tags(tags),
+        confidence=confidence,
         source_url="",
         source_id=raw.get("uuid") or raw.get("id") or hit.get("_id"),
         enrichment={"misp_event": event},
         domain_age_days=None,
+        **_flatten_evidence(evidence),
     )
 
 
@@ -259,6 +511,15 @@ def _legacy_external_adapter(hit: Dict[str, Any], normalize_type, normalize_valu
     geo_ip = enrichment.get("geo_ip") if isinstance(enrichment.get("geo_ip"), dict) else {}
     title = _as_text(first_source.get("title") or raw.get("title"))
     description = _as_text(first_source.get("description") or raw.get("description"))
+    evidence = _merge_evidence(
+        extract_virustotal_evidence(enrichment),
+        extract_cyberint_evidence(enrichment),
+        _extract_summary_evidence(enrichment),
+        _extract_mitre_evidence(enrichment),
+        extract_correlation_evidence(raw),
+        extract_sandbox_evidence(raw),
+    )
+    confidence = max(_parse_int(raw.get("confidence"), 0), _parse_int(evidence.get("source_confidence"), 0))
 
     return _finalize(
         hit,
@@ -271,18 +532,19 @@ def _legacy_external_adapter(hit: Dict[str, Any], normalize_type, normalize_valu
         source_name=first_source.get("name") or raw.get("source_name") or raw.get("ref_doc_index") or "tcti-feeds",
         source_type=raw.get("source_type") or "external-feed",
         description="\n".join(part for part in [title, description] if part),
-        threat_type=raw.get("threat_type") or [],
+        threat_type=_unique(_as_list(raw.get("threat_type")) + _as_list(evidence.get("source_threat_types"))),
         severity=raw.get("severity") or "low",
         tags=raw.get("tags") or first_source.get("tags") or [],
         reference=first_source.get("url") or raw.get("reference") or raw.get("ref_doc_id") or raw.get("doc_hash") or "",
         collect_time=first_source.get("collect_time") or raw.get("@timestamp") or raw.get("processed_at"),
         event_time=raw.get("@timestamp") or raw.get("processed_at") or first_source.get("collect_time"),
         geo_country=geo_ip.get("country_code") or geo_ip.get("country") or raw.get("geo_country"),
-        confidence=_parse_int(raw.get("confidence"), 0),
+        confidence=confidence,
         source_url=first_source.get("url") or "",
         source_id=raw.get("ref_doc_id") or raw.get("doc_hash") or hit.get("_id"),
         enrichment=enrichment,
         domain_age_days=raw.get("domain_age_days"),
+        **_flatten_evidence(evidence),
     )
 
 

@@ -85,6 +85,17 @@ def _unique_non_empty(values: Iterable[str]) -> List[str]:
     return output
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def _max_or_none(values: Sequence[int]) -> Optional[int]:
+    return max(values) if values else None
+
+
 def build_classifier_context(
     ioc_value: str,
     ioc_type: str,
@@ -133,6 +144,23 @@ def build_classifier_context(
         enrichment = doc.get("enrichment")
         if not isinstance(enrichment, dict) or not enrichment:
             continue
+
+        evidence = doc.get("source_evidence")
+        if isinstance(evidence, dict) and evidence:
+            evidence_parts = []
+            if evidence.get("virustotal_malicious") is not None:
+                evidence_parts.append(
+                    f"VirusTotal malicious={evidence.get('virustotal_malicious')} "
+                    f"suspicious={evidence.get('virustotal_suspicious', 0)}"
+                )
+            if evidence.get("source_risk_score") is not None:
+                evidence_parts.append(f"source risk score={evidence.get('source_risk_score')}")
+            if evidence.get("source_threat_actors"):
+                evidence_parts.append(f"actors={', '.join(evidence.get('source_threat_actors', []))}")
+            if evidence.get("source_mitre_techniques"):
+                evidence_parts.append(f"MITRE={', '.join(evidence.get('source_mitre_techniques', []))}")
+            if evidence_parts:
+                parts.append("Evidence: " + "; ".join(evidence_parts))
 
         # WHOIS context (domain registration)
         if not whois_added:
@@ -267,6 +295,18 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
     domain_age_candidates: List[int] = []
     original_ioc_values: List[str] = []
     original_ioc_types: List[str] = []
+    source_risk_scores: List[int] = []
+    source_actionable = False
+    external_evidence_sources: List[str] = []
+    source_threat_actors: List[str] = []
+    source_mitre_techniques: List[str] = []
+    source_campaigns: List[str] = []
+    source_target_countries: List[str] = []
+    source_malware_families: List[str] = []
+    source_evidence_items: List[Dict[str, Any]] = []
+    vt_malicious_values: List[int] = []
+    vt_suspicious_values: List[int] = []
+    related_doc_count = 0
 
     for doc in ioc_docs:
         source_name = str(doc.get("source_name", "")).strip()
@@ -317,6 +357,34 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
             if threat:
                 threat_types_raw.append(str(threat))
 
+        evidence = doc.get("source_evidence")
+        if isinstance(evidence, dict) and evidence:
+            source_evidence_items.append(evidence)
+            if evidence.get("source_risk_score") is not None:
+                source_risk_scores.append(_safe_int(evidence.get("source_risk_score")))
+            source_actionable = source_actionable or bool(evidence.get("source_actionable"))
+            for item in evidence.get("external_evidence_sources", []) or []:
+                external_evidence_sources.append(str(item))
+            for item in evidence.get("source_threat_types", []) or []:
+                if item:
+                    threat_types_raw.append(str(item))
+            for item in evidence.get("source_threat_actors", []) or []:
+                source_threat_actors.append(str(item))
+            for item in evidence.get("source_mitre_techniques", []) or []:
+                source_mitre_techniques.append(str(item))
+            for item in evidence.get("source_campaigns", []) or []:
+                source_campaigns.append(str(item))
+            for item in evidence.get("source_target_countries", []) or []:
+                source_target_countries.append(str(item))
+            malware_family = str(evidence.get("source_malware_family") or "").strip()
+            if malware_family:
+                source_malware_families.append(malware_family)
+            if evidence.get("virustotal_malicious") is not None:
+                vt_malicious_values.append(_safe_int(evidence.get("virustotal_malicious")))
+            if evidence.get("virustotal_suspicious") is not None:
+                vt_suspicious_values.append(_safe_int(evidence.get("virustotal_suspicious")))
+            related_doc_count += _safe_int(evidence.get("related_doc_count"), 0)
+
         severity_values.append(str(doc.get("severity", "")).strip().lower())
 
         geo_country = str(doc.get("geo_country", "")).strip()
@@ -348,6 +416,21 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
 
     merged_description = "\n".join(sanitized_descriptions) if sanitized_descriptions else ""
     sources = source_names if source_names else ["unknown"]
+    evidence_source_names = _unique_non_empty(external_evidence_sources)
+    max_source_risk_score = _max_or_none(source_risk_scores)
+    scoring_source_objects = list(source_objects)
+    scoring_source_names = {str(item.get("name", "")).strip() for item in scoring_source_objects}
+    evidence_confidence = max_source_risk_score or 0
+    for evidence_source in evidence_source_names:
+        if evidence_source and evidence_source not in scoring_source_names:
+            scoring_source_objects.append(
+                {
+                    "name": evidence_source,
+                    "confidence": evidence_confidence,
+                    "type": "source_evidence",
+                }
+            )
+            scoring_source_names.add(evidence_source)
 
     first_seen_dt = min(first_seen_candidates) if first_seen_candidates else None
     last_seen_dt = max(last_seen_candidates) if last_seen_candidates else None
@@ -377,18 +460,28 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         ioc_docs=ioc_docs,
     )
     classification = classification_result["classification"]
-    threat_actors = classification_result["threat_actors"]
-    mitre_techniques = classification_result["mitre_techniques"]
+    source_threat_actors = _unique_non_empty(source_threat_actors)
+    source_mitre_techniques = _unique_non_empty(source_mitre_techniques)
+    source_threat_types = _unique_non_empty(threat_types_raw)
+    classification_threat_types = _unique_non_empty(
+        list(classification["threat_types"]) + source_threat_types
+    )
+    threat_actors = _unique_non_empty(
+        list(classification_result["threat_actors"]) + source_threat_actors
+    )
+    mitre_techniques = _unique_non_empty(
+        list(classification_result["mitre_techniques"]) + source_mitre_techniques
+    )
 
     score_result = calculate_risk_score(
         ioc_value=ioc_value,
         ioc_type=ioc_type,
         description=merged_description,
-        sources=sources,
+        sources=scoring_source_objects or sources,
         domain_age_days=domain_age_days,
         ioc_age_days=ioc_age_days,
         threat_classification={
-            "threat_types": classification["threat_types"],
+            "threat_types": classification_threat_types,
             "threat_actors": threat_actors,
             "mitre_techniques": mitre_techniques,
             "confidence": classification["confidence"],
@@ -414,10 +507,10 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "source_type": "multi" if len(source_types) > 1 else (source_types[0] if source_types else "unknown"),
         "sources": sources,
         "source_types": source_types,
-        "source_count": len(source_names) if source_names else len(source_objects),
+        "source_count": len(scoring_source_names) if scoring_source_names else len(sources),
         "source_urls": source_urls,
         "description": merged_description,
-        "threat_type": sorted(set(threat_types_raw)),
+        "threat_type": sorted(set(source_threat_types)),
         "severity": pick_highest_severity(severity_values),
         "tags": sanitized_tags,
         "reference": "\n".join(sanitized_references),
@@ -430,10 +523,20 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "ai_risk_score": score_result.get("risk_score", 0),
         "ai_severity": score_result.get("severity", "low"),
         "ai_severity_th": score_result.get("severity_th", "ต่ำ"),
-        "ai_threat_types": classification["threat_types"],
+        "ai_threat_types": classification_threat_types,
         "ai_threat_actors": threat_actors,
         "ai_mitre_techniques": mitre_techniques,
         "ai_classification_confidence": classification["confidence"],
+        "source_risk_score": max_source_risk_score,
+        "source_actionable": source_actionable,
+        "external_evidence_sources": evidence_source_names,
+        "virustotal_malicious": _max_or_none(vt_malicious_values),
+        "virustotal_suspicious": _max_or_none(vt_suspicious_values),
+        "related_doc_count": related_doc_count,
+        "source_campaigns": _unique_non_empty(source_campaigns),
+        "source_target_countries": _unique_non_empty(source_target_countries),
+        "source_malware_family": (_unique_non_empty(source_malware_families) or [None])[0],
+        "source_evidence": source_evidence_items,
         "classification_mode": classification_result["classification_mode"],
         "classification_reason": classification_result["classification_reason"],
         "classifier_input_chars": classification_result["classifier_input_chars"],

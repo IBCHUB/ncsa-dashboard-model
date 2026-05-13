@@ -458,6 +458,10 @@ class PipelineRunResponse(BaseModel):
     ml_classified: int = 0
     rule_classified: int = 0
     ml_skipped: int = 0
+    evidence_enriched: int = 0
+    vt_evidence_count: int = 0
+    misp_risk_score_count: int = 0
+    correlation_evidence_count: int = 0
     avg_ms_per_ioc: float = 0.0
     observations_updated: int
     processing_time_ms: int
@@ -490,6 +494,10 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
             "ml_classified": 0,
             "rule_classified": 0,
             "ml_skipped": 0,
+            "evidence_enriched": 0,
+            "vt_evidence_count": 0,
+            "misp_risk_score_count": 0,
+            "correlation_evidence_count": 0,
             "avg_ms_per_ioc": 0.0,
             "observations_updated": 0,
             "processing_time_ms": 0,
@@ -519,6 +527,10 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 "ml_classified": 0,
                 "rule_classified": 0,
                 "ml_skipped": 0,
+                "evidence_enriched": 0,
+                "vt_evidence_count": 0,
+                "misp_risk_score_count": 0,
+                "correlation_evidence_count": 0,
                 "avg_ms_per_ioc": 0.0,
                 "observations_updated": 0,
                 "processing_time_ms": 0,
@@ -556,6 +568,10 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
         ml_classified = 0
         rule_classified = 0
         ml_skipped = 0
+        evidence_enriched = 0
+        vt_evidence_count = 0
+        misp_risk_score_count = 0
+        correlation_evidence_count = 0
 
         for (_, _), ioc_docs in grouped_iocs.items():
             try:
@@ -568,6 +584,14 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                     rule_classified += 1
                 else:
                     ml_skipped += 1
+                if pipeline_doc.get("source_evidence"):
+                    evidence_enriched += 1
+                if (pipeline_doc.get("virustotal_malicious") or 0) > 0 or (pipeline_doc.get("virustotal_suspicious") or 0) > 0:
+                    vt_evidence_count += 1
+                if pipeline_doc.get("source_risk_score") is not None:
+                    misp_risk_score_count += 1
+                if (pipeline_doc.get("related_doc_count") or 0) > 0:
+                    correlation_evidence_count += 1
                 validation_status = pipeline_doc["validation_status"]
                 ioc_value = pipeline_doc["ioc_value"]
 
@@ -624,6 +648,10 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
             "ml_classified": ml_classified,
             "rule_classified": rule_classified,
             "ml_skipped": ml_skipped,
+            "evidence_enriched": evidence_enriched,
+            "vt_evidence_count": vt_evidence_count,
+            "misp_risk_score_count": misp_risk_score_count,
+            "correlation_evidence_count": correlation_evidence_count,
             "avg_ms_per_ioc": avg_ms_per_ioc,
             "observations_updated": processed_observations,
             "processing_time_ms": elapsed,
@@ -632,6 +660,8 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 f"{rejected} rejected, "
                 f"{processed_observations} observations updated, "
                 f"ML={ml_classified}, rule={rule_classified}, skipped={ml_skipped}, "
+                f"evidence={evidence_enriched}, vt={vt_evidence_count}, "
+                f"source_risk={misp_risk_score_count}, correlations={correlation_evidence_count}, "
                 f"{quarantined} quarantined, {failed} failed"
             )
         }

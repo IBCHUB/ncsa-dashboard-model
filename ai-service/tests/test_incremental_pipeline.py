@@ -119,7 +119,12 @@ def test_normalize_misp_attribute_hit():
             "Tag": [
                 {"name": "behaviour-tag=\"Phishing\""},
                 {"name": "confidence:high"},
+                {"name": "risk-score:100"},
+                {"name": "misp-galaxy:threat-actor=\"TeamTNT\""},
+                {"name": "misp-galaxy:sector=\"Aerospace & Defense\""},
+                {"name": "misp-galaxy:target-information=\"DE\""},
             ],
+            "to_ids": True,
             "@timestamp": "2026-05-11T06:31:54.276488+00:00",
         },
     })
@@ -132,6 +137,83 @@ def test_normalize_misp_attribute_hit():
     assert doc["severity"] == "low"
     assert doc["confidence"] == 80
     assert doc["threat_type"] == ["Phishing"]
+    assert doc["source_risk_score"] == 100
+    assert doc["source_actionable"] is True
+    assert doc["source_evidence"]["source_threat_actors"] == ["TeamTNT"]
+    assert doc["source_evidence"]["source_target_countries"] == ["DE"]
+
+
+def test_legacy_external_extracts_virustotal_and_correlation_evidence():
+    doc = ElasticClient._normalize_datalake_hit({
+        "_index": "tcti-feeds-bleeping-12032026",
+        "_id": "doc-1",
+        "_source": {
+            "doc_hash": "doc-1",
+            "ioc": {"type": "domain", "value": "evil[.]example"},
+            "source": [{"name": "BleepingComputer News", "description": "Long report text"}],
+            "confidence": 0,
+            "enrichment": {
+                "virustotal": {
+                    "attributes": {
+                        "last_analysis_stats": {
+                            "malicious": 3,
+                            "suspicious": 1,
+                            "harmless": 55,
+                            "undetected": 33,
+                        },
+                        "reputation": -5,
+                        "meaningful_name": "evil.example",
+                    }
+                },
+                "mitre": {
+                    "external_id": "T1587.001",
+                    "name": "Malware",
+                    "tactics": ["resource-development"],
+                },
+                "summary": {
+                    "actor_groups": ["FIN7"],
+                    "campaign_names": ["Test Campaign"],
+                    "countries": ["US"],
+                },
+            },
+            "correlations": {
+                "related_docs": [
+                    {"original_ioc": "cve-2026-0001", "type": "cve"},
+                    {"original_ioc": "other.example", "type": "domain"},
+                ]
+            },
+        },
+    })
+
+    assert doc["adapter_name"] == "legacy_external"
+    assert doc["external_evidence_sources"] == ["VirusTotal"]
+    assert doc["virustotal_malicious"] == 3
+    assert doc["virustotal_suspicious"] == 1
+    assert doc["related_doc_count"] == 2
+    assert doc["source_evidence"]["source_threat_actors"] == ["FIN7"]
+    assert doc["source_evidence"]["source_campaigns"] == ["Test Campaign"]
+    assert doc["source_evidence"]["source_target_countries"] == ["US"]
+    assert doc["source_evidence"]["source_mitre_techniques"] == ["T1587.001 Malware"]
+
+
+def test_legacy_external_extracts_sandbox_evidence():
+    doc = ElasticClient._normalize_datalake_hit({
+        "_index": "tcti-feeds-sandbox-26032026",
+        "_id": "sandbox-1",
+        "_source": {
+            "ioc": {"type": "sha256", "value": "ABCDEF"},
+            "source": [{"name": "Sandbox", "description": "Sandbox detonated sample"}],
+            "confidence": 70,
+            "malware_family": "AgentTesla",
+            "verdict": "malicious",
+            "suspicious_activities": ["Creates autorun key"],
+        },
+    })
+
+    assert doc["source_malware_family"] == "AgentTesla"
+    assert doc["external_evidence_sources"] == ["Sandbox"]
+    assert doc["threat_type"] == ["AgentTesla"]
+    assert doc["source_evidence"]["sandbox_verdict"] == "malicious"
 
 
 def test_unknown_datalake_hit_is_quarantined():
