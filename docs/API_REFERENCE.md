@@ -38,11 +38,12 @@ Main groups in `services/dashboard_router.py`:
 | Group | Paths |
 | --- | --- |
 | Auth | `/auth/login`, `/auth/sso/session`, `/auth/me`, `/auth/logout` |
-| Lookups | `/lookups/threat-types`, `/lookups/severities`, `/lookups/risk-levels`, `/lookups/sources`, `/lookups/export-formats`, `/lookups/assignees`, `/lookups/enforcement-points` |
+| Lookups | `/lookups/threat-types`, `/lookups/severities`, `/lookups/risk-levels`, `/lookups/sources`, `/lookups/sectors`, `/lookups/export-formats`, `/lookups/assignees`, `/lookups/enforcement-points` |
 | Executive | `/executive/dashboard` |
-| Operations | `/operations/dashboard`, `/operations/reports/{report_key}`, `/operations/attack-time-report`, `/operations/events/{event_id}` |
-| Actions | `/actions`, `/actions/{action_id}`, `/actions/{action_id}/related-iocs`, `/actions/{action_id}/assign`, `/actions/{action_id}/false-positive`, `/actions/{action_id}/block-ip` |
-| IOCs | `/iocs`, `/iocs/{ioc_id}`, `/iocs/{ioc_id}/events`, `/ioc-analytics` |
+| Operations | `/operations/dashboard`, `/operations/reports/{report_key}`, `/operations/reports/threat-types/{threat_type}`, `/operations/attack-time-report`, `/operations/events/{event_id}` |
+| Threat Intelligence | `/threat-intelligence/trend/events`, `/cve-intelligence`, `/cve-intelligence/{cve_id}`, `/threat-landscape` |
+| Actions | `/actions`, `/actions/{action_id}`, `/actions/{action_id}/related-iocs`, `/actions/{action_id}/notes`, `/actions/{action_id}/assign`, `/actions/{action_id}/false-positive`, `/actions/{action_id}/block-ip` |
+| IOCs | `/iocs`, `/iocs/relationships`, `/iocs/{ioc_id}`, `/iocs/{ioc_id}/events`, `/ioc-analytics` |
 | Reports | `/reports/*/preview`, `/reports/*/export`, `/exports/{export_id}`, `/exports/{export_id}/download` |
 | News | `/news`, `/news/{article_id}` |
 | Account | `/account/profile`, `/account/password/reset`, `/account` |

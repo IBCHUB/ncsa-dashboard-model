@@ -18,6 +18,7 @@ import json
 import logging
 from math import floor
 import os
+import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 import zipfile
@@ -113,6 +114,7 @@ HIGH_CONFIDENCE_SOURCE_NAMES = {
     "Suricata",
     "Snort",
 }
+CVE_PATTERN = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
 
 
 class LoginRequest(BaseModel):
@@ -150,6 +152,10 @@ class BlockIpRequest(BaseModel):
     duration_mode: str
     duration_days: Optional[int] = None
     reason: str
+
+
+class ActionNoteRequest(BaseModel):
+    content: str = Field(..., min_length=1)
 
 
 class ReportFilterRequest(BaseModel):
@@ -490,6 +496,31 @@ def _lookup_items(values: Iterable[str]) -> List[Dict[str, Any]]:
         seen.add(lowered)
         items.append({"value": value, "label": value, "description": None, "active": True})
     return items
+
+
+def _as_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, (tuple, set)):
+        return list(value)
+    return [value]
+
+
+def _extract_cve_ids(*values: Any) -> List[str]:
+    matches: List[str] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            matches.extend(_extract_cve_ids(*value))
+            continue
+        if isinstance(value, dict):
+            matches.extend(_extract_cve_ids(*value.values()))
+            continue
+        matches.extend(match.upper() for match in CVE_PATTERN.findall(str(value)))
+    return _unique_list(matches, limit=50)
 
 
 def _hash_id(*parts: str) -> str:
@@ -2290,6 +2321,404 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
     }
 
 
+def _relationship_node(node_id: str, node_type: str, label: Any, **extra: Any) -> Dict[str, Any]:
+    node = {"id": node_id, "type": node_type, "label": str(label or "Unknown")}
+    node.update({key: value for key, value in extra.items() if value is not None})
+    return node
+
+
+def _relationship_edge(source: str, target: str, relation: str, **extra: Any) -> Dict[str, Any]:
+    edge = {"source": source, "target": target, "relation": relation}
+    edge.update({key: value for key, value in extra.items() if value is not None})
+    return edge
+
+
+def _append_relationship(
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    relationship_log: List[Dict[str, Any]],
+    seen_nodes: set,
+    seen_edges: set,
+    source_node: Dict[str, Any],
+    target_node: Dict[str, Any],
+    relation: str,
+    first_seen: Optional[str] = None,
+    last_seen: Optional[str] = None,
+) -> None:
+    for node in (source_node, target_node):
+        if node["id"] not in seen_nodes:
+            nodes.append(node)
+            seen_nodes.add(node["id"])
+    edge_key = (source_node["id"], target_node["id"], relation)
+    if edge_key not in seen_edges:
+        edges.append(_relationship_edge(source_node["id"], target_node["id"], relation))
+        seen_edges.add(edge_key)
+    relationship_log.append(
+        {
+            "source": source_node["label"],
+            "source_type": source_node["type"],
+            "relationship": relation,
+            "target": target_node["label"],
+            "target_type": target_node["type"],
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+        }
+    )
+
+
+def _build_ioc_relationship_graph(
+    warehouse_doc: Dict[str, Any],
+    datalake_docs: List[Dict[str, Any]],
+    related_docs: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    relationship_log: List[Dict[str, Any]] = []
+    seen_nodes: set = set()
+    seen_edges: set = set()
+    indicator = _indicator_id(warehouse_doc.get("ioc_type", ""), warehouse_doc.get("ioc_value", ""))
+    ioc_node = _relationship_node(
+        f"ioc:{indicator}",
+        "ioc",
+        warehouse_doc.get("ioc_value"),
+        ioc_type=warehouse_doc.get("ioc_type"),
+        severity=_severity_label(_normalize_severity(warehouse_doc.get("ai_severity") or warehouse_doc.get("severity"))),
+        risk_score=int(warehouse_doc.get("ai_risk_score") or 0),
+    )
+    if ioc_node["id"] not in seen_nodes:
+        nodes.append(ioc_node)
+        seen_nodes.add(ioc_node["id"])
+
+    first_seen = warehouse_doc.get("first_seen") or warehouse_doc.get("event_time") or warehouse_doc.get("collect_time")
+    last_seen = warehouse_doc.get("last_seen") or warehouse_doc.get("processed_at") or warehouse_doc.get("collect_time")
+    for threat_type in warehouse_doc.get("ai_threat_types") or warehouse_doc.get("threat_type") or []:
+        if not str(threat_type).strip():
+            continue
+        target_node = _relationship_node(f"type:{threat_type}", "threat_type", threat_type)
+        _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, target_node, "classified_as", first_seen, last_seen)
+
+    for actor in warehouse_doc.get("ai_threat_actors") or []:
+        if not str(actor).strip():
+            continue
+        target_node = _relationship_node(f"actor:{actor}", "threat_actor", actor)
+        _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, target_node, "attributed_to", first_seen, last_seen)
+
+    sector = _sector_info(warehouse_doc)
+    if sector.get("sector_name") and sector["sector_name"] != "General/Multiple":
+        target_node = _relationship_node(f"sector:{sector['sector']}", "sector", sector["sector_name"], label_th=sector.get("sector_name_th"))
+        _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, target_node, "targets_sector", first_seen, last_seen)
+
+    for doc in datalake_docs:
+        observed = (_pick_event_time(doc) or datetime.now(UTC)).isoformat().replace("+00:00", "Z")
+        source_name = doc.get("source_name") or "unknown"
+        source_node = _relationship_node(f"source:{source_name}", "source", source_name)
+        _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, source_node, ioc_node, "observed", observed, observed)
+        if doc.get("source_ip"):
+            source_ip_node = _relationship_node(f"ip:{doc['source_ip']}", "ip", doc["source_ip"])
+            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, source_ip_node, ioc_node, "source_ip", observed, observed)
+        if doc.get("target_ip"):
+            target_ip_node = _relationship_node(f"ip:{doc['target_ip']}", "ip", doc["target_ip"])
+            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, target_ip_node, "target_ip", observed, observed)
+        enrichment = doc.get("enrichment") or {}
+        related = enrichment.get("related_entities") if isinstance(enrichment, dict) else {}
+        if isinstance(related, dict):
+            for malware in related.get("malware_family") or []:
+                malware_node = _relationship_node(f"malware:{malware}", "malware", malware)
+                _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, malware_node, "uses_malware", observed, observed)
+        if doc.get("cluster_label") is not None:
+            campaign_label = f"cluster_{doc['cluster_label']}"
+            campaign_node = _relationship_node(f"campaign:{doc['cluster_label']}", "campaign", campaign_label)
+            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, campaign_node, "same_campaign", observed, observed)
+
+    for related_doc in related_docs[:20]:
+        related_indicator = _indicator_id(related_doc.get("ioc_type", ""), related_doc.get("ioc_value", ""))
+        if related_indicator == indicator:
+            continue
+        related_node = _relationship_node(
+            f"ioc:{related_indicator}",
+            "related_ioc",
+            related_doc.get("ioc_value"),
+            ioc_type=related_doc.get("ioc_type"),
+            severity=_severity_label(_normalize_severity(related_doc.get("ai_severity") or related_doc.get("severity"))),
+            risk_score=int(related_doc.get("ai_risk_score") or 0),
+        )
+        shared_threats = sorted(
+            {
+                str(item)
+                for item in (warehouse_doc.get("ai_threat_types") or [])
+            }.intersection({str(item) for item in (related_doc.get("ai_threat_types") or [])})
+        )
+        relation = "shares_threat_type" if shared_threats else "related_ioc"
+        _append_relationship(
+            nodes,
+            edges,
+            relationship_log,
+            seen_nodes,
+            seen_edges,
+            ioc_node,
+            related_node,
+            relation,
+            related_doc.get("first_seen") or related_doc.get("event_time"),
+            related_doc.get("last_seen") or related_doc.get("processed_at"),
+        )
+
+    first_datalake = datalake_docs[0] if datalake_docs else {}
+    detail = _build_ioc_detail(warehouse_doc, datalake_docs)
+    return {
+        "matched_ioc": _build_ioc_record(1, warehouse_doc),
+        "key_attributes": {
+            "asn": detail["asn_infrastructure"].get("asn"),
+            "asn_name": detail["asn_infrastructure"].get("asn_name"),
+            "country": detail["geo_location_owner"].get("country"),
+            "city": detail["geo_location_owner"].get("city"),
+            "reputation": first_datalake.get("reputation") or first_datalake.get("source_risk_score"),
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "sources": _normalize_sources(warehouse_doc) or ["unknown"],
+        },
+        "relationship": {
+            "nodes": nodes,
+            "edges": edges,
+            "capabilities": {
+                "actors": any(node["type"] == "threat_actor" for node in nodes),
+                "campaigns": any(node["type"] == "campaign" for node in nodes),
+                "malware": any(node["type"] == "malware" for node in nodes),
+                "related_iocs": any(node["type"] == "related_ioc" for node in nodes),
+            },
+        },
+        "relationship_log": relationship_log,
+        "related_iocs": [_build_ioc_record(index + 1, doc) for index, doc in enumerate(related_docs[:20])],
+    }
+
+
+def _date_label_for_doc(doc: Dict[str, Any]) -> str:
+    event_time = _pick_event_time(doc)
+    if not event_time:
+        return "unknown"
+    return event_time.astimezone(BANGKOK_TZ).date().isoformat()
+
+
+def _build_threat_type_detail_payload(
+    threat_type: str,
+    docs: Sequence[Dict[str, Any]],
+    page: int,
+    page_size: int,
+) -> Dict[str, Any]:
+    total = len(docs)
+    ioc_type_counts = Counter(str(doc.get("ioc_type", "unknown")).lower() or "unknown" for doc in docs)
+    sector_counts = Counter(_sector_info(doc)["sector_name"] for doc in docs)
+    actor_counts = Counter(actor for doc in docs for actor in (doc.get("ai_threat_actors") or []) if str(actor).strip())
+    source_counts = Counter(source for doc in docs for source in _normalize_sources(doc))
+    severity_counts = Counter(_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in docs)
+    mitre_values = []
+    for doc in docs:
+        for technique in doc.get("ai_mitre_techniques") or []:
+            if not technique:
+                continue
+            if isinstance(technique, dict):
+                mitre_values.append(str(technique.get("external_id") or technique.get("name") or ""))
+            else:
+                mitre_values.append(str(technique))
+    mitre_counts = Counter(value for value in mitre_values if value.strip())
+    trend_counts = Counter(_date_label_for_doc(doc) for doc in docs)
+
+    def _counter_items(counter: Counter, key_name: str = "name", limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        items = counter.most_common(limit)
+        return [
+            {
+                key_name: key,
+                "count": count,
+                "percentage": _percentage(count, total),
+            }
+            for key, count in items
+        ]
+
+    return {
+        "threat_type": threat_type,
+        "summary": {
+            "total_iocs": total,
+            "critical": severity_counts.get("critical", 0),
+            "high": severity_counts.get("high", 0),
+            "medium": severity_counts.get("medium", 0),
+            "low": severity_counts.get("low", 0),
+            "clean": severity_counts.get("clean", 0),
+        },
+        "ioc_type_distribution": [
+            {
+                "ioc_type": key,
+                "label": IOC_TYPE_LABELS.get(key, key.upper()),
+                "count": count,
+                "percentage": _percentage(count, total),
+            }
+            for key, count in ioc_type_counts.most_common()
+        ],
+        "trend": [
+            {"date": key, "count": trend_counts[key]}
+            for key in sorted(trend_counts.keys())
+            if key != "unknown"
+        ],
+        "targeted_sectors": [
+            {
+                "sector": key,
+                "count": count,
+                "percentage": _percentage(count, total),
+            }
+            for key, count in sector_counts.most_common(10)
+        ],
+        "related_attackers": _counter_items(actor_counts, key_name="actor", limit=20),
+        "related_mitre_techniques": _counter_items(mitre_counts, key_name="technique", limit=20),
+        "sources": _counter_items(source_counts, key_name="source", limit=20),
+        "related_iocs": _page_slice([_build_ioc_record(index + 1, doc) for index, doc in enumerate(docs)], page, page_size),
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+        },
+    }
+
+
+def _doc_text_blob(doc: Dict[str, Any]) -> str:
+    fields = [
+        doc.get("ioc_value"),
+        doc.get("title"),
+        doc.get("description"),
+        doc.get("reference"),
+        doc.get("source_name"),
+        doc.get("source_type"),
+        doc.get("source_malware_family"),
+        doc.get("source_campaigns"),
+        doc.get("ai_threat_types"),
+        doc.get("ai_threat_actors"),
+        doc.get("ai_mitre_techniques"),
+        doc.get("source_evidence"),
+    ]
+    return " ".join(json.dumps(item, ensure_ascii=False, default=str) if isinstance(item, (dict, list)) else str(item or "") for item in fields)
+
+
+def _build_trend_event_rows(docs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for index, doc in enumerate(
+        sorted(docs, key=lambda item: _pick_event_time(item) or datetime.min.replace(tzinfo=UTC), reverse=True),
+        start=1,
+    ):
+        event_time = _pick_event_time(doc)
+        rows.append(
+            {
+                "rank": index,
+                "event_id": doc.get("_id") or _indicator_or_doc_id(doc),
+                "timestamp": (event_time or datetime.now(UTC)).isoformat().replace("+00:00", "Z"),
+                "ioc_value": doc.get("ioc_value"),
+                "ioc_type": doc.get("ioc_type"),
+                "severity": _severity_label(_normalize_severity(doc.get("ai_severity") or doc.get("severity"))),
+                "risk_score": int(doc.get("ai_risk_score") or 0),
+                "threat_types": _as_list(doc.get("ai_threat_types") or doc.get("threat_type")),
+                "sources": _normalize_sources(doc) or ["unknown"],
+                "sector": _sector_info(doc)["sector_name"],
+                "description": doc.get("description"),
+            }
+        )
+    return rows
+
+
+def _build_cve_records(
+    warehouse_docs: Sequence[Dict[str, Any]],
+    datalake_docs: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+
+    def _append_doc(cve_id: str, doc: Dict[str, Any], source_kind: str) -> None:
+        current = grouped.setdefault(cve_id, {"cve_id": cve_id, "warehouse_docs": [], "datalake_docs": []})
+        current["warehouse_docs" if source_kind == "warehouse" else "datalake_docs"].append(doc)
+
+    for doc in warehouse_docs:
+        cves = _extract_cve_ids(doc.get("ioc_value"), doc.get("description"), doc.get("reference"), doc.get("ai_threat_types"), doc.get("source_evidence"))
+        if str(doc.get("ioc_type") or "").lower() == "cve" and doc.get("ioc_value"):
+            cves = _unique_list([str(doc["ioc_value"]).upper()] + cves)
+        for cve_id in cves:
+            _append_doc(cve_id, doc, "warehouse")
+
+    for doc in datalake_docs:
+        cves = _extract_cve_ids(doc.get("ioc_value"), doc.get("description"), doc.get("reference"), doc.get("threat_type"), doc.get("source_evidence"))
+        if str(doc.get("ioc_type") or "").lower() == "cve" and doc.get("ioc_value"):
+            cves = _unique_list([str(doc["ioc_value"]).upper()] + cves)
+        for cve_id in cves:
+            _append_doc(cve_id, doc, "datalake")
+
+    records: List[Dict[str, Any]] = []
+    exploit_markers = ("actively exploited", "known exploited", "kev", "rce", "remote code execution", "command injection", "arbitrary command")
+    for cve_id, bucket in grouped.items():
+        all_docs = bucket["warehouse_docs"] + bucket["datalake_docs"]
+        if not all_docs:
+            continue
+        latest_time = max((_pick_event_time(doc) for doc in all_docs if _pick_event_time(doc)), default=None)
+        earliest_time = min((_pick_event_time(doc) for doc in all_docs if _pick_event_time(doc)), default=None)
+        warehouse_related = bucket["warehouse_docs"]
+        risk_score = max((int(doc.get("ai_risk_score") or 0) for doc in warehouse_related), default=0)
+        severity = max(
+            (_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in all_docs),
+            key=lambda item: SEVERITY_ORDER.get(item, 0),
+            default="low",
+        )
+        text_blob = " ".join(_doc_text_blob(doc).lower() for doc in all_docs)
+        records.append(
+            {
+                "cve_id": cve_id,
+                "title": next((doc.get("title") or doc.get("description") for doc in all_docs if doc.get("title") or doc.get("description")), cve_id),
+                "severity": _severity_label(severity),
+                "risk_score": risk_score,
+                "exploited_in_the_wild": any(marker in text_blob for marker in exploit_markers),
+                "threat_types": _unique_list([item for doc in all_docs for item in _as_list(doc.get("ai_threat_types") or doc.get("threat_type"))]),
+                "affected_sectors": _unique_list([_sector_info(doc)["sector_name"] for doc in warehouse_related if _sector_info(doc)["sector_name"]]),
+                "sources": _unique_list([source for doc in all_docs for source in _normalize_sources(doc)]),
+                "related_iocs": _unique_list([doc.get("ioc_value") for doc in warehouse_related if doc.get("ioc_value") and str(doc.get("ioc_value")).upper() != cve_id], limit=20),
+                "first_seen": earliest_time.isoformat().replace("+00:00", "Z") if earliest_time else None,
+                "last_seen": latest_time.isoformat().replace("+00:00", "Z") if latest_time else None,
+                "warehouse_doc_count": len(bucket["warehouse_docs"]),
+                "datalake_doc_count": len(bucket["datalake_docs"]),
+            }
+        )
+    return sorted(records, key=lambda item: (item["risk_score"], item["last_seen"] or ""), reverse=True)
+
+
+def _build_threat_landscape_payload(
+    warehouse_docs: Sequence[Dict[str, Any]],
+    datalake_docs: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    threat_counts = Counter(threat for doc in warehouse_docs for threat in _as_list(doc.get("ai_threat_types") or doc.get("threat_type")))
+    actor_counts = Counter(actor for doc in warehouse_docs for actor in (doc.get("ai_threat_actors") or []) if str(actor).strip())
+    sector_counts = Counter(_sector_info(doc)["sector_name"] for doc in warehouse_docs)
+    source_counts = Counter(source for doc in list(warehouse_docs) + list(datalake_docs) for source in _normalize_sources(doc))
+    country_counts = Counter(country for country in (_country_from_doc(doc) for doc in list(datalake_docs) + list(warehouse_docs)) if country)
+    ioc_type_counts = Counter(str(doc.get("ioc_type") or "unknown").lower() for doc in warehouse_docs)
+    severity_counts = Counter(_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in warehouse_docs)
+    total = len(warehouse_docs)
+    high_risk = sum(1 for doc in warehouse_docs if int(doc.get("ai_risk_score") or 0) >= 80)
+    return {
+        "summary": {
+            "total_iocs": total,
+            "high_risk_iocs": high_risk,
+            "critical_iocs": severity_counts.get("critical", 0),
+            "active_threat_types": len(threat_counts),
+            "active_actors": len(actor_counts),
+            "observed_sources": len(source_counts),
+        },
+        "threat_types": _build_top_list(threat_counts, limit=10),
+        "threat_actors": _build_top_list(actor_counts, limit=10),
+        "target_sectors": _build_top_list(sector_counts, limit=10),
+        "attack_origins": _build_top_list(country_counts, limit=10),
+        "intelligence_sources": _build_top_list(source_counts, limit=10),
+        "ioc_type_distribution": _build_top_list(ioc_type_counts, labels=IOC_TYPE_LABELS, limit=10),
+        "severity_distribution": _build_severity_distribution(list(warehouse_docs)),
+        "risk_distribution": [
+            {"bucket": "0-19", "value": sum(1 for doc in warehouse_docs if int(doc.get("ai_risk_score") or 0) < 20)},
+            {"bucket": "20-39", "value": sum(1 for doc in warehouse_docs if 20 <= int(doc.get("ai_risk_score") or 0) < 40)},
+            {"bucket": "40-59", "value": sum(1 for doc in warehouse_docs if 40 <= int(doc.get("ai_risk_score") or 0) < 60)},
+            {"bucket": "60-79", "value": sum(1 for doc in warehouse_docs if 60 <= int(doc.get("ai_risk_score") or 0) < 80)},
+            {"bucket": "80-100", "value": high_risk},
+        ],
+    }
+
+
 def _filter_news_docs(docs: List[Dict[str, Any]], query_text: Optional[str] = None, sources: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     allowed_sources = {item.lower() for item in NEWS_SOURCES}
     filtered = []
@@ -2458,6 +2887,32 @@ def list_sources(active: bool = True, query: Optional[str] = None, current_user:
     return _success({"items": items})
 
 
+@router.get("/lookups/sectors", tags=["Lookups"])
+def list_sectors(active: bool = True, query: Optional[str] = None, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+    docs = _hits_to_docs(_search_warehouse_docs(limit=5000))
+    sectors: Dict[str, Dict[str, Any]] = {}
+    for doc in docs:
+        sector = _sector_info(doc)
+        key = sector["sector"]
+        current = sectors.setdefault(
+            key,
+            {
+                "value": key,
+                "label": sector["sector_name"],
+                "label_th": sector["sector_name_th"],
+                "description": None,
+                "active": active,
+                "count": 0,
+            },
+        )
+        current["count"] += 1
+    items = sorted(sectors.values(), key=lambda item: (-item["count"], item["label"].lower()))
+    if query:
+        needle = query.lower()
+        items = [item for item in items if needle in item["label"].lower() or needle in str(item.get("label_th", "")).lower()]
+    return _success({"items": items})
+
+
 @router.get("/lookups/export-formats", tags=["Lookups"])
 def list_export_formats(current_user: Dict[str, Any] = Depends(require_dashboard_user)):
     items = [{"value": item["value"], "label": item["label"], "description": None, "active": True} for item in EXPORT_FORMATS]
@@ -2595,6 +3050,49 @@ def operations_dashboard(
     return _success(payload)
 
 
+@router.get("/operations/reports/threat-types/{threat_type:path}", tags=["Operations"])
+def threat_type_report_detail(
+    threat_type: str,
+    page: int = 1,
+    page_size: int = 20,
+    query: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    sources: Optional[List[str]] = Query(default=None),
+    severities: Optional[List[str]] = Query(default=None),
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    normalized_threat_type = str(threat_type or "").strip()
+    if not normalized_threat_type:
+        raise HTTPException(status_code=400, detail="Threat type is required")
+    docs = _hits_to_docs(
+        _search_warehouse_docs(
+            query_text=query or "*",
+            start_date=start_date,
+            end_date=end_date,
+            threat_types=[normalized_threat_type],
+            sources=sources,
+            severities=severities,
+            sort_by="risk",
+            limit=5000,
+        )
+    )
+    docs = _filter_warehouse_docs(
+        docs,
+        query=query,
+        threat_types=[normalized_threat_type],
+        sources=sources,
+        severities=severities,
+    )
+    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date)]
+    docs = sorted(
+        docs,
+        key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
+        reverse=True,
+    )
+    return _success(_build_threat_type_detail_payload(normalized_threat_type, docs, page, page_size))
+
+
 @router.get("/operations/reports/{report_key}", tags=["Operations"])
 def operations_report(
     report_key: str,
@@ -2722,6 +3220,128 @@ def threat_intelligence_report_export(request: ThreatIntelligenceExportRequest, 
         },
     )
     return _success(job)
+
+
+@router.get("/threat-intelligence/trend/events", tags=["Threat Intelligence"])
+def threat_trend_events(
+    page: int = 1,
+    page_size: int = 20,
+    query: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    threat_types: Optional[List[str]] = Query(default=None),
+    sources: Optional[List[str]] = Query(default=None),
+    severities: Optional[List[str]] = Query(default=None),
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    docs = _collect_ioc_docs(
+        query=query,
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        sort_by="time",
+    )
+    rows = _build_trend_event_rows(docs)
+    payload = {
+        "summary": {
+            "total_events": len(rows),
+            "critical": sum(1 for item in rows if str(item.get("severity")).lower() == "critical"),
+            "high": sum(1 for item in rows if str(item.get("severity")).lower() == "high"),
+        },
+        "filters": {
+            "query": query,
+            "start_date": start_date,
+            "end_date": end_date,
+            "threat_types": threat_types or [],
+            "sources": sources or [],
+            "severities": severities or [],
+        },
+        "items": _page_slice(rows, page, page_size),
+    }
+    return _paged(payload, page=page, page_size=page_size, total=len(rows))
+
+
+@router.get("/cve-intelligence", tags=["Threat Intelligence"])
+def cve_intelligence(
+    page: int = 1,
+    page_size: int = 20,
+    query: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    sources: Optional[List[str]] = Query(default=None),
+    severities: Optional[List[str]] = Query(default=None),
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    warehouse_docs = _hits_to_docs(_search_warehouse_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, sort_by="risk", limit=5000))
+    warehouse_docs = [doc for doc in warehouse_docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date)]
+    datalake_docs = _hits_to_docs(_search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, limit=5000))
+    records = _build_cve_records(warehouse_docs, datalake_docs)
+    if query and not CVE_PATTERN.search(query):
+        needle = query.lower()
+        records = [item for item in records if needle in item["cve_id"].lower() or needle in str(item.get("title") or "").lower()]
+    payload = {
+        "summary": {
+            "total_cves": len(records),
+            "exploited_in_the_wild": sum(1 for item in records if item["exploited_in_the_wild"]),
+            "critical": sum(1 for item in records if str(item["severity"]).lower() == "critical"),
+            "high": sum(1 for item in records if str(item["severity"]).lower() == "high"),
+        },
+        "items": _page_slice(records, page, page_size),
+    }
+    return _paged(payload, page=page, page_size=page_size, total=len(records))
+
+
+@router.get("/cve-intelligence/{cve_id}", tags=["Threat Intelligence"])
+def cve_intelligence_detail(cve_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+    normalized_cve = str(cve_id or "").strip().upper()
+    if not CVE_PATTERN.fullmatch(normalized_cve):
+        raise HTTPException(status_code=400, detail="Invalid CVE identifier")
+    warehouse_docs = _hits_to_docs(_search_warehouse_docs(query_text=normalized_cve, sort_by="risk", limit=5000))
+    datalake_docs = _hits_to_docs(_search_datalake_docs(query_text=normalized_cve, limit=5000))
+    records = _build_cve_records(warehouse_docs, datalake_docs)
+    record = next((item for item in records if item["cve_id"] == normalized_cve), None)
+    if not record:
+        raise HTTPException(status_code=404, detail="CVE not found")
+    related_ioc_docs = [
+        _build_ioc_record(index + 1, doc)
+        for index, doc in enumerate(warehouse_docs)
+        if normalized_cve in _extract_cve_ids(doc.get("ioc_value"), doc.get("description"), doc.get("reference"), doc.get("source_evidence"))
+    ]
+    return _success({**record, "related_iocs_detail": related_ioc_docs})
+
+
+@router.get("/threat-landscape", tags=["Threat Intelligence"])
+def threat_landscape(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    query: Optional[str] = None,
+    sources: Optional[List[str]] = Query(default=None),
+    threat_types: Optional[List[str]] = Query(default=None),
+    severities: Optional[List[str]] = Query(default=None),
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    warehouse_docs = _collect_ioc_docs(
+        query=query,
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        sort_by="risk",
+    )
+    datalake_docs = _hits_to_docs(_search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, threat_types=threat_types, severities=severities, limit=5000))
+    payload = _build_threat_landscape_payload(warehouse_docs, datalake_docs)
+    payload["filters"] = {
+        "query": query,
+        "start_date": start_date,
+        "end_date": end_date,
+        "sources": sources or [],
+        "threat_types": threat_types or [],
+        "severities": severities or [],
+    }
+    return _success(payload)
 
 
 @router.get("/operations/attack-time-report", tags=["Operations"])
@@ -2930,6 +3550,15 @@ def related_iocs(action_id: str, page: int = 1, page_size: int = 20, current_use
     return _paged({"items": _page_slice(related, page, page_size)}, page=page, page_size=page_size, total=len(related))
 
 
+@router.post("/actions/{action_id}/notes", tags=["Actions"], status_code=201)
+def create_action_note(action_id: str, request: ActionNoteRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+    doc = _get_processed_doc(action_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Action not found")
+    note = get_dashboard_state().append_action_note(action_id, current_user["name"], request.content.strip())
+    return _success({"action_id": action_id, "note": note})
+
+
 @router.post("/actions/{action_id}/assign", tags=["Actions"])
 def assign_action(action_id: str, request: AssignRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
     state = get_dashboard_state()
@@ -3056,6 +3685,46 @@ def list_iocs(
         "severities": [{"value": item["value"], "label": item["label"], "count": next((facet["count"] for facet in facets["severities"] if facet["value"] == item["value"]), 0)} for item in RISK_LEVELS],
     }
     return _paged({"summary": {"total_indicators": len(items)}, "quick_filters": quick_filters, "facets": facets, "items": _page_slice(items, page, page_size)}, page=page, page_size=page_size, total=len(items))
+
+
+@router.get("/iocs/relationships", tags=["IOCs"])
+def ioc_relationships(
+    query: Optional[str] = None,
+    ioc_type: Optional[str] = None,
+    ioc_value: Optional[str] = None,
+    ioc_id: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    target_type = str(ioc_type or "").strip().lower()
+    target_value = str(ioc_value or "").strip()
+    if ioc_id:
+        try:
+            target_type, target_value = _split_indicator_id(ioc_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if target_type and target_value:
+        warehouse_doc = _get_warehouse_doc_by_indicator(target_type, target_value)
+    else:
+        search_text = str(query or "").strip()
+        if not search_text:
+            raise HTTPException(status_code=400, detail="Provide query, ioc_id, or ioc_type and ioc_value")
+        matches = _collect_ioc_docs(query=search_text, sort_by="risk")
+        warehouse_doc = matches[0] if matches else None
+    if not warehouse_doc:
+        raise HTTPException(status_code=404, detail="IOC not found")
+
+    primary_indicator = (warehouse_doc.get("ioc_type", ""), warehouse_doc.get("ioc_value", ""))
+    datalake_docs = _fetch_datalake_by_indicators([primary_indicator], limit=200)
+    threat_types = [str(item) for item in (warehouse_doc.get("ai_threat_types") or []) if str(item).strip()]
+    related_docs = []
+    if threat_types:
+        related_docs = [
+            doc
+            for doc in _hits_to_docs(_search_warehouse_docs(threat_types=threat_types, limit=100))
+            if _indicator_id(doc.get("ioc_type", ""), doc.get("ioc_value", ""))
+            != _indicator_id(warehouse_doc.get("ioc_type", ""), warehouse_doc.get("ioc_value", ""))
+        ]
+    return _success(_build_ioc_relationship_graph(warehouse_doc, datalake_docs, related_docs))
 
 
 @router.get("/iocs/{ioc_id}", tags=["IOCs"])

@@ -14,10 +14,10 @@ This file is the complete route inventory for `ncsa-dashboard-model`. It lists e
 | API group | Prefix | Routes |
 | --- | --- | ---: |
 | AI service root API | none | 10 |
-| Dashboard API | `/api/v1` | 58 |
+| Dashboard API | `/api/v1` | 66 |
 | External sharing API | `/api/v1/external` | 19 |
 | Compatibility API | none | 13 |
-| Total | | 100 |
+| Total | | 108 |
 
 ## Auth Legend
 
@@ -63,6 +63,7 @@ Source: `ai-service/services/dashboard_router.py`
 | `GET` | `/api/v1/lookups/severities` | `Bearer/cookie token` | `list_severities` | Severity lookup list |
 | `GET` | `/api/v1/lookups/risk-levels` | `Bearer/cookie token` | `list_risk_levels` | Risk level lookup list |
 | `GET` | `/api/v1/lookups/sources` | `Bearer/cookie token` | `list_sources` | Intelligence source lookup list |
+| `GET` | `/api/v1/lookups/sectors` | `Bearer/cookie token` | `list_sectors` | Target sector lookup list derived from warehouse |
 | `GET` | `/api/v1/lookups/export-formats` | `Bearer/cookie token` | `list_export_formats` | Export format lookup list |
 | `GET` | `/api/v1/lookups/assignees` | `Bearer/cookie token` | `list_assignees` | Action assignee lookup list |
 | `GET` | `/api/v1/lookups/enforcement-points` | `Bearer/cookie token` | `list_enforcement_points` | Enforcement point lookup list |
@@ -70,11 +71,16 @@ Source: `ai-service/services/dashboard_router.py`
 | `POST` | `/api/v1/reports/executive/preview` | `Bearer/cookie token` | `executive_report_preview` | Preview executive report |
 | `POST` | `/api/v1/reports/executive/export` | `Bearer/cookie token` | `executive_report_export` | Create executive report export job |
 | `GET` | `/api/v1/operations/dashboard` | `Bearer/cookie token` | `operations_dashboard` | Operations dashboard metrics |
+| `GET` | `/api/v1/operations/reports/threat-types/{threat_type}` | `Bearer/cookie token` | `threat_type_report_detail` | Threat type detail breakdown for selected threat type |
 | `GET` | `/api/v1/operations/reports/{report_key}` | `Bearer/cookie token` | `operations_report` | Operations report by key |
 | `POST` | `/api/v1/reports/operations/{report_key}/preview` | `Bearer/cookie token` | `operations_report_preview` | Preview operations report |
 | `POST` | `/api/v1/reports/operations/attack-time/export` | `Bearer/cookie token` | `attack_time_report_export` | Create attack-time report export job |
 | `POST` | `/api/v1/reports/operations/{report_key}/export` | `Bearer/cookie token` | `operations_report_export` | Create operations report export job |
 | `POST` | `/api/v1/reports/threat-intelligence/export` | `Bearer/cookie token` | `threat_intelligence_report_export` | Create threat intelligence report export job |
+| `GET` | `/api/v1/threat-intelligence/trend/events` | `Bearer/cookie token` | `threat_trend_events` | Raw trend event rows for Threat Trend log table |
+| `GET` | `/api/v1/cve-intelligence` | `Bearer/cookie token` | `cve_intelligence` | CVE intelligence list and summary |
+| `GET` | `/api/v1/cve-intelligence/{cve_id}` | `Bearer/cookie token` | `cve_intelligence_detail` | CVE intelligence detail by CVE ID |
+| `GET` | `/api/v1/threat-landscape` | `Bearer/cookie token` | `threat_landscape` | Threat landscape aggregate dashboard data |
 | `GET` | `/api/v1/operations/attack-time-report` | `Bearer/cookie token` | `attack_time_report` | Attack time heatmap report |
 | `GET` | `/api/v1/operations/events/{event_id}` | `Bearer/cookie token` | `operation_event_detail` | Operation event detail |
 | `GET` | `/api/v1/actions` | `Bearer/cookie token` | `list_actions` | Action center list |
@@ -82,10 +88,12 @@ Source: `ai-service/services/dashboard_router.py`
 | `POST` | `/api/v1/reports/actions/export` | `Bearer/cookie token` | `action_report_export` | Create action report export job |
 | `GET` | `/api/v1/actions/{action_id}` | `Bearer/cookie token` | `action_detail` | Action detail |
 | `GET` | `/api/v1/actions/{action_id}/related-iocs` | `Bearer/cookie token` | `related_iocs` | Related IOCs for an action |
+| `POST` | `/api/v1/actions/{action_id}/notes` | `Bearer/cookie token` | `create_action_note` | Create analyst note for an action |
 | `POST` | `/api/v1/actions/{action_id}/assign` | `Bearer/cookie token` | `assign_action` | Assign action to user |
 | `POST` | `/api/v1/actions/{action_id}/false-positive` | `Bearer/cookie token` | `mark_false_positive` | Mark action/IOC as false positive |
 | `POST` | `/api/v1/actions/{action_id}/block-ip` | `Bearer/cookie token` | `block_ip` | Create block IP action |
 | `GET` | `/api/v1/iocs` | `Bearer/cookie token` | `list_iocs` | IOC list |
+| `GET` | `/api/v1/iocs/relationships` | `Bearer/cookie token` | `ioc_relationships` | IOC relationship graph and relationship log by query or IOC |
 | `GET` | `/api/v1/iocs/{ioc_id}` | `Bearer/cookie token` | `ioc_detail` | IOC detail |
 | `GET` | `/api/v1/iocs/{ioc_id}/events` | `Bearer/cookie token` | `ioc_events` | IOC event history |
 | `GET` | `/api/v1/ioc-analytics` | `Bearer/cookie token` | `ioc_analytics` | IOC analytics tabs |

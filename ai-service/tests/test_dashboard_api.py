@@ -306,6 +306,16 @@ def test_action_center_flows(client):
     assert detail.json()["data"]["evidence_graph"]["nodes"][0]["type"] == "ioc"
     assert detail.json()["data"]["context"]["source_name"] == "AbuseIPDB"
 
+    note = test_client.post(
+        "/api/v1/actions/wh-1/notes",
+        headers=headers,
+        json={"content": "Reviewed evidence and confirmed escalation path."},
+    )
+    assert note.status_code == 201
+    assert note.json()["data"]["note"]["content"] == "Reviewed evidence and confirmed escalation path."
+    detail_with_note = test_client.get("/api/v1/actions/wh-1", headers=headers)
+    assert any(item["content"] == "Reviewed evidence and confirmed escalation path." for item in detail_with_note.json()["data"]["notes"])
+
     assign = test_client.post(
         "/api/v1/actions/wh-1/assign",
         headers=headers,
@@ -395,6 +405,16 @@ def test_ioc_listing_detail_and_events(client):
     assert events.status_code == 200
     assert events.json()["data"]["items"][0]["source"] == "AbuseIPDB"
 
+    relationships = test_client.get(
+        "/api/v1/iocs/relationships?ioc_type=domain&ioc_value=malicious.example",
+        headers=headers,
+    )
+    assert relationships.status_code == 200
+    relationship_payload = relationships.json()["data"]
+    assert relationship_payload["matched_ioc"]["ioc_value"] == "malicious.example"
+    assert {node["type"] for node in relationship_payload["relationship"]["nodes"]} >= {"ioc", "threat_type", "threat_actor"}
+    assert any(item["relationship"] == "classified_as" for item in relationship_payload["relationship_log"])
+
     summary_tab = test_client.get("/api/v1/ioc-analytics?tab=ioc-summary", headers=headers)
     assert summary_tab.status_code == 200
     assert summary_tab.json()["data"]["cards"]["total_ioc"] == 3
@@ -404,6 +424,65 @@ def test_ioc_listing_detail_and_events(client):
     import_tab = test_client.get("/api/v1/ioc-analytics?tab=statistics-import", headers=headers)
     assert import_tab.status_code == 200
     assert import_tab.json()["data"]["charts"]["import_by_source"][0]["value"] >= 1
+
+
+def test_threat_type_detail_report(client):
+    test_client, _ = client
+    headers = _login(test_client)
+
+    detail = test_client.get(
+        "/api/v1/operations/reports/threat-types/Phishing?start_date=2026-03-10&end_date=2026-03-11",
+        headers=headers,
+    )
+    assert detail.status_code == 200
+    payload = detail.json()["data"]
+    assert payload["threat_type"] == "Phishing"
+    assert payload["summary"]["total_iocs"] >= 1
+    assert payload["ioc_type_distribution"][0]["ioc_type"] == "domain"
+    assert payload["targeted_sectors"]
+    assert payload["related_attackers"][0]["actor"] in {"Lazarus", "APT29"}
+    assert payload["related_iocs"][0]["ioc_value"]
+
+
+def test_missing_page_api_contracts(client):
+    test_client, _ = client
+    headers = _login(test_client)
+
+    sectors = test_client.get("/api/v1/lookups/sectors", headers=headers)
+    assert sectors.status_code == 200
+    sector_values = {item["value"] for item in sectors.json()["data"]["items"]}
+    assert {"government", "financial"}.issubset(sector_values)
+
+    trend_events = test_client.get(
+        "/api/v1/threat-intelligence/trend/events?start_date=2026-03-10&end_date=2026-03-11",
+        headers=headers,
+    )
+    assert trend_events.status_code == 200
+    trend_payload = trend_events.json()["data"]
+    assert trend_payload["summary"]["total_events"] >= 1
+    assert trend_payload["items"][0]["timestamp"]
+    assert trend_payload["items"][0]["ioc_value"]
+
+    cve_list = test_client.get("/api/v1/cve-intelligence", headers=headers)
+    assert cve_list.status_code == 200
+    cve_payload = cve_list.json()["data"]
+    assert cve_payload["summary"]["total_cves"] >= 1
+    assert cve_payload["items"][0]["cve_id"] == "CVE-2026-12345"
+    assert cve_payload["items"][0]["exploited_in_the_wild"] is True
+
+    cve_detail = test_client.get("/api/v1/cve-intelligence/CVE-2026-12345", headers=headers)
+    assert cve_detail.status_code == 200
+    assert cve_detail.json()["data"]["cve_id"] == "CVE-2026-12345"
+
+    landscape = test_client.get(
+        "/api/v1/threat-landscape?start_date=2026-03-10&end_date=2026-03-11",
+        headers=headers,
+    )
+    assert landscape.status_code == 200
+    landscape_payload = landscape.json()["data"]
+    assert landscape_payload["summary"]["total_iocs"] == 3
+    assert landscape_payload["threat_types"]
+    assert landscape_payload["target_sectors"]
 
 
 def test_collect_ioc_docs_post_filters_query(client, monkeypatch):
