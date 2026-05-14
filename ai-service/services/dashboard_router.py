@@ -3350,6 +3350,7 @@ def _build_executive_attack_volume_trend(
             start_date=(now - timedelta(hours=72)).isoformat(),
             end_date=now.isoformat(),
             sort_by="time",
+            time_mode=TIME_MODE_OBSERVED,
         )
         trend_datalake_docs = _fetch_datalake_by_indicators(
             [(doc.get("ioc_type", ""), doc.get("ioc_value", "")) for doc in trend_training_docs],
@@ -4480,8 +4481,8 @@ def list_threat_types(active: bool = True, query: Optional[str] = None, current_
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    warehouse_aggs = _warehouse_dashboard_aggs()
-    datalake_aggs = _datalake_dashboard_aggs()
+    warehouse_aggs = _warehouse_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
+    datalake_aggs = _datalake_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
     counts = Counter()
     for bucket in ((warehouse_aggs.get("threat_types") or {}).get("buckets") or []):
         counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
@@ -4511,8 +4512,8 @@ def list_sources(active: bool = True, query: Optional[str] = None, current_user:
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    warehouse_aggs = _warehouse_dashboard_aggs()
-    datalake_aggs = _datalake_dashboard_aggs()
+    warehouse_aggs = _warehouse_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
+    datalake_aggs = _datalake_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
     counts = Counter()
     for bucket in ((warehouse_aggs.get("sources") or {}).get("buckets") or []):
         counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
@@ -4530,7 +4531,7 @@ def list_sectors(active: bool = True, query: Optional[str] = None, current_user:
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    warehouse_aggs = _warehouse_dashboard_aggs()
+    warehouse_aggs = _warehouse_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
     items = []
     for bucket in ((warehouse_aggs.get("sectors") or {}).get("buckets") or []):
         label = str(bucket.get("key") or "").strip()
@@ -4582,10 +4583,10 @@ def executive_dashboard(
     if not start_date:
         start_date = _to_bangkok_date(now - timedelta(hours=24))
 
-    current_stats = _warehouse_summary_stats(start_date, end_date)
-    current_aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_trend=True)
+    current_stats = _warehouse_summary_stats(start_date, end_date, time_mode=TIME_MODE_OBSERVED)
+    current_aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_trend=True, time_mode=TIME_MODE_OBSERVED)
     previous_start_date, previous_end_date = _previous_date_window(start_date, end_date)
-    previous_stats = _warehouse_summary_stats(previous_start_date, previous_end_date) if previous_start_date and previous_end_date else None
+    previous_stats = _warehouse_summary_stats(previous_start_date, previous_end_date, time_mode=TIME_MODE_OBSERVED) if previous_start_date and previous_end_date else None
     severity_distribution = _build_severity_distribution_from_counts(current_stats.get("severity_counts") or {})
     treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("threat_types") or [])
     threat_level = _build_threat_level_from_aggregations(current_stats, current_aggs, now=now)
@@ -4597,6 +4598,7 @@ def executive_dashboard(
             start_date=(now - timedelta(hours=72)).isoformat(),
             end_date=now.isoformat(),
             sort_by="time",
+            time_mode=TIME_MODE_OBSERVED,
         )
         trend_datalake_docs = _fetch_datalake_by_indicators(
             [(doc.get("ioc_type", ""), doc.get("ioc_value", "")) for doc in trend_training_docs],
@@ -5389,7 +5391,7 @@ def ioc_relationships(
             raise HTTPException(status_code=400, detail="Provide query, ioc_id, or ioc_type and ioc_value")
         warehouse_doc = _get_warehouse_doc_by_value(search_text)
         if not warehouse_doc:
-            matches = _collect_ioc_docs(query=search_text, sort_by="risk")
+            matches = _collect_ioc_docs(query=search_text, sort_by="risk", time_mode=TIME_MODE_OBSERVED)
             warehouse_doc = matches[0] if matches else None
     if not warehouse_doc:
         raise HTTPException(status_code=404, detail="IOC not found")
@@ -5450,7 +5452,7 @@ def ioc_analytics(
     if cached:
         return cached
     if tab == "ioc-summary":
-        aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date)
+        aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED)
         total = int(aggs.get("total") or 0)
         severity_counts = _severity_counts_from_filter_agg(aggs.get("severity_counts") or {})
         by_source_breakdown = [
@@ -5492,14 +5494,14 @@ def ioc_analytics(
         return _cache_set(cache_key, _success(payload))
 
     if tab == "statistics-import":
-        aggs = _datalake_dashboard_aggs(start_date=start_date, end_date=end_date)
+        aggs = _datalake_dashboard_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED)
         total = int(aggs.get("total") or 0)
         using_warehouse_fallback = False
         if total == 0:
             # The UAT target keeps processed warehouse docs, but may not retain a
             # raw datalake mirror. Show actual imported warehouse data instead of
             # a misleading all-zero import dashboard.
-            aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_trend=True)
+            aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_trend=True, time_mode=TIME_MODE_OBSERVED)
             total = int(aggs.get("total") or 0)
             using_warehouse_fallback = True
         timeline_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: {"value": 0, "trusted": 0, "news": 0, "other": 0})
@@ -5566,6 +5568,7 @@ def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str,
         sources=request.sources or None,
         ioc_types=request.ioc_types or None,
         severities=request.severities or None,
+        time_mode=TIME_MODE_OBSERVED,
     )
     use_page_pagination = "page" in request.model_fields_set or "page_size" in request.model_fields_set
     if use_page_pagination:
