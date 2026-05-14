@@ -87,24 +87,41 @@ DASHBOARD_CACHE_TTL_SECONDS = int(os.getenv("DASHBOARD_CACHE_TTL_SECONDS", "120"
 _DASHBOARD_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _DASHBOARD_CACHE_LOCK = threading.Lock()
 COUNTRY_CODE_MAP = {
-    "thailand": "TH",
-    "china": "CN",
-    "india": "IN",
-    "indonesia": "ID",
-    "austria": "AT",
-    "russia": "RU",
-    "vietnam": "VN",
-    "netherlands": "NL",
-    "united states": "US",
-    "singapore": "SG",
-    "germany": "DE",
-    "united kingdom": "GB",
-    "france": "FR",
-    "australia": "AU",
-    "japan": "JP",
-    "south korea": "KR",
-    "iran": "IR",
-    "poland": "PL",
+    "afghanistan": "AF", "albania": "AL", "algeria": "DZ", "argentina": "AR",
+    "armenia": "AM", "australia": "AU", "austria": "AT", "azerbaijan": "AZ",
+    "bahrain": "BH", "bangladesh": "BD", "belarus": "BY", "belgium": "BE",
+    "bolivia": "BO", "bosnia and herzegovina": "BA", "brazil": "BR",
+    "brunei": "BN", "bulgaria": "BG", "cambodia": "KH", "cameroon": "CM",
+    "canada": "CA", "chile": "CL", "china": "CN", "colombia": "CO",
+    "costa rica": "CR", "croatia": "HR", "cuba": "CU", "cyprus": "CY",
+    "czech republic": "CZ", "czechia": "CZ", "denmark": "DK",
+    "dominican republic": "DO", "ecuador": "EC", "egypt": "EG",
+    "el salvador": "SV", "estonia": "EE", "ethiopia": "ET", "finland": "FI",
+    "france": "FR", "georgia": "GE", "germany": "DE", "ghana": "GH",
+    "greece": "GR", "guatemala": "GT", "honduras": "HN", "hong kong": "HK",
+    "hungary": "HU", "iceland": "IS", "india": "IN", "indonesia": "ID",
+    "iran": "IR", "iraq": "IQ", "ireland": "IE", "israel": "IL",
+    "italy": "IT", "jamaica": "JM", "japan": "JP", "jordan": "JO",
+    "kazakhstan": "KZ", "kenya": "KE", "kuwait": "KW", "kyrgyzstan": "KG",
+    "laos": "LA", "latvia": "LV", "lebanon": "LB", "libya": "LY",
+    "lithuania": "LT", "luxembourg": "LU", "macau": "MO", "malaysia": "MY",
+    "maldives": "MV", "malta": "MT", "mexico": "MX", "moldova": "MD",
+    "mongolia": "MN", "montenegro": "ME", "morocco": "MA", "mozambique": "MZ",
+    "myanmar": "MM", "nepal": "NP", "netherlands": "NL", "new zealand": "NZ",
+    "nicaragua": "NI", "nigeria": "NG", "north korea": "KP",
+    "north macedonia": "MK", "norway": "NO", "oman": "OM", "pakistan": "PK",
+    "palestine": "PS", "panama": "PA", "paraguay": "PY", "peru": "PE",
+    "philippines": "PH", "poland": "PL", "portugal": "PT", "qatar": "QA",
+    "romania": "RO", "russia": "RU", "russian federation": "RU",
+    "saudi arabia": "SA", "senegal": "SN", "serbia": "RS", "singapore": "SG",
+    "slovakia": "SK", "slovenia": "SI", "south africa": "ZA",
+    "south korea": "KR", "spain": "ES", "sri lanka": "LK", "sudan": "SD",
+    "sweden": "SE", "switzerland": "CH", "syria": "SY", "taiwan": "TW",
+    "tajikistan": "TJ", "tanzania": "TZ", "thailand": "TH", "tunisia": "TN",
+    "turkey": "TR", "turkmenistan": "TM", "uganda": "UG", "ukraine": "UA",
+    "united arab emirates": "AE", "united kingdom": "GB", "united states": "US",
+    "uruguay": "UY", "uzbekistan": "UZ", "venezuela": "VE", "vietnam": "VN",
+    "yemen": "YE", "zambia": "ZM", "zimbabwe": "ZW",
 }
 HIGH_CONFIDENCE_SOURCE_NAMES = {
     "VirusTotal",
@@ -452,15 +469,17 @@ def _pick_activity_time(doc: Dict[str, Any]) -> Optional[datetime]:
     return _parse_dt(
         doc.get("last_seen")
         or doc.get("event_time")
+        or doc.get("observation_date")
         or doc.get("collect_time")
         or doc.get("processed_at")
         or doc.get("first_seen")
+        or doc.get("@timestamp")
         or doc.get("created_at")
     )
 
 
 def _pick_event_time(doc: Dict[str, Any]) -> Optional[datetime]:
-    return _parse_dt(doc.get("event_time") or doc.get("first_seen") or doc.get("collect_time") or doc.get("processed_at") or doc.get("created_at"))
+    return _parse_dt(doc.get("event_time") or doc.get("observation_date") or doc.get("first_seen") or doc.get("@timestamp") or doc.get("collect_time") or doc.get("processed_at") or doc.get("created_at"))
 
 
 def _date_query_range(start_date: Optional[str], end_date: Optional[str]) -> Optional[Dict[str, str]]:
@@ -548,6 +567,24 @@ def _country_code_from_name(country_name: Optional[str]) -> Optional[str]:
         return raw.upper()
     normalized = raw.lower()
     return COUNTRY_CODE_MAP.get(normalized)
+
+
+_COUNTRY_NAME_FROM_CODE: Dict[str, str] = {code: name.title() for name, code in COUNTRY_CODE_MAP.items()}
+
+
+def _country_name_from_code_or_raw(raw_value: Optional[str]) -> str:
+    """Return a human-readable country name.
+
+    If *raw_value* is a 2-letter ISO code that we recognise, return the
+    full name (e.g. ``"US"`` → ``"United States"``).  Otherwise return
+    the original value unchanged.
+    """
+    if not raw_value:
+        return "Unknown"
+    trimmed = str(raw_value).strip()
+    if len(trimmed) == 2 and trimmed.isalpha():
+        return _COUNTRY_NAME_FROM_CODE.get(trimmed.upper(), trimmed.upper())
+    return trimmed
 
 
 def _indicator_id(ioc_type: str, ioc_value: str) -> str:
@@ -1182,7 +1219,7 @@ def _datalake_search_filters(
         filters.append({"terms": {"source_name": sources}})
     if threat_types:
         filters.append({"terms": {"threat_type": threat_types}})
-    date_filter = _date_filter(_date_query_range(start_date, end_date), ["event_time", "collect_time", "created_at"])
+    date_filter = _date_filter(_date_query_range(start_date, end_date), ["@timestamp", "observation_date", "first_seen"])
     if date_filter:
         filters.append(date_filter)
     return filters
@@ -1198,7 +1235,7 @@ def _datalake_dashboard_aggs(
 ) -> Dict[str, Any]:
     client = get_elastic_client()
     date_histogram: Dict[str, Any] = {
-        "field": "collect_time",
+        "field": "@timestamp",
         "calendar_interval": "day",
         "min_doc_count": 0,
         "format": "strict_date_optional_time",
@@ -1277,8 +1314,8 @@ def _search_datalake_docs(
         limit=limit,
         offset=offset,
         sort=[
-            {"event_time": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
-            {"collect_time": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
+            {"@timestamp": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
+            {"observation_date": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
         ],
         fields=["ioc_value^3", "description", "reference", "source_name", "threat_type"],
     )
@@ -1298,7 +1335,8 @@ def _search_action_docs(
     threat_types: Optional[List[str]] = None,
     limit: int = 100,
     offset: int = 0,
-) -> List[Dict[str, Any]]:
+    return_es_total: bool = False,
+) -> "List[Dict[str, Any]] | tuple[List[Dict[str, Any]], int]":
     result = _search_warehouse_docs(
         query_text=query_text,
         start_date=start_date,
@@ -1310,6 +1348,7 @@ def _search_action_docs(
         limit=limit,
         offset=offset,
     )
+    es_total = _search_total(result)
     docs = _hits_to_docs(result)
     docs = [doc for doc in docs if str(doc.get("tlp") or "amber").strip().lower() != "red"]
     docs = [doc for doc in docs if _is_action_document(doc)]
@@ -1321,7 +1360,10 @@ def _search_action_docs(
         ),
         reverse=True,
     )
-    return docs[offset:offset + limit]
+    sliced = docs[offset:offset + limit]
+    if return_es_total:
+        return sliced, es_total
+    return sliced
 
 
 def _hits_to_docs(result: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1352,7 +1394,7 @@ def _fetch_datalake_by_indicators(indicators: Sequence[Tuple[str, str]], limit: 
         ]
         body = {
             "query": {"bool": {"should": should, "minimum_should_match": 1}},
-            "sort": [{"event_time": {"order": "desc", "missing": "_last"}}, {"collect_time": {"order": "desc", "missing": "_last"}}],
+            "sort": [{"@timestamp": {"order": "desc", "missing": "_last"}}, {"observation_date": {"order": "desc", "missing": "_last"}}],
             "size": limit,
         }
         result = _safe_search(client.datalake_index, body)
@@ -1959,7 +2001,7 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
         origins.append(
             {
                 "country_code": _country_code_from_name(country),
-                "country_name": country,
+                "country_name": _country_name_from_code_or_raw(country),
                 "value": value,
                 "latitude": latitude,
                 "longitude": longitude,
@@ -2078,7 +2120,7 @@ def _ioc_doc_matches_date_range(doc: Dict[str, Any], start_date: Optional[str] =
 
     candidate_times = [
         _parse_dt(doc.get(field))
-        for field in ("published_at", "processed_at", "created_at", "collect_time", "first_seen", "event_time", "last_seen")
+        for field in ("published_at", "processed_at", "created_at", "collect_time", "first_seen", "event_time", "last_seen", "@timestamp", "observation_date")
     ]
     for candidate in candidate_times:
         if candidate is None:
@@ -2090,10 +2132,10 @@ def _ioc_doc_matches_date_range(doc: Dict[str, Any], start_date: Optional[str] =
         return True
 
     observed_from = _parse_dt(
-        doc.get("first_seen") or doc.get("event_time") or doc.get("collect_time") or doc.get("processed_at") or doc.get("created_at")
+        doc.get("first_seen") or doc.get("observation_date") or doc.get("event_time") or doc.get("@timestamp") or doc.get("collect_time") or doc.get("processed_at") or doc.get("created_at")
     )
     observed_to = _parse_dt(
-        doc.get("last_seen") or doc.get("collect_time") or doc.get("processed_at") or doc.get("first_seen") or doc.get("event_time") or doc.get("created_at")
+        doc.get("last_seen") or doc.get("observation_date") or doc.get("collect_time") or doc.get("processed_at") or doc.get("first_seen") or doc.get("@timestamp") or doc.get("event_time") or doc.get("created_at")
     )
     if observed_from is None and observed_to is None:
         return True
@@ -2122,19 +2164,20 @@ def _collect_ioc_docs(
     high_risk_only: bool = False,
     sort_by: str = "risk",
     sort_order: str = "desc",
-) -> List[Dict[str, Any]]:
-    docs = _hits_to_docs(
-        _search_warehouse_docs(
-            query_text=query or "*",
-            ioc_types=list(ioc_types or []) or None,
-            severities=list(severities or []) or None,
-            risk_levels=list(risk_levels or []) or None,
-            start_date=start_date,
-            end_date=end_date,
-            sort_by=sort_by,
-            limit=5000,
-        )
+    return_es_total: bool = False,
+) -> "List[Dict[str, Any]] | tuple[List[Dict[str, Any]], int]":
+    raw_result = _search_warehouse_docs(
+        query_text=query or "*",
+        ioc_types=list(ioc_types or []) or None,
+        severities=list(severities or []) or None,
+        risk_levels=list(risk_levels or []) or None,
+        start_date=start_date,
+        end_date=end_date,
+        sort_by=sort_by,
+        limit=5000,
     )
+    es_total = _search_total(raw_result)
+    docs = _hits_to_docs(raw_result)
     docs = _filter_warehouse_docs(
         docs,
         query=query,
@@ -2151,6 +2194,8 @@ def _collect_ioc_docs(
         key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
         reverse=(sort_order != "asc"),
     )
+    if return_es_total:
+        return docs, es_total
     return docs
 
 
@@ -2633,20 +2678,20 @@ def _build_aggregated_report_payload(
                 "aggs": {
                     "severity": {"terms": {"field": "severity", "size": 10, "missing": "clean"}},
                     "top_threat": {"terms": {"field": "ai_threat_types", "size": 1, "missing": "Unknown"}},
-                    "latest_seen": {"max": {"field": "event_time", "format": "strict_date_optional_time"}},
+                    "latest_seen": {"max": {"field": "processed_at", "format": "strict_date_optional_time"}},
                     "top_iocs": {
                         "top_hits": {
                             "size": 5,
-                            "_source": ["ioc_value", "ioc_type", "event_time", "ai_risk_score"],
+                            "_source": ["ioc_value", "ioc_type", "processed_at", "ai_risk_score"],
                             "sort": [
                                 {"ai_risk_score": {"order": "desc", "missing": "_last"}},
-                                {"event_time": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
+                                {"processed_at": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
                             ],
                         }
                     },
                     "timeline": {
                         "date_histogram": {
-                            "field": "event_time",
+                            "field": "processed_at",
                             "calendar_interval": interval,
                             "min_doc_count": 0,
                             "format": "strict_date_optional_time",
@@ -2672,7 +2717,7 @@ def _build_aggregated_report_payload(
         label_text = str(raw_label or "").strip()
         if not label_text or label_text.lower() in {"none", "null"}:
             continue
-        label = label_text
+        label = _country_name_from_code_or_raw(label_text) if report_key == "attack-origins" else label_text
         severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "clean": 0}
         for severity_bucket in ((bucket.get("severity") or {}).get("buckets") or []):
             severity = _normalize_severity(severity_bucket.get("key"))
@@ -2691,7 +2736,7 @@ def _build_aggregated_report_payload(
             "main_threat_type": str(top_threat_bucket.get("key")) if top_threat_bucket else None,
             "severity_distribution": severity_counts,
             "total_events": int(bucket.get("doc_count") or 0),
-            "share_percent": _percentage(int(bucket.get("doc_count") or 0), total_events),
+            "share_percent": 0,
             "sources": [label] if report_key == "intelligence-sources" and label else [],
             "top_asset": sample_iocs[0] if sample_iocs else None,
             "sample_iocs": sample_iocs,
@@ -2700,6 +2745,10 @@ def _build_aggregated_report_payload(
         if report_key == "attack-origins":
             item["country_code"] = _country_code_from_name(label)
         ranking_items.append(item)
+
+    groups_total = sum(item["total_events"] for item in ranking_items)
+    for item in ranking_items:
+        item["share_percent"] = _percentage(item["total_events"], groups_total)
 
     trend_comparison = _build_aggregated_trend(aggs.get("groups") or {}, report_key, interval)
     series_by_label = {item["label"]: item for item in trend_comparison.get("series") or []}
@@ -3171,7 +3220,7 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
         origins.append(
             {
                 "country_code": _country_code_from_name(country),
-                "country_name": country,
+                "country_name": _country_name_from_code_or_raw(country),
                 "value": int(bucket.get("doc_count") or 0),
                 "latitude": None,
                 "longitude": None,
@@ -3704,8 +3753,10 @@ def _build_threat_type_detail_payload(
     docs: Sequence[Dict[str, Any]],
     page: int,
     page_size: int,
+    es_total: Optional[int] = None,
 ) -> Dict[str, Any]:
     total = len(docs)
+    display_total = max(es_total, total) if es_total is not None else total
     ioc_type_counts = Counter(str(doc.get("ioc_type") or "").lower() for doc in docs if doc.get("ioc_type"))
     sector_counts = Counter(_sector_info(doc)["sector_name"] for doc in docs if _sector_info(doc).get("sector_name"))
     actor_counts = Counter(actor for doc in docs for actor in (doc.get("ai_threat_actors") or []) if str(actor).strip())
@@ -3773,7 +3824,7 @@ def _build_threat_type_detail_payload(
         "pagination": {
             "page": page,
             "page_size": page_size,
-            "total": total,
+            "total": display_total,
         },
     }
 
@@ -4294,18 +4345,18 @@ def threat_type_report_detail(
     normalized_threat_type = str(threat_type or "").strip()
     if not normalized_threat_type:
         raise HTTPException(status_code=400, detail="Threat type is required")
-    docs = _hits_to_docs(
-        _search_warehouse_docs(
-            query_text=query or "*",
-            start_date=start_date,
-            end_date=end_date,
-            threat_types=[normalized_threat_type],
-            sources=sources,
-            severities=severities,
-            sort_by="risk",
-            limit=5000,
-        )
+    raw_result = _search_warehouse_docs(
+        query_text=query or "*",
+        start_date=start_date,
+        end_date=end_date,
+        threat_types=[normalized_threat_type],
+        sources=sources,
+        severities=severities,
+        sort_by="risk",
+        limit=5000,
     )
+    es_total = _search_total(raw_result)
+    docs = _hits_to_docs(raw_result)
     docs = _filter_warehouse_docs(
         docs,
         query=query,
@@ -4319,7 +4370,8 @@ def threat_type_report_detail(
         key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
         reverse=True,
     )
-    return _success(_build_threat_type_detail_payload(normalized_threat_type, docs, page, page_size))
+    display_total = max(es_total, len(docs))
+    return _success(_build_threat_type_detail_payload(normalized_threat_type, docs, page, page_size, es_total=display_total))
 
 
 @router.get("/operations/reports/{report_key}", tags=["Operations"])
@@ -4470,7 +4522,7 @@ def threat_trend_events(
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    docs = _collect_ioc_docs(
+    docs, es_total = _collect_ioc_docs(
         query=query,
         start_date=start_date,
         end_date=end_date,
@@ -4478,6 +4530,7 @@ def threat_trend_events(
         threat_types=threat_types,
         severities=severities,
         sort_by="time",
+        return_es_total=True,
     )
     start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
     if start_bound or end_bound:
@@ -4488,9 +4541,10 @@ def threat_trend_events(
             )
         ]
     rows = _build_trend_event_rows(docs)
+    display_total = max(es_total, len(rows))
     payload = {
         "summary": {
-            "total_events": len(rows),
+            "total_events": display_total,
             "critical": sum(1 for item in rows if str(item.get("severity")).lower() == "critical"),
             "high": sum(1 for item in rows if str(item.get("severity")).lower() == "high"),
         },
@@ -4504,7 +4558,7 @@ def threat_trend_events(
         },
         "items": _page_slice(rows, page, page_size),
     }
-    return _cache_set(cache_key, _paged(payload, page=page, page_size=page_size, total=len(rows)))
+    return _cache_set(cache_key, _paged(payload, page=page, page_size=page_size, total=display_total))
 
 
 @router.get("/cve-intelligence", tags=["Threat Intelligence"])
@@ -4522,23 +4576,29 @@ def cve_intelligence(
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    warehouse_docs = _hits_to_docs(_search_warehouse_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, sort_by="risk", limit=5000))
+    warehouse_raw = _search_warehouse_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, sort_by="risk", limit=5000)
+    es_total_warehouse = _search_total(warehouse_raw)
+    warehouse_docs = _hits_to_docs(warehouse_raw)
     warehouse_docs = [doc for doc in warehouse_docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date)]
-    datalake_docs = _hits_to_docs(_search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, limit=5000))
+    datalake_raw = _search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, limit=5000)
+    es_total_datalake = _search_total(datalake_raw)
+    datalake_docs = _hits_to_docs(datalake_raw)
     records = _build_cve_records(warehouse_docs, datalake_docs)
     if query and not CVE_PATTERN.search(query):
         needle = query.lower()
         records = [item for item in records if needle in item["cve_id"].lower() or needle in str(item.get("title") or "").lower()]
+    es_total = max(es_total_warehouse, es_total_datalake)
+    display_total = max(es_total, len(records))
     payload = {
         "summary": {
-            "total_cves": len(records),
+            "total_cves": display_total,
             "exploited_in_the_wild": sum(1 for item in records if item["exploited_in_the_wild"]),
             "critical": sum(1 for item in records if str(item["severity"]).lower() == "critical"),
             "high": sum(1 for item in records if str(item["severity"]).lower() == "high"),
         },
         "items": _page_slice(records, page, page_size),
     }
-    return _cache_set(cache_key, _paged(payload, page=page, page_size=page_size, total=len(records)))
+    return _cache_set(cache_key, _paged(payload, page=page, page_size=page_size, total=display_total))
 
 
 @router.get("/cve-intelligence/{cve_id}", tags=["Threat Intelligence"])
@@ -4608,17 +4668,17 @@ def attack_time_report(
     severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    events = _hits_to_docs(
-        _search_datalake_docs(
-            query_text=query or "*",
-            start_date=start_date,
-            end_date=end_date,
-            threat_types=threat_types,
-            sources=sources,
-            severities=severities,
-            limit=2000,
-        )
+    datalake_raw = _search_datalake_docs(
+        query_text=query or "*",
+        start_date=start_date,
+        end_date=end_date,
+        threat_types=threat_types,
+        sources=sources,
+        severities=severities,
+        limit=2000,
     )
+    es_total_events = _search_total(datalake_raw)
+    events = _hits_to_docs(datalake_raw)
     heatmap = _build_heatmap(events)
     by_day_hour = Counter()
     for event in events:
@@ -4652,7 +4712,7 @@ def attack_time_report(
             "quietest_period": {"day": quiet[0], "time_range": f"{quiet[1]:02d}:00 - {min(23, quiet[1] + 2):02d}:00"},
             "avg_attack_rate": round(len(events) / max(len({item.get('event_time') for item in events if item.get('event_time')}), 1), 2),
             "highest_day": peak[0],
-            "total_events": len(events),
+            "total_events": max(es_total_events, len(events)),
         },
         "filters": {
             "query": query,
@@ -4663,9 +4723,9 @@ def attack_time_report(
             "severities": severities or [],
         },
         "heatmap": heatmap,
-        "events": {"items": paged_items, "total": len(sorted_events)},
+        "events": {"items": paged_items, "total": max(es_total_events, len(sorted_events))},
     }
-    return _paged(payload, page=page, page_size=page_size, total=len(sorted_events))
+    return _paged(payload, page=page, page_size=page_size, total=max(es_total_events, len(sorted_events)))
 
 
 @router.get("/operations/events/{event_id}", tags=["Operations"])
@@ -4710,7 +4770,7 @@ def list_actions(
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    docs = _search_action_docs(
+    docs, es_total = _search_action_docs(
         query_text=query or "*",
         start_date=start_date,
         end_date=end_date,
@@ -4718,6 +4778,7 @@ def list_actions(
         sources=sources,
         severities=severities,
         limit=2000,
+        return_es_total=True,
     )
     state = get_dashboard_state()
     action_pairs = [(doc, _build_action_ticket(doc, state.get_action_assignment(doc["_id"]))) for doc in docs]
@@ -4726,6 +4787,7 @@ def list_actions(
         action_pairs = [(doc, item) for doc, item in action_pairs if item["status"] in requested_statuses]
     filtered_docs = [doc for doc, _ in action_pairs]
     items = [item for _, item in action_pairs]
+    display_total = max(es_total, len(items))
     facets = {
         "threat_types": [{"value": key, "label": key, "count": value} for key, value in Counter(threat for doc in filtered_docs for threat in (doc.get("ai_threat_types") or [])).most_common(10)],
         "sources": [{"value": key, "label": key, "count": value} for key, value in Counter(source for doc in filtered_docs for source in _normalize_sources(doc)).most_common(10)],
@@ -4733,13 +4795,13 @@ def list_actions(
         "statuses": [{"value": key, "label": key.replace("_", " ").title(), "count": value} for key, value in Counter(item["status"] for item in items).most_common()],
     }
     summary = {
-        "total": len(items),
+        "total": display_total,
         "open": sum(1 for item in items if item["status"] == "open"),
         "in_progress": sum(1 for item in items if item["status"] == "in_progress"),
         "closed": sum(1 for item in items if item["status"] == "closed"),
     }
     paged_items = _page_slice(items, page, page_size)
-    return _cache_set(cache_key, _paged({"summary": summary, "facets": facets, "items": paged_items}, page=page, page_size=page_size, total=len(items)))
+    return _cache_set(cache_key, _paged({"summary": summary, "facets": facets, "items": paged_items}, page=page, page_size=page_size, total=display_total))
 
 
 @router.post("/reports/actions/preview", tags=["Reports"])
@@ -5185,7 +5247,10 @@ def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str,
         "summary": {
             "total_rows": len(docs),
             "generated_for": f"{request.start_date.isoformat()} to {request.end_date.isoformat()}",
-            "high_risk_count": sum(1 for doc in docs if _safe_int(doc.get("ai_risk_score")) >= 80),
+            "high_risk_count": sum(
+                1 for doc in docs
+                if _normalize_severity(doc.get("severity")) in ("critical", "high")
+            ),
         },
         "filters": request.model_dump(exclude_none=True),
         "charts": {
@@ -5329,7 +5394,9 @@ def list_news(
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    docs = _hits_to_docs(_search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, limit=5000))
+    news_raw = _search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, limit=5000)
+    es_total_news = _search_total(news_raw)
+    docs = _hits_to_docs(news_raw)
     items = _build_news_articles(docs, query_text=query, sources=sources)
     if sort_by == "title":
         items = sorted(items, key=lambda item: str(item.get("title") or "").lower())
@@ -5348,7 +5415,8 @@ def list_news(
             key=lambda item: _parse_dt(item.get("published_at")) or datetime.min.replace(tzinfo=UTC),
             reverse=True,
         )
-    return _cache_set(cache_key, _paged({"items": _page_slice(items, page, page_size)}, page=page, page_size=page_size, total=len(items)))
+    display_total = max(es_total_news, len(items))
+    return _cache_set(cache_key, _paged({"items": _page_slice(items, page, page_size)}, page=page, page_size=page_size, total=display_total))
 
 
 @router.get("/news/{article_id}", tags=["News"])
@@ -5570,3 +5638,53 @@ def list_ml_feedback(
     total = total_raw.get("value", 0) if isinstance(total_raw, dict) else int(total_raw or 0)
     items = _hits_to_docs(result)
     return _paged({"items": items}, page=page, page_size=page_size, total=total)
+
+
+@router.get("/diagnostics/data-sources", tags=["Diagnostics"])
+def data_source_diagnostics(
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    """Return document counts and connectivity status for each ES index."""
+    from elastic_client import DATALAKE_INDEX, WAREHOUSE_INDEX, PROCESSED_INDEX, QUARANTINE_INDEX
+
+    client = get_elastic_client()
+    indices_info: Dict[str, Any] = {}
+    for label, index in [
+        ("datalake", client.datalake_index),
+        ("warehouse", client.warehouse_index),
+        ("processed", PROCESSED_INDEX),
+        ("quarantine", QUARANTINE_INDEX),
+    ]:
+        try:
+            count = client.count_documents(index)
+            indices_info[label] = {
+                "index_name": index,
+                "status": "available",
+                "document_count": count,
+            }
+        except Exception as exc:
+            indices_info[label] = {
+                "index_name": index,
+                "status": "error",
+                "error": str(exc),
+                "document_count": 0,
+            }
+
+    # Quick datalake search test (no date filters)
+    datalake_test: Dict[str, Any] = {}
+    try:
+        test_body = {"size": 0, "track_total_hits": True, "query": {"match_all": {}}}
+        test_result = client.search_index(client.datalake_index, test_body)
+        datalake_test = {
+            "status": "ok",
+            "total_hits": _search_total(test_result),
+        }
+    except Exception as exc:
+        datalake_test = {"status": "error", "error": str(exc)}
+
+    return _success({
+        "indices": indices_info,
+        "datalake_search_test": datalake_test,
+        "datalake_url": client.datalake_url,
+        "warehouse_url": client.warehouse_url,
+    })
