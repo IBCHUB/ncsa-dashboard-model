@@ -3441,6 +3441,7 @@ def _operations_overview_from_aggs(aggs: Dict[str, Any], recent_stats: Optional[
         "critical_ioc_active": int((aggs.get("critical_active") or {}).get("doc_count") or 0),
         "new_ioc": int((recent_stats or {}).get("total_threats") or 0),
         "sources_active": int((aggs.get("source_count") or {}).get("value") or 0),
+        "high_ioc_active": int((aggs.get("high_active") or {}).get("doc_count") or 0),
     }
 
 
@@ -3459,6 +3460,7 @@ def _operations_overview(docs: List[Dict[str, Any]], anchor_end: Optional[dateti
         "critical_ioc_active": sum(1 for severity in severities if severity == "critical"),
         "new_ioc": new_ioc,
         "sources_active": len(unique_sources),
+        "high_ioc_active": sum(1 for severity in severities if severity == "high"),
     }
 
 
