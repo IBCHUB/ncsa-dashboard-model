@@ -2130,9 +2130,7 @@ def _percentage(value: int, total: int) -> float:
 
 def _comparison_metric(current_value: int, previous_value: int) -> Dict[str, Any]:
     if previous_value <= 0:
-        if current_value <= 0:
-            return {"previous_value": previous_value, "delta_percent": 0.0, "direction": "flat"}
-        return {"previous_value": previous_value, "delta_percent": 100.0, "direction": "up"}
+        return {"previous_value": previous_value, "delta_percent": 0.0, "direction": "flat"}
 
     change = round(((current_value - previous_value) / previous_value) * 100, 2)
     if change > 0:
