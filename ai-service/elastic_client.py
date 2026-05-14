@@ -257,6 +257,67 @@ class ElasticClient:
         """Public wrapper for raw index searches used by dashboard-facing APIs."""
         return self._search_index(index, body)
 
+    def scroll_search(self, index: str, body: Dict[str, Any], page_size: int = 2000) -> List[Dict[str, Any]]:
+        """Fetch ALL matching documents using scroll API. Returns list of hits."""
+        body = {**body, "size": page_size}
+        body.pop("from", None)
+        all_hits: List[Dict[str, Any]] = []
+        client = self._get_client(index)
+
+        if ES_CLIENT_AVAILABLE and client:
+            result = client.search(index=index, body=body, scroll="2m")
+            scroll_id = result.get("_scroll_id")
+            hits = result.get("hits", {}).get("hits", [])
+            all_hits.extend(hits)
+            while hits:
+                result = client.scroll(scroll_id=scroll_id, scroll="2m")
+                scroll_id = result.get("_scroll_id")
+                hits = result.get("hits", {}).get("hits", [])
+                all_hits.extend(hits)
+            if scroll_id:
+                try:
+                    client.clear_scroll(scroll_id=scroll_id)
+                except Exception:
+                    pass
+            return all_hits
+
+        url = self._get_url(index)
+        headers = self._get_headers(index)
+        response = httpx.post(
+            f"{url}/{index}/_search?scroll=2m",
+            json=body,
+            timeout=60,
+            headers=headers,
+        )
+        response.raise_for_status()
+        result = response.json()
+        scroll_id = result.get("_scroll_id")
+        hits = result.get("hits", {}).get("hits", [])
+        all_hits.extend(hits)
+        while hits:
+            response = httpx.post(
+                f"{url}/_search/scroll",
+                json={"scroll": "2m", "scroll_id": scroll_id},
+                timeout=60,
+                headers=headers,
+            )
+            response.raise_for_status()
+            result = response.json()
+            scroll_id = result.get("_scroll_id")
+            hits = result.get("hits", {}).get("hits", [])
+            all_hits.extend(hits)
+        if scroll_id:
+            try:
+                httpx.delete(
+                    f"{url}/_search/scroll",
+                    json={"scroll_id": scroll_id},
+                    timeout=10,
+                    headers=headers,
+                )
+            except Exception:
+                pass
+        return all_hits
+
     def _get_document(self, index: str, doc_id: str) -> Optional[Dict[str, Any]]:
         client = self._get_client(index)
         if ES_CLIENT_AVAILABLE and client:
