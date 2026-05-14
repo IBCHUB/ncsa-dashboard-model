@@ -45,6 +45,35 @@ router = APIRouter(prefix="/api/v1")
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 UTC = timezone.utc
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "clean": 0}
+
+# ---------------------------------------------------------------------------
+# Time-mode constants: each mode selects the semantically correct date fields
+# ---------------------------------------------------------------------------
+TIME_MODE_OBSERVED = "observed"
+TIME_MODE_PROCESSED = "processed"
+TIME_MODE_PUBLISHED = "published"
+TIME_MODE_CHANGED = "changed"
+
+WAREHOUSE_TIME_FIELDS: dict[str, list[str]] = {
+    "observed": ["event_time", "first_seen", "last_seen"],
+    "processed": ["processed_at", "created_at", "collect_time"],
+    "published": ["published_at"],
+    "changed": ["revoked_at", "last_shared_at", "updated_at"],
+}
+
+DATALAKE_TIME_FIELDS: dict[str, list[str]] = {
+    "observed": ["observation_date", "first_seen"],
+    "processed": ["@timestamp", "processed_at"],
+    "published": ["published_at"],
+    "changed": [],
+}
+
+PYTHON_FILTER_FIELDS: dict[str, list[str]] = {
+    "observed": ["event_time", "first_seen", "last_seen", "observation_date"],
+    "processed": ["processed_at", "created_at", "collect_time"],
+    "published": ["published_at"],
+    "changed": ["revoked_at", "last_shared_at", "updated_at"],
+}
 RISK_LEVELS = [
     {"value": "critical", "label": "Critical"},
     {"value": "high", "label": "High"},
@@ -482,6 +511,16 @@ def _pick_event_time(doc: Dict[str, Any]) -> Optional[datetime]:
     return _parse_dt(doc.get("event_time") or doc.get("observation_date") or doc.get("first_seen") or doc.get("@timestamp") or doc.get("collect_time") or doc.get("processed_at") or doc.get("created_at"))
 
 
+def _pick_display_time(doc: Dict[str, Any], time_mode: str = "processed") -> Optional[datetime]:
+    """Mode-aware timestamp for display — matches the filter semantics so users see consistent data."""
+    fields = PYTHON_FILTER_FIELDS.get(time_mode, PYTHON_FILTER_FIELDS["processed"])
+    for field in fields:
+        result = _parse_dt(doc.get(field))
+        if result:
+            return result
+    return _pick_event_time(doc)
+
+
 def _date_query_range(start_date: Optional[str], end_date: Optional[str]) -> Optional[Dict[str, str]]:
     if not start_date and not end_date:
         return None
@@ -503,7 +542,7 @@ def _resolve_anchor_end(end_date: Optional[str]) -> datetime:
 
 
 def _date_filter(range_query: Optional[Dict[str, str]], fields: Sequence[str]) -> Optional[Dict[str, Any]]:
-    if not range_query:
+    if not range_query or not fields:
         return None
     should = [{"range": {field: range_query}} for field in fields]
     return {"bool": {"should": should, "minimum_should_match": 1}}
@@ -765,6 +804,7 @@ def _warehouse_search_filters(
     review_states: Optional[List[str]] = None,
     warehouse_eligible_only: Optional[bool] = True,
     min_risk_score: Optional[int] = None,
+    time_mode: str = TIME_MODE_PROCESSED,
 ) -> List[Dict[str, Any]]:
     filters: List[Dict[str, Any]] = []
     if ioc_types:
@@ -800,7 +840,7 @@ def _warehouse_search_filters(
             filters.append({"term": {"warehouse_eligible": False}})
     date_filter = _date_filter(
         _date_query_range(start_date, end_date),
-        ["event_time", "first_seen", "last_seen", "collect_time", "published_at", "processed_at", "created_at"],
+        WAREHOUSE_TIME_FIELDS.get(time_mode, WAREHOUSE_TIME_FIELDS["processed"]),
     )
     if date_filter:
         filters.append(date_filter)
@@ -823,6 +863,7 @@ def _search_warehouse_docs(
     sort_by: str = "risk",
     limit: int = 100,
     offset: int = 0,
+    time_mode: str = TIME_MODE_PROCESSED,
 ) -> Dict[str, Any]:
     client = get_elastic_client()
     filters = _warehouse_search_filters(
@@ -837,6 +878,7 @@ def _search_warehouse_docs(
         review_states=review_states,
         warehouse_eligible_only=warehouse_eligible_only,
         min_risk_score=min_risk_score,
+        time_mode=time_mode,
     )
     sort = (
         [{"ai_risk_score": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
@@ -864,9 +906,9 @@ def _search_total(result: Dict[str, Any]) -> int:
         return 0
 
 
-def _warehouse_summary_stats(start_date: Optional[str], end_date: Optional[str]) -> Dict[str, Any]:
+def _warehouse_summary_stats(start_date: Optional[str], end_date: Optional[str], time_mode: str = TIME_MODE_PROCESSED) -> Dict[str, Any]:
     client = get_elastic_client()
-    filters = _warehouse_search_filters(start_date=start_date, end_date=end_date)
+    filters = _warehouse_search_filters(start_date=start_date, end_date=end_date, time_mode=time_mode)
     severity_filters = {
         severity: {"term": {"severity": severity}}
         for severity in ("critical", "high", "medium", "low", "clean")
@@ -1090,6 +1132,7 @@ def _warehouse_dashboard_aggs(
     min_risk_score: Optional[int] = None,
     include_heatmap: bool = False,
     include_trend: bool = False,
+    time_mode: str = TIME_MODE_PROCESSED,
 ) -> Dict[str, Any]:
     client = get_elastic_client()
     filters = _warehouse_search_filters(
@@ -1100,6 +1143,7 @@ def _warehouse_dashboard_aggs(
         severities=severities,
         risk_levels=risk_levels,
         min_risk_score=min_risk_score,
+        time_mode=time_mode,
     )
     must: List[Dict[str, Any]] = []
     if query and query != "*":
@@ -1111,8 +1155,9 @@ def _warehouse_dashboard_aggs(
                 }
             }
         )
+    histogram_field = "event_time" if time_mode == TIME_MODE_OBSERVED else "processed_at"
     date_histogram: Dict[str, Any] = {
-        "field": "processed_at",
+        "field": histogram_field,
         "calendar_interval": _aggregation_interval(start_date, end_date) if include_trend else "hour",
         "min_doc_count": 0,
         "format": "strict_date_optional_time",
@@ -1120,6 +1165,10 @@ def _warehouse_dashboard_aggs(
     bounds = _date_histogram_bounds(start_date, end_date)
     if bounds:
         date_histogram["extended_bounds"] = bounds
+        # hard_bounds prevents buckets outside the requested range.  Without
+        # this, 'observed' mode (event_time) may span years of historical
+        # timestamps and exceed the max_buckets limit (65 536).
+        date_histogram["hard_bounds"] = bounds
     aggs: Dict[str, Any] = {
         "active_iocs": {"cardinality": {"field": "canonical_ioc_key.keyword", "precision_threshold": 40000}},
         "source_count": {"cardinality": {"field": "source_name", "precision_threshold": 40000}},
@@ -1209,6 +1258,7 @@ def _datalake_search_filters(
     end_date: Optional[str] = None,
     sources: Optional[List[str]] = None,
     threat_types: Optional[List[str]] = None,
+    time_mode: str = TIME_MODE_PROCESSED,
 ) -> List[Dict[str, Any]]:
     filters: List[Dict[str, Any]] = []
     if ioc_types:
@@ -1219,7 +1269,10 @@ def _datalake_search_filters(
         filters.append({"terms": {"source_name": sources}})
     if threat_types:
         filters.append({"terms": {"threat_type": threat_types}})
-    date_filter = _date_filter(_date_query_range(start_date, end_date), ["@timestamp", "observation_date", "first_seen"])
+    date_filter = _date_filter(
+        _date_query_range(start_date, end_date),
+        DATALAKE_TIME_FIELDS.get(time_mode, DATALAKE_TIME_FIELDS["processed"]),
+    )
     if date_filter:
         filters.append(date_filter)
     return filters
@@ -1232,10 +1285,12 @@ def _datalake_dashboard_aggs(
     sources: Optional[List[str]] = None,
     severities: Optional[List[str]] = None,
     threat_types: Optional[List[str]] = None,
+    time_mode: str = TIME_MODE_PROCESSED,
 ) -> Dict[str, Any]:
     client = get_elastic_client()
+    dl_histogram_field = "observation_date" if time_mode == TIME_MODE_OBSERVED else "@timestamp"
     date_histogram: Dict[str, Any] = {
-        "field": "@timestamp",
+        "field": dl_histogram_field,
         "calendar_interval": "day",
         "min_doc_count": 0,
         "format": "strict_date_optional_time",
@@ -1243,6 +1298,7 @@ def _datalake_dashboard_aggs(
     bounds = _date_histogram_bounds(start_date, end_date)
     if bounds:
         date_histogram["extended_bounds"] = bounds
+        date_histogram["hard_bounds"] = bounds
     body = {
         "size": 0,
         "track_total_hits": True,
@@ -1255,6 +1311,7 @@ def _datalake_dashboard_aggs(
                     sources=sources,
                     severities=severities,
                     threat_types=threat_types,
+                    time_mode=time_mode,
                 ),
             }
         },
@@ -1297,6 +1354,7 @@ def _search_datalake_docs(
     threat_types: Optional[List[str]] = None,
     limit: int = 100,
     offset: int = 0,
+    time_mode: str = TIME_MODE_PROCESSED,
 ) -> Dict[str, Any]:
     client = get_elastic_client()
     filters = _datalake_search_filters(
@@ -1306,6 +1364,7 @@ def _search_datalake_docs(
         end_date=end_date,
         sources=sources,
         threat_types=threat_types,
+        time_mode=time_mode,
     )
     return _search_documents(
         client.datalake_index,
@@ -1337,6 +1396,7 @@ def _search_action_docs(
     offset: int = 0,
     return_es_total: bool = False,
 ) -> "List[Dict[str, Any]] | tuple[List[Dict[str, Any]], int]":
+    # Actions intentionally use processed-time semantics (when the alert was ingested/actioned)
     result = _search_warehouse_docs(
         query_text=query_text,
         start_date=start_date,
@@ -1763,12 +1823,12 @@ def _build_threat_volume_nodes_from_terms(terms: Sequence[Dict[str, Any]], limit
     ]
 
 
-def _build_heatmap(docs: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _build_heatmap(docs: List[Dict[str, Any]], time_mode: str = TIME_MODE_OBSERVED) -> Dict[str, Any]:
     x_axis = [f"{hour:02d}:00" for hour in range(24)]
     y_axis = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     counts = {(day, hour): 0 for day in range(7) for hour in range(24)}
     for doc in docs:
-        event_time = _pick_event_time(doc)
+        event_time = _pick_display_time(doc, time_mode)
         if not event_time:
             continue
         localized = event_time.astimezone(BANGKOK_TZ)
@@ -2113,15 +2173,18 @@ def _resolve_date_bounds(start_date: Optional[str], end_date: Optional[str]) -> 
     return start_bound, end_bound
 
 
-def _ioc_doc_matches_date_range(doc: Dict[str, Any], start_date: Optional[str] = None, end_date: Optional[str] = None) -> bool:
+def _ioc_doc_matches_date_range(
+    doc: Dict[str, Any],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    time_mode: str = TIME_MODE_PROCESSED,
+) -> bool:
     start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
     if start_bound is None and end_bound is None:
         return True
 
-    candidate_times = [
-        _parse_dt(doc.get(field))
-        for field in ("published_at", "processed_at", "created_at", "collect_time", "first_seen", "event_time", "last_seen", "@timestamp", "observation_date")
-    ]
+    mode_fields = PYTHON_FILTER_FIELDS.get(time_mode, PYTHON_FILTER_FIELDS["processed"])
+    candidate_times = [_parse_dt(doc.get(field)) for field in mode_fields]
     for candidate in candidate_times:
         if candidate is None:
             continue
@@ -2131,12 +2194,17 @@ def _ioc_doc_matches_date_range(doc: Dict[str, Any], start_date: Optional[str] =
             continue
         return True
 
-    observed_from = _parse_dt(
-        doc.get("first_seen") or doc.get("observation_date") or doc.get("event_time") or doc.get("@timestamp") or doc.get("collect_time") or doc.get("processed_at") or doc.get("created_at")
-    )
-    observed_to = _parse_dt(
-        doc.get("last_seen") or doc.get("observation_date") or doc.get("collect_time") or doc.get("processed_at") or doc.get("first_seen") or doc.get("@timestamp") or doc.get("event_time") or doc.get("created_at")
-    )
+    # Range-overlap check: use first/last from mode-specific fields
+    observed_from: Optional[datetime] = None
+    observed_to: Optional[datetime] = None
+    for field in mode_fields:
+        parsed = _parse_dt(doc.get(field))
+        if parsed is not None:
+            if observed_from is None or parsed < observed_from:
+                observed_from = parsed
+            if observed_to is None or parsed > observed_to:
+                observed_to = parsed
+
     if observed_from is None and observed_to is None:
         return True
 
@@ -2165,6 +2233,7 @@ def _collect_ioc_docs(
     sort_by: str = "risk",
     sort_order: str = "desc",
     return_es_total: bool = False,
+    time_mode: str = TIME_MODE_PROCESSED,
 ) -> "List[Dict[str, Any]] | tuple[List[Dict[str, Any]], int]":
     raw_result = _search_warehouse_docs(
         query_text=query or "*",
@@ -2175,6 +2244,7 @@ def _collect_ioc_docs(
         end_date=end_date,
         sort_by=sort_by,
         limit=5000,
+        time_mode=time_mode,
     )
     es_total = _search_total(raw_result)
     docs = _hits_to_docs(raw_result)
@@ -2186,7 +2256,7 @@ def _collect_ioc_docs(
         severities=list(severities or []) or None,
         risk_levels=list(risk_levels or []) or None,
     )
-    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date)]
+    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date, time_mode=time_mode)]
     if high_risk_only:
         docs = [doc for doc in docs if int(doc.get("ai_risk_score") or 0) >= 80]
     docs = sorted(
@@ -2626,6 +2696,7 @@ def _build_aggregated_report_payload(
     threat_types: Optional[List[str]],
     sources: Optional[List[str]],
     severities: Optional[List[str]],
+    time_mode: str = TIME_MODE_PROCESSED,
 ) -> Optional[Dict[str, Any]]:
     dimension = AGGREGATABLE_REPORT_DIMENSIONS.get(report_key)
     if not dimension:
@@ -2638,6 +2709,7 @@ def _build_aggregated_report_payload(
         end_date=end_date,
         sources=sources,
         threat_types=threat_types,
+        time_mode=time_mode,
     )
     must: List[Dict[str, Any]] = []
     if query and query != "*":
@@ -2662,6 +2734,17 @@ def _build_aggregated_report_payload(
     if dimension.get("missing") is not None:
         terms_config["missing"] = dimension["missing"]
 
+    report_time_field = "event_time" if time_mode == TIME_MODE_OBSERVED else "processed_at"
+    timeline_histogram: Dict[str, Any] = {
+        "field": report_time_field,
+        "calendar_interval": interval,
+        "min_doc_count": 0,
+        "format": "strict_date_optional_time",
+    }
+    bounds = _date_histogram_bounds(start_date, end_date)
+    if bounds:
+        timeline_histogram["hard_bounds"] = bounds
+
     body: Dict[str, Any] = {
         "size": 0,
         "track_total_hits": True,
@@ -2678,25 +2761,18 @@ def _build_aggregated_report_payload(
                 "aggs": {
                     "severity": {"terms": {"field": "severity", "size": 10, "missing": "clean"}},
                     "top_threat": {"terms": {"field": "ai_threat_types", "size": 1, "missing": "Unknown"}},
-                    "latest_seen": {"max": {"field": "processed_at", "format": "strict_date_optional_time"}},
+                    "latest_seen": {"max": {"field": report_time_field, "format": "strict_date_optional_time"}},
                     "top_iocs": {
                         "top_hits": {
                             "size": 5,
-                            "_source": ["ioc_value", "ioc_type", "processed_at", "ai_risk_score"],
+                            "_source": ["ioc_value", "ioc_type", report_time_field, "ai_risk_score"],
                             "sort": [
                                 {"ai_risk_score": {"order": "desc", "missing": "_last"}},
-                                {"processed_at": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
+                                {report_time_field: {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
                             ],
                         }
                     },
-                    "timeline": {
-                        "date_histogram": {
-                            "field": "processed_at",
-                            "calendar_interval": interval,
-                            "min_doc_count": 0,
-                            "format": "strict_date_optional_time",
-                        }
-                    },
+                    "timeline": {"date_histogram": timeline_histogram},
                 },
             },
         },
@@ -3998,7 +4074,7 @@ def _build_news_articles(docs: List[Dict[str, Any]], query_text: Optional[str] =
     articles: Dict[str, Dict[str, Any]] = {}
     for doc in _filter_news_docs(docs, query_text=query_text, sources=sources):
         source_name = doc.get("source_name")
-        event_time = _pick_event_time(doc)
+        event_time = _parse_dt(doc.get("published_at")) or _pick_event_time(doc)
         title_source = str(doc.get("title") or doc.get("description") or doc.get("reference") or doc.get("ioc_value") or "").strip()
         title = title_source.split(".")[0][:120]
         if not source_name or not title or not event_time:
@@ -4314,10 +4390,10 @@ def operations_dashboard(
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
     anchor_end = _resolve_anchor_end(end_date) if end_date else None
-    aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_heatmap=True)
+    aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_heatmap=True, time_mode=TIME_MODE_OBSERVED)
     recent_start = _to_bangkok_date((anchor_end or datetime.now(UTC)) - timedelta(days=1))
     recent_end = _to_bangkok_date(anchor_end or datetime.now(UTC))
-    recent_stats = _warehouse_summary_stats(recent_start, recent_end)
+    recent_stats = _warehouse_summary_stats(recent_start, recent_end, time_mode=TIME_MODE_OBSERVED)
     payload = {
         "overview": _operations_overview_from_aggs(aggs, recent_stats=recent_stats),
         "incident_by_severity": _build_severity_distribution_from_counts(_severity_counts_from_filter_agg(aggs.get("severity_counts") or {})),
@@ -4354,6 +4430,7 @@ def threat_type_report_detail(
         severities=severities,
         sort_by="risk",
         limit=5000,
+        time_mode=TIME_MODE_OBSERVED,
     )
     es_total = _search_total(raw_result)
     docs = _hits_to_docs(raw_result)
@@ -4364,7 +4441,7 @@ def threat_type_report_detail(
         sources=sources,
         severities=severities,
     )
-    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date)]
+    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED)]
     docs = sorted(
         docs,
         key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
@@ -4414,6 +4491,7 @@ def operations_report(
         threat_types=threat_types,
         sources=sources,
         severities=severities,
+        time_mode=TIME_MODE_OBSERVED,
     )
     if aggregated_payload:
         return _cache_set(cache_key, _success(aggregated_payload))
@@ -4531,15 +4609,8 @@ def threat_trend_events(
         severities=severities,
         sort_by="time",
         return_es_total=True,
+        time_mode=TIME_MODE_OBSERVED,
     )
-    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
-    if start_bound or end_bound:
-        docs = [
-            doc for doc in docs
-            if (lambda t: t is not None and (start_bound is None or t >= start_bound) and (end_bound is None or t <= end_bound))(
-                _parse_dt(doc.get("processed_at") or doc.get("created_at")) or _pick_event_time(doc)
-            )
-        ]
     rows = _build_trend_event_rows(docs)
     display_total = max(es_total, len(rows))
     payload = {
@@ -4576,11 +4647,11 @@ def cve_intelligence(
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    warehouse_raw = _search_warehouse_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, sort_by="risk", limit=5000)
+    warehouse_raw = _search_warehouse_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, sort_by="risk", limit=5000, time_mode=TIME_MODE_PUBLISHED)
     es_total_warehouse = _search_total(warehouse_raw)
     warehouse_docs = _hits_to_docs(warehouse_raw)
-    warehouse_docs = [doc for doc in warehouse_docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date)]
-    datalake_raw = _search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, limit=5000)
+    warehouse_docs = [doc for doc in warehouse_docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date, time_mode=TIME_MODE_PUBLISHED)]
+    datalake_raw = _search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, limit=5000, time_mode=TIME_MODE_PUBLISHED)
     es_total_datalake = _search_total(datalake_raw)
     datalake_docs = _hits_to_docs(datalake_raw)
     records = _build_cve_records(warehouse_docs, datalake_docs)
@@ -4642,8 +4713,9 @@ def threat_landscape(
         threat_types=threat_types,
         severities=severities,
         sort_by="risk",
+        time_mode=TIME_MODE_OBSERVED,
     )
-    datalake_docs = _hits_to_docs(_search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, threat_types=threat_types, severities=severities, limit=5000))
+    datalake_docs = _hits_to_docs(_search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, threat_types=threat_types, severities=severities, limit=5000, time_mode=TIME_MODE_OBSERVED))
     payload = _build_threat_landscape_payload(warehouse_docs, datalake_docs)
     payload["filters"] = {
         "query": query,
@@ -4676,13 +4748,14 @@ def attack_time_report(
         sources=sources,
         severities=severities,
         limit=2000,
+        time_mode=TIME_MODE_OBSERVED,
     )
     es_total_events = _search_total(datalake_raw)
     events = _hits_to_docs(datalake_raw)
-    heatmap = _build_heatmap(events)
+    heatmap = _build_heatmap(events, time_mode=TIME_MODE_OBSERVED)
     by_day_hour = Counter()
     for event in events:
-        event_time = _pick_event_time(event)
+        event_time = _pick_display_time(event, TIME_MODE_OBSERVED)
         if not event_time:
             continue
         local = event_time.astimezone(BANGKOK_TZ)
@@ -4690,20 +4763,21 @@ def attack_time_report(
     peak = max(by_day_hour.items(), key=lambda item: item[1])[0] if by_day_hour else ("Monday", 0)
     quiet = min(by_day_hour.items(), key=lambda item: item[1])[0] if by_day_hour else ("Sunday", 3)
     paged_items = []
-    sorted_events = sorted(events, key=lambda item: _pick_event_time(item) or datetime.min.replace(tzinfo=UTC), reverse=True)
+    sorted_events = sorted(events, key=lambda item: _pick_display_time(item, TIME_MODE_OBSERVED) or datetime.min.replace(tzinfo=UTC), reverse=True)
     for event in _page_slice(sorted_events, page, page_size):
-        timestamp = _pick_event_time(event)
+        timestamp = _pick_display_time(event, TIME_MODE_OBSERVED)
+        misp_event = event.get("Event") if isinstance(event.get("Event"), dict) else {}
         paged_items.append(
             {
                 "event_id": event["_id"],
                 "timestamp": timestamp.isoformat().replace("+00:00", "Z") if timestamp else None,
                 "severity": _severity_label(_normalize_severity(event.get("severity"))),
-                "threat_types": event.get("threat_type") or [],
-                "ioc_value": event.get("ioc_value"),
+                "threat_types": event.get("threat_type") or event.get("type") or [],
+                "ioc_value": event.get("ioc_value") or event.get("value"),
                 "source_attacker": event.get("source_ip"),
                 "target_victim": event.get("target_ip"),
                 "source_name": event.get("source_name"),
-                "description": event.get("description"),
+                "description": event.get("description") or misp_event.get("info"),
             }
         )
     payload = {
@@ -4995,6 +5069,7 @@ def list_iocs(
         sort_by=sort_by,
         limit=page_size,
         offset=max(page - 1, 0) * page_size,
+        time_mode=TIME_MODE_OBSERVED,
     )
     docs = _hits_to_docs(search_result)
     total = _search_total(search_result)
@@ -5007,6 +5082,7 @@ def list_iocs(
         risk_levels=risk_levels,
         severities=severities,
         min_risk_score=min_risk_score,
+        time_mode=TIME_MODE_OBSERVED,
     )
     items = [_build_ioc_record(index + 1, doc) for index, doc in enumerate(docs)]
     severity_facet_counts = _severity_counts_from_filter_agg(aggs.get("severity_counts") or {})
@@ -5082,18 +5158,18 @@ def ioc_events(ioc_id: str, page: int = 1, page_size: int = 20, current_user: Di
     ioc_type, ioc_value = _split_indicator_id(ioc_id)
     docs = sorted(
         _fetch_datalake_by_indicators([(ioc_type, ioc_value)], limit=500),
-        key=lambda item: _pick_event_time(item) or datetime.min.replace(tzinfo=UTC),
+        key=lambda item: _pick_display_time(item, TIME_MODE_OBSERVED) or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
-    items = [
-        {
-            "observed_at": (_pick_event_time(doc).isoformat().replace("+00:00", "Z") if _pick_event_time(doc) else None),
+    items = []
+    for doc in _page_slice(docs, page, page_size):
+        observed = _pick_display_time(doc, TIME_MODE_OBSERVED)
+        items.append({
+            "observed_at": observed.isoformat().replace("+00:00", "Z") if observed else None,
             "source": doc.get("source_name"),
             "severity": _severity_label(_normalize_severity(doc.get("severity"))),
             "description": doc.get("description") or doc.get("reference"),
-        }
-        for doc in _page_slice(docs, page, page_size)
-    ]
+        })
     return _paged({"items": items}, page=page, page_size=page_size, total=len(docs))
 
 
@@ -5394,7 +5470,7 @@ def list_news(
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    news_raw = _search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, limit=5000)
+    news_raw = _search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, limit=5000, time_mode=TIME_MODE_PUBLISHED)
     es_total_news = _search_total(news_raw)
     docs = _hits_to_docs(news_raw)
     items = _build_news_articles(docs, query_text=query, sources=sources)
@@ -5426,7 +5502,7 @@ def news_detail(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
+    docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000, time_mode=TIME_MODE_PUBLISHED))
     articles = {item["article_id"]: item for item in _build_news_articles(docs)}
     article = articles.get(article_id)
     if not article:
