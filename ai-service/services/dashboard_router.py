@@ -13,12 +13,15 @@ import csv
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import hmac
+import ipaddress
 import io
 import json
 import logging
 from math import floor
 import os
 import re
+import threading
+import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 import zipfile
@@ -80,6 +83,9 @@ REPORT_KEY_ALIASES = {
     "sectors": "target-sectors",
 }
 HTTP_BEARER = HTTPBearer(auto_error=False)
+DASHBOARD_CACHE_TTL_SECONDS = int(os.getenv("DASHBOARD_CACHE_TTL_SECONDS", "120"))
+_DASHBOARD_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_DASHBOARD_CACHE_LOCK = threading.Lock()
 COUNTRY_CODE_MAP = {
     "thailand": "TH",
     "china": "CN",
@@ -108,6 +114,8 @@ HIGH_CONFIDENCE_SOURCE_NAMES = {
     "MalwareBazaar",
     "Recorded Future",
     "Cyberint",
+    "cyberint_iocs",
+    "Cyble Threat Intelligence Feed",
     "AlienVault",
     "MITRE",
     "Sandbox",
@@ -115,6 +123,19 @@ HIGH_CONFIDENCE_SOURCE_NAMES = {
     "Snort",
 }
 CVE_PATTERN = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
+
+
+def _is_high_confidence_source(source_name: Any) -> bool:
+    source = str(source_name or "").strip()
+    if not source:
+        return False
+    normalized = source.lower()
+    return (
+        source in HIGH_CONFIDENCE_SOURCE_NAMES
+        or normalized in {item.lower() for item in HIGH_CONFIDENCE_SOURCE_NAMES}
+        or normalized.startswith("cyberint")
+        or "cyble threat intelligence" in normalized
+    )
 
 
 class LoginRequest(BaseModel):
@@ -325,6 +346,37 @@ def _paged(data: Any, page: int, page_size: int, total: int, **meta_extra: Any) 
     return {"data": data, "meta": _meta(page=page, page_size=page_size, total=total, total_pages=total_pages, **meta_extra), "error": None}
 
 
+def _cache_key(name: str, **params: Any) -> str:
+    return json.dumps({"name": name, "params": params}, sort_keys=True, default=str, ensure_ascii=True)
+
+
+def _cache_get(key: str) -> Optional[Dict[str, Any]]:
+    if DASHBOARD_CACHE_TTL_SECONDS <= 0:
+        return None
+    now = time.monotonic()
+    with _DASHBOARD_CACHE_LOCK:
+        cached = _DASHBOARD_CACHE.get(key)
+        if not cached:
+            return None
+        expires_at, payload = cached
+        if expires_at <= now:
+            _DASHBOARD_CACHE.pop(key, None)
+            return None
+        return payload
+
+
+def _cache_set(key: str, payload: Dict[str, Any], ttl: Optional[int] = None) -> Dict[str, Any]:
+    effective_ttl = DASHBOARD_CACHE_TTL_SECONDS if ttl is None else ttl
+    if effective_ttl > 0:
+        with _DASHBOARD_CACHE_LOCK:
+            _DASHBOARD_CACHE[key] = (time.monotonic() + effective_ttl, payload)
+            if len(_DASHBOARD_CACHE) > 512:
+                oldest_keys = sorted(_DASHBOARD_CACHE, key=lambda item: _DASHBOARD_CACHE[item][0])[:128]
+                for old_key in oldest_keys:
+                    _DASHBOARD_CACHE.pop(old_key, None)
+    return payload
+
+
 def _parse_dt(value: Any) -> Optional[datetime]:
     if not value:
         return None
@@ -373,8 +425,27 @@ def _normalize_severity(value: Optional[str]) -> str:
     return "low"
 
 
+def _source_severity(doc: Dict[str, Any]) -> str:
+    return _normalize_severity(doc.get("severity"))
+
+
+def _ai_severity(doc: Dict[str, Any]) -> str:
+    return _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+
+
 def _severity_label(value: str) -> str:
     return value.capitalize() if value else "Low"
+
+
+def _highest_severity_from_buckets(buckets: Sequence[Dict[str, Any]]) -> str:
+    highest = "clean"
+    for bucket in buckets:
+        if int(bucket.get("doc_count") or 0) <= 0:
+            continue
+        severity = _normalize_severity(bucket.get("key"))
+        if SEVERITY_ORDER[severity] > SEVERITY_ORDER[highest]:
+            highest = severity
+    return _severity_label(highest)
 
 
 def _pick_activity_time(doc: Dict[str, Any]) -> Optional[datetime]:
@@ -433,13 +504,20 @@ def _normalize_sources(doc: Dict[str, Any]) -> List[str]:
     return [item.strip() for item in source_name.split(",") if item.strip()]
 
 
-def _sector_info(doc: Dict[str, Any]) -> Dict[str, str]:
+def _sector_info(doc: Dict[str, Any]) -> Dict[str, Any]:
+    if doc.get("target_sector") or doc.get("target_sector_name") or doc.get("target_sector_name_th"):
+        return {
+            "sector": doc.get("target_sector"),
+            "sector_name": doc.get("target_sector_name"),
+            "sector_name_th": doc.get("target_sector_name_th"),
+            "icon": doc.get("target_sector_icon"),
+        }
     sector = (((doc.get("ai_score_breakdown") or {}).get("target_sector") or {}) if isinstance(doc.get("ai_score_breakdown"), dict) else {}) or {}
     return {
-        "sector": str(sector.get("sector") or "general"),
-        "sector_name": str(sector.get("sector_name") or "General/Multiple"),
-        "sector_name_th": str(sector.get("sector_name_th") or "ทั่วไป"),
-        "icon": str(sector.get("icon") or "🌐"),
+        "sector": sector.get("sector"),
+        "sector_name": sector.get("sector_name"),
+        "sector_name_th": sector.get("sector_name_th"),
+        "icon": sector.get("icon"),
     }
 
 
@@ -449,19 +527,26 @@ def _country_from_doc(doc: Dict[str, Any]) -> Optional[str]:
     asn_data = (doc.get("asn_data") or {}) if isinstance(doc.get("asn_data"), dict) else {}
     geo_info = (doc.get("geo_info") or {}) if isinstance(doc.get("geo_info"), dict) else {}
     direct_ip = (doc.get("ip_info") or {}) if isinstance(doc.get("ip_info"), dict) else {}
-    return (
+    country = (
         ip_info.get("country")
         or direct_ip.get("country")
         or asn_data.get("country_code")
         or geo_info.get("country")
         or doc.get("geo_country")
     )
+    normalized = str(country or "").strip()
+    if not normalized or normalized.lower() in {"none", "null", "unknown", "n/a", "-"}:
+        return None
+    return normalized
 
 
 def _country_code_from_name(country_name: Optional[str]) -> Optional[str]:
     if not country_name:
         return None
-    normalized = str(country_name).strip().lower()
+    raw = str(country_name).strip()
+    if len(raw) == 2 and raw.isalpha():
+        return raw.upper()
+    normalized = raw.lower()
     return COUNTRY_CODE_MAP.get(normalized)
 
 
@@ -486,6 +571,24 @@ def _split_indicator_id(ioc_id: str) -> Tuple[str, str]:
     return ioc_type, ioc_value
 
 
+def _infer_ioc_type_from_value(value: str) -> Optional[str]:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+    if re.match(r"^[a-z][a-z0-9+.-]*://", candidate, flags=re.IGNORECASE):
+        return "url"
+    try:
+        ipaddress.ip_address(candidate.strip("[]"))
+        return "ip"
+    except ValueError:
+        pass
+    if re.fullmatch(r"[A-Fa-f0-9]{32}|[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64}", candidate):
+        return "hash"
+    if "/" not in candidate and " " not in candidate and "." in candidate:
+        return "domain"
+    return None
+
+
 def _lookup_items(values: Iterable[str]) -> List[Dict[str, Any]]:
     seen = set()
     items = []
@@ -496,6 +599,14 @@ def _lookup_items(values: Iterable[str]) -> List[Dict[str, Any]]:
         seen.add(lowered)
         items.append({"value": value, "label": value, "description": None, "active": True})
     return items
+
+
+def _lookup_items_from_counts(counts: Counter) -> List[Dict[str, Any]]:
+    return [
+        {"value": key, "label": key, "description": None, "active": True, "count": count}
+        for key, count in counts.most_common()
+        if str(key).strip()
+    ]
 
 
 def _as_list(value: Any) -> List[Any]:
@@ -591,6 +702,7 @@ def _search_documents(
     if query_text and query_text != "*" and fields:
         must.append({"multi_match": {"query": query_text, "fields": fields}})
     body = {
+        "track_total_hits": True,
         "query": {
             "bool": {
                 "must": must if must else [{"match_all": {}}],
@@ -604,10 +716,10 @@ def _search_documents(
     return _safe_search(index, body)
 
 
-def _search_warehouse_docs(
-    query_text: str = "*",
+def _warehouse_search_filters(
     ioc_types: Optional[List[str]] = None,
     severities: Optional[List[str]] = None,
+    risk_levels: Optional[List[str]] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     sources: Optional[List[str]] = None,
@@ -615,16 +727,15 @@ def _search_warehouse_docs(
     validation_statuses: Optional[List[str]] = None,
     review_states: Optional[List[str]] = None,
     warehouse_eligible_only: Optional[bool] = True,
-    sort_by: str = "risk",
-    limit: int = 100,
-    offset: int = 0,
-) -> Dict[str, Any]:
-    client = get_elastic_client()
+    min_risk_score: Optional[int] = None,
+) -> List[Dict[str, Any]]:
     filters: List[Dict[str, Any]] = []
     if ioc_types:
         filters.append({"terms": {"ioc_type": [item.lower() for item in ioc_types]}})
     if severities:
-        filters.append({"terms": {"ai_severity": [_normalize_severity(item) for item in severities]}})
+        filters.append({"terms": {"severity": [_normalize_severity(item) for item in severities]}})
+    if risk_levels:
+        filters.append({"terms": {"ai_severity": [_normalize_severity(item) for item in risk_levels]}})
     if sources:
         filters.append({"terms": {"source_name": sources}})
     if threat_types:
@@ -633,6 +744,8 @@ def _search_warehouse_docs(
         filters.append({"terms": {"validation_status": validation_statuses}})
     if review_states:
         filters.append({"terms": {"review_state": review_states}})
+    if min_risk_score is not None:
+        filters.append({"range": {"ai_risk_score": {"gte": min_risk_score}}})
     if warehouse_eligible_only is not None:
         if warehouse_eligible_only:
             filters.append(
@@ -648,9 +761,46 @@ def _search_warehouse_docs(
             )
         else:
             filters.append({"term": {"warehouse_eligible": False}})
-    date_filter = _date_filter(_date_query_range(start_date, end_date), ["event_time", "first_seen", "collect_time", "processed_at"])
+    date_filter = _date_filter(
+        _date_query_range(start_date, end_date),
+        ["event_time", "first_seen", "last_seen", "collect_time", "published_at", "processed_at", "created_at"],
+    )
     if date_filter:
         filters.append(date_filter)
+    return filters
+
+
+def _search_warehouse_docs(
+    query_text: str = "*",
+    ioc_types: Optional[List[str]] = None,
+    severities: Optional[List[str]] = None,
+    risk_levels: Optional[List[str]] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    sources: Optional[List[str]] = None,
+    threat_types: Optional[List[str]] = None,
+    validation_statuses: Optional[List[str]] = None,
+    review_states: Optional[List[str]] = None,
+    warehouse_eligible_only: Optional[bool] = True,
+    min_risk_score: Optional[int] = None,
+    sort_by: str = "risk",
+    limit: int = 100,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    client = get_elastic_client()
+    filters = _warehouse_search_filters(
+        ioc_types=ioc_types,
+        severities=severities,
+        risk_levels=risk_levels,
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        validation_statuses=validation_statuses,
+        review_states=review_states,
+        warehouse_eligible_only=warehouse_eligible_only,
+        min_risk_score=min_risk_score,
+    )
     sort = (
         [{"ai_risk_score": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
         if sort_by == "risk"
@@ -667,18 +817,362 @@ def _search_warehouse_docs(
     )
 
 
-def _search_datalake_docs(
-    query_text: str = "*",
+def _search_total(result: Dict[str, Any]) -> int:
+    total = result.get("hits", {}).get("total", 0)
+    if isinstance(total, dict):
+        return int(total.get("value") or 0)
+    try:
+        return int(total or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _warehouse_summary_stats(start_date: Optional[str], end_date: Optional[str]) -> Dict[str, Any]:
+    client = get_elastic_client()
+    filters = _warehouse_search_filters(start_date=start_date, end_date=end_date)
+    severity_filters = {
+        severity: {"term": {"severity": severity}}
+        for severity in ("critical", "high", "medium", "low", "clean")
+    }
+    base_query = {
+        "bool": {
+            "must": [{"match_all": {}}],
+            "filter": filters,
+        }
+    }
+    summary_body = {
+        "size": 0,
+        "track_total_hits": True,
+        "query": base_query,
+        "aggs": {
+            "active_iocs": {
+                "cardinality": {
+                    "field": "canonical_ioc_key.keyword",
+                    "precision_threshold": 40000,
+                }
+            },
+            "severity_counts": {"filters": {"filters": severity_filters}},
+            "critical_active": {
+                "filter": {"term": {"severity": "critical"}},
+                "aggs": {
+                    "active_iocs": {
+                        "cardinality": {
+                            "field": "canonical_ioc_key.keyword",
+                            "precision_threshold": 40000,
+                        }
+                    }
+                },
+            },
+            "high_active": {
+                "filter": {"term": {"severity": "high"}},
+                "aggs": {
+                    "active_iocs": {
+                        "cardinality": {
+                            "field": "canonical_ioc_key.keyword",
+                            "precision_threshold": 40000,
+                        }
+                    }
+                },
+            },
+        },
+    }
+    result = _safe_search(client.warehouse_index, summary_body)
+    aggs = result.get("aggregations") or {}
+    severity_buckets = (aggs.get("severity_counts") or {}).get("buckets") or {}
+
+    threat_types: List[Dict[str, Any]] = []
+    threat_type_body = {
+        "size": 0,
+        "track_total_hits": False,
+        "query": base_query,
+        "aggs": {
+            "threat_types": {
+                "terms": {
+                    "field": "ai_threat_types",
+                    "size": 12,
+                    "missing": "Other",
+                },
+                "aggs": {
+                    "severity": {"terms": {"field": "severity", "size": 5, "missing": "low"}},
+                },
+            },
+        },
+    }
+    threat_result = _safe_search(client.warehouse_index, threat_type_body)
+    threat_aggs = threat_result.get("aggregations") or {}
+    threat_types = [
+        {
+            "label": str(bucket.get("key") or "Other"),
+            "value": int(bucket.get("doc_count") or 0),
+            "severity": _highest_severity_from_buckets((bucket.get("severity") or {}).get("buckets") or []),
+        }
+        for bucket in (threat_aggs.get("threat_types") or {}).get("buckets", [])
+    ]
+    return {
+        "total_threats": _search_total(result),
+        "ioc_active": int((aggs.get("active_iocs") or {}).get("value") or 0),
+        "critical_active": int(((aggs.get("critical_active") or {}).get("active_iocs") or {}).get("value") or 0),
+        "high_active": int(((aggs.get("high_active") or {}).get("active_iocs") or {}).get("value") or 0),
+        "severity_counts": {
+            severity: int((severity_buckets.get(severity) or {}).get("doc_count") or 0)
+            for severity in ("critical", "high", "medium", "low", "clean")
+        },
+        "threat_types": threat_types,
+    }
+
+
+def _severity_filters_config(field: str = "severity") -> Dict[str, Dict[str, Any]]:
+    return {
+        severity: {"term": {field: severity}}
+        for severity in ("critical", "high", "medium", "low", "clean")
+    }
+
+
+def _severity_counts_from_filter_agg(agg: Dict[str, Any]) -> Dict[str, int]:
+    buckets = (agg or {}).get("buckets") or {}
+    return {
+        severity: int((buckets.get(severity) or {}).get("doc_count") or 0)
+        for severity in ("critical", "high", "medium", "low", "clean")
+    }
+
+
+def _range_counts_from_agg(agg: Dict[str, Any], labels: Sequence[str]) -> Dict[str, int]:
+    buckets = (agg or {}).get("buckets") or []
+    output = {label: 0 for label in labels}
+    for bucket in buckets:
+        key = str(bucket.get("key") or "")
+        if key in output:
+            output[key] = int(bucket.get("doc_count") or 0)
+    return output
+
+
+def _terms_items_from_buckets(
+    buckets: Sequence[Dict[str, Any]],
+    *,
+    total: Optional[int] = None,
+    labels: Optional[Dict[str, str]] = None,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    effective_total = total if total is not None else sum(int(bucket.get("doc_count") or 0) for bucket in buckets)
+    output = []
+    for bucket in list(buckets)[:limit]:
+        key = str(bucket.get("key") or "").strip()
+        if not key or key.lower() in {"none", "null", "unknown", "-"}:
+            continue
+        value = int(bucket.get("doc_count") or 0)
+        output.append(
+            {
+                "key": key,
+                "label": labels.get(key, key) if labels else key,
+                "value": value,
+                "percentage": _percentage(value, effective_total or 1),
+                "color": None,
+            }
+        )
+    return output
+
+
+SOURCE_DISPLAY_NAMES = {
+    "cyberint_iocs": "Cyberint IOCs",
+}
+
+
+def _source_display_name(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "Unknown"
+    return SOURCE_DISPLAY_NAMES.get(raw, raw.replace("_", " "))
+
+
+def _format_source_terms(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [{**item, "label": _source_display_name(item.get("label") or item.get("key"))} for item in items]
+
+
+def _source_category(value: Any) -> str:
+    source = str(value or "").strip().lower()
+    if not source:
+        return "other"
+    if source in {"cyberint_iocs", "sandbox"} or source.startswith("cyberint") or "cyble threat intelligence" in source:
+        return "trusted"
+    if source in {"zone-h", "darkreading", "thehackernews", "the hacker news"} or "news" in source:
+        return "news"
+    return "other"
+
+
+def _date_histogram_bounds(start_date: Optional[str], end_date: Optional[str]) -> Optional[Dict[str, str]]:
+    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
+    if not start_bound or not end_bound:
+        return None
+    return {
+        "min": start_bound.astimezone(BANGKOK_TZ).isoformat(),
+        "max": end_bound.astimezone(BANGKOK_TZ).isoformat(),
+    }
+
+
+def _build_heatmap_from_histogram(buckets: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    x_axis = [f"{hour:02d}:00" for hour in range(24)]
+    y_axis = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    counts = {(day, hour): 0 for day in range(7) for hour in range(24)}
+    for bucket in buckets:
+        parsed = _parse_dt(bucket.get("key_as_string"))
+        if not parsed:
+            continue
+        localized = parsed.astimezone(BANGKOK_TZ)
+        counts[(localized.weekday(), localized.hour)] += int(bucket.get("doc_count") or 0)
+    cells = [
+        {"x": hour_label, "y": day_label, "value": counts[(day_index, hour)]}
+        for day_index, day_label in enumerate(y_axis)
+        for hour, hour_label in enumerate(x_axis)
+    ]
+    peak_key, peak_value = max(counts.items(), key=lambda item: item[1]) if counts else ((0, 0), 0)
+    peak_day_index, peak_hour_index = peak_key
+    return {
+        "mode": "day-hour",
+        "x_axis": x_axis,
+        "y_axis": y_axis,
+        "cells": cells,
+        "peak": {
+            "day": y_axis[peak_day_index],
+            "hour": x_axis[peak_hour_index],
+            "end_hour": f"{(peak_hour_index + 1) % 24:02d}:00",
+            "label": f"{y_axis[peak_day_index]}, {x_axis[peak_hour_index]} - {(peak_hour_index + 1) % 24:02d}:00",
+            "value": peak_value,
+        },
+    }
+
+
+def _warehouse_dashboard_aggs(
+    *,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    sources: Optional[List[str]] = None,
+    threat_types: Optional[List[str]] = None,
+    severities: Optional[List[str]] = None,
+    risk_levels: Optional[List[str]] = None,
+    query: Optional[str] = None,
+    min_risk_score: Optional[int] = None,
+    include_heatmap: bool = False,
+    include_trend: bool = False,
+) -> Dict[str, Any]:
+    client = get_elastic_client()
+    filters = _warehouse_search_filters(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        risk_levels=risk_levels,
+        min_risk_score=min_risk_score,
+    )
+    must: List[Dict[str, Any]] = []
+    if query and query != "*":
+        must.append(
+            {
+                "multi_match": {
+                    "query": query,
+                    "fields": ["ioc_value^3", "description", "reference", "ai_threat_types", "ai_threat_actors", "source_name"],
+                }
+            }
+        )
+    date_histogram: Dict[str, Any] = {
+        "field": "processed_at",
+        "calendar_interval": _aggregation_interval(start_date, end_date) if include_trend else "hour",
+        "min_doc_count": 0,
+        "format": "strict_date_optional_time",
+    }
+    bounds = _date_histogram_bounds(start_date, end_date)
+    if bounds:
+        date_histogram["extended_bounds"] = bounds
+    aggs: Dict[str, Any] = {
+        "active_iocs": {"cardinality": {"field": "canonical_ioc_key.keyword", "precision_threshold": 40000}},
+        "source_count": {"cardinality": {"field": "source_name", "precision_threshold": 40000}},
+        "severity_counts": {"filters": {"filters": _severity_filters_config("severity")}},
+        "risk_level_counts": {"filters": {"filters": _severity_filters_config("ai_severity")}},
+        "critical_active": {"filter": {"term": {"severity": "critical"}}},
+        "high_active": {"filter": {"term": {"severity": "high"}}},
+        "clean_count": {"filter": {"term": {"severity": "clean"}}},
+        "risk_score_ranges": {
+            "range": {
+                "field": "ai_risk_score",
+                "ranges": [
+                    {"key": "0-19", "to": 20},
+                    {"key": "20-39", "from": 20, "to": 40},
+                    {"key": "40-59", "from": 40, "to": 60},
+                    {"key": "60-79", "from": 60, "to": 80},
+                    {"key": "80-100", "from": 80},
+                ],
+            }
+        },
+        "avg_risk_score": {"avg": {"field": "ai_risk_score"}},
+        "high_risk": {"filter": {"range": {"ai_risk_score": {"gte": 80}}}},
+        "quality_complete": {
+            "filter": {
+                "bool": {
+                    "must": [
+                        {"exists": {"field": "ioc_value"}},
+                        {"exists": {"field": "ioc_type"}},
+                        {"exists": {"field": "source_name"}},
+                        {"exists": {"field": "severity"}},
+                    ]
+                }
+            }
+        },
+        "ioc_types": {"terms": {"field": "ioc_type", "size": 25, "missing": "unknown"}},
+        "sources": {"terms": {"field": "source_name", "size": 25, "missing": "unknown"}},
+        "threat_types": {"terms": {"field": "ai_threat_types", "size": 25, "missing": "Other"}},
+        "countries": {
+            "terms": {"field": "geo_country", "size": 25, "missing": "unknown"},
+            "aggs": {
+                "severity": {"filters": {"filters": _severity_filters_config("severity")}},
+                "sources": {"terms": {"field": "source_name", "size": 10}},
+                "sectors": {"terms": {"field": "target_sector_name", "size": 5, "missing": "General/Multiple"}},
+            },
+        },
+        "sectors": {"terms": {"field": "target_sector_name_th", "size": 25, "missing": "ทั่วไป"}},
+        "severity_by_source": {
+            "terms": {"field": "source_name", "size": 25, "missing": "unknown"},
+            "aggs": {"severity": {"filters": {"filters": _severity_filters_config("severity")}}},
+        },
+        "severity_by_type": {
+            "terms": {"field": "ioc_type", "size": 25, "missing": "unknown"},
+            "aggs": {"severity": {"filters": {"filters": _severity_filters_config("severity")}}},
+        },
+    }
+    if include_heatmap:
+        aggs["heatmap"] = {"date_histogram": date_histogram}
+    if include_trend:
+        aggs["trend"] = {
+            "date_histogram": date_histogram,
+            "aggs": {
+                "severity": {"filters": {"filters": _severity_filters_config("severity")}},
+                "sources": {"terms": {"field": "source_name", "size": 25, "missing": "unknown"}},
+            },
+        }
+    body = {
+        "size": 0,
+        "track_total_hits": True,
+        "query": {
+            "bool": {
+                "must": must if must else [{"match_all": {}}],
+                "filter": filters,
+            }
+        },
+        "aggs": aggs,
+    }
+    result = _safe_search(client.warehouse_index, body)
+    aggs_result = result.get("aggregations") or {}
+    aggs_result["total"] = _search_total(result)
+    return aggs_result
+
+
+def _datalake_search_filters(
     ioc_types: Optional[List[str]] = None,
     severities: Optional[List[str]] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     sources: Optional[List[str]] = None,
     threat_types: Optional[List[str]] = None,
-    limit: int = 100,
-    offset: int = 0,
-) -> Dict[str, Any]:
-    client = get_elastic_client()
+) -> List[Dict[str, Any]]:
     filters: List[Dict[str, Any]] = []
     if ioc_types:
         filters.append({"terms": {"ioc_type": [item.lower() for item in ioc_types]}})
@@ -691,6 +1185,91 @@ def _search_datalake_docs(
     date_filter = _date_filter(_date_query_range(start_date, end_date), ["event_time", "collect_time", "created_at"])
     if date_filter:
         filters.append(date_filter)
+    return filters
+
+
+def _datalake_dashboard_aggs(
+    *,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    sources: Optional[List[str]] = None,
+    severities: Optional[List[str]] = None,
+    threat_types: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    client = get_elastic_client()
+    date_histogram: Dict[str, Any] = {
+        "field": "collect_time",
+        "calendar_interval": "day",
+        "min_doc_count": 0,
+        "format": "strict_date_optional_time",
+    }
+    bounds = _date_histogram_bounds(start_date, end_date)
+    if bounds:
+        date_histogram["extended_bounds"] = bounds
+    body = {
+        "size": 0,
+        "track_total_hits": True,
+        "query": {
+            "bool": {
+                "must": [{"match_all": {}}],
+                "filter": _datalake_search_filters(
+                    start_date=start_date,
+                    end_date=end_date,
+                    sources=sources,
+                    severities=severities,
+                    threat_types=threat_types,
+                ),
+            }
+        },
+        "aggs": {
+            "sources": {"terms": {"field": "source_name", "size": 25, "missing": "unknown"}},
+            "ioc_types": {"terms": {"field": "ioc_type", "size": 25, "missing": "unknown"}},
+            "threat_types": {"terms": {"field": "threat_type", "size": 25, "missing": "Other"}},
+            "severity_counts": {"filters": {"filters": _severity_filters_config("severity")}},
+            "quality_complete": {
+                "filter": {
+                    "bool": {
+                        "must": [
+                            {"exists": {"field": "ioc_value"}},
+                            {"exists": {"field": "ioc_type"}},
+                            {"exists": {"field": "source_name"}},
+                            {"exists": {"field": "severity"}},
+                        ]
+                    }
+                }
+            },
+            "import_timeline": {
+                "date_histogram": date_histogram,
+                "aggs": {"sources": {"terms": {"field": "source_name", "size": 25, "missing": "unknown"}}},
+            },
+        },
+    }
+    result = _safe_search(client.datalake_index, body)
+    aggs = result.get("aggregations") or {}
+    aggs["total"] = _search_total(result)
+    return aggs
+
+
+def _search_datalake_docs(
+    query_text: str = "*",
+    ioc_types: Optional[List[str]] = None,
+    severities: Optional[List[str]] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    sources: Optional[List[str]] = None,
+    threat_types: Optional[List[str]] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    client = get_elastic_client()
+    filters = _datalake_search_filters(
+        ioc_types=ioc_types,
+        severities=severities,
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+    )
     return _search_documents(
         client.datalake_index,
         query_text=query_text,
@@ -788,11 +1367,56 @@ def _get_processed_doc(doc_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _get_warehouse_doc_by_indicator(ioc_type: str, ioc_value: str) -> Optional[Dict[str, Any]]:
-    result = _search_warehouse_docs(query_text="*", ioc_types=[ioc_type], limit=50)
-    for doc in _hits_to_docs(result):
-        if str(doc.get("ioc_value")) == ioc_value and str(doc.get("ioc_type", "")).lower() == ioc_type.lower():
-            return doc
-    return None
+    normalized_type = str(ioc_type or "").strip().lower()
+    normalized_value = str(ioc_value or "").strip()
+    if not normalized_type or not normalized_value:
+        return None
+    client = get_elastic_client()
+    result = _safe_search(
+        client.warehouse_index,
+        {
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"ioc_type": normalized_type}},
+                        {"term": {"ioc_value": normalized_value}},
+                    ]
+                }
+            },
+            "sort": [
+                {"ai_risk_score": {"order": "desc", "missing": "_last"}},
+                {"processed_at": {"order": "desc", "missing": "_last"}},
+            ],
+            "size": 1,
+        },
+    )
+    docs = _hits_to_docs(result)
+    return docs[0] if docs else None
+
+
+def _get_warehouse_doc_by_value(ioc_value: str) -> Optional[Dict[str, Any]]:
+    normalized_value = str(ioc_value or "").strip()
+    if not normalized_value:
+        return None
+    inferred_type = _infer_ioc_type_from_value(normalized_value)
+    if inferred_type:
+        exact_doc = _get_warehouse_doc_by_indicator(inferred_type, normalized_value)
+        if exact_doc:
+            return exact_doc
+    client = get_elastic_client()
+    result = _safe_search(
+        client.warehouse_index,
+        {
+            "query": {"term": {"ioc_value": normalized_value}},
+            "sort": [
+                {"ai_risk_score": {"order": "desc", "missing": "_last"}},
+                {"processed_at": {"order": "desc", "missing": "_last"}},
+            ],
+            "size": 1,
+        },
+    )
+    docs = _hits_to_docs(result)
+    return docs[0] if docs else None
 
 
 def _build_threat_level(docs: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -814,7 +1438,7 @@ def _build_threat_level(docs: List[Dict[str, Any]], now: Optional[datetime] = No
     total_today = len(todays_docs)
     baseline_avg = (sum(counts_by_day.values()) / len(counts_by_day)) if counts_by_day else 0
     spike_ratio = total_today / baseline_avg if baseline_avg > 0 else (3 if total_today > 0 else 0)
-    high_critical = [doc for doc in todays_docs if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) in {"critical", "high"}]
+    high_critical = [doc for doc in todays_docs if _source_severity(doc) in {"critical", "high"}]
     severity_ratio = len(high_critical) / total_today if total_today else 0
 
     cii_sectors = {"critical_infrastructure", "government", "healthcare", "financial", "technology"}
@@ -929,7 +1553,7 @@ def _build_threat_level(docs: List[Dict[str, Any]], now: Optional[datetime] = No
 
 
 def _build_severity_distribution(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    counts = Counter(_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in docs)
+    counts = Counter(_source_severity(doc) for doc in docs)
     total = sum(counts.values()) or 1
     color_map = {
         "critical": "#E31B54",
@@ -968,7 +1592,7 @@ def _latest_indicator_docs(docs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any
     return list(latest_docs.values())
 
 
-def _primary_threat_type(doc: Dict[str, Any]) -> str:
+def _primary_threat_type(doc: Dict[str, Any]) -> Optional[str]:
     threat_values = doc.get("ai_threat_types") or doc.get("threat_type") or []
     if isinstance(threat_values, list):
         for threat in threat_values:
@@ -976,59 +1600,99 @@ def _primary_threat_type(doc: Dict[str, Any]) -> str:
             if label:
                 return label
     label = str(threat_values or "").strip()
-    return label or "Unknown"
+    return label or None
 
 
 def _group_severity_label(docs: Sequence[Dict[str, Any]]) -> str:
     highest = "clean"
     for doc in docs:
-        severity = _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+        severity = _source_severity(doc)
         if SEVERITY_ORDER[severity] > SEVERITY_ORDER[highest]:
             highest = severity
     return _severity_label(highest)
 
 
 def _build_exposure_summary(
-    visible_docs: Sequence[Dict[str, Any]],
-    active_docs: Sequence[Dict[str, Any]],
+    visible_docs: Sequence[Dict[str, Any]] = (),
+    active_docs: Sequence[Dict[str, Any]] = (),
     previous_visible_docs: Optional[Sequence[Dict[str, Any]]] = None,
     previous_active_docs: Optional[Sequence[Dict[str, Any]]] = None,
+    current_stats: Optional[Dict[str, Any]] = None,
+    previous_stats: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     active_list = _latest_indicator_docs(active_docs)
     previous_visible_list = list(previous_visible_docs or [])
     previous_active_list = _latest_indicator_docs(previous_active_docs or [])
 
-    payload = {
-        "total_threats": len(visible_docs),
-        "ioc_active": len(active_list),
-        "critical_active": sum(
-            1 for doc in active_list if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) == "critical"
-        ),
-        "high_active": sum(
-            1 for doc in active_list if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) == "high"
-        ),
-    }
-    previous_payload = {
-        "total_threats": len(previous_visible_list),
-        "ioc_active": len(previous_active_list),
-        "critical_active": sum(
-            1 for doc in previous_active_list if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) == "critical"
-        ),
-        "high_active": sum(
-            1 for doc in previous_active_list if _normalize_severity(doc.get("ai_severity") or doc.get("severity")) == "high"
-        ),
-    }
+    payload = (
+        {key: int(current_stats.get(key) or 0) for key in ("total_threats", "ioc_active", "critical_active", "high_active")}
+        if current_stats
+        else {
+            "total_threats": len(visible_docs),
+            "ioc_active": len(active_list),
+            "critical_active": sum(
+                1 for doc in active_list if _source_severity(doc) == "critical"
+            ),
+            "high_active": sum(
+                1 for doc in active_list if _source_severity(doc) == "high"
+            ),
+        }
+    )
+    previous_payload = (
+        {key: int(previous_stats.get(key) or 0) for key in ("total_threats", "ioc_active", "critical_active", "high_active")}
+        if previous_stats
+        else {
+            "total_threats": len(previous_visible_list),
+            "ioc_active": len(previous_active_list),
+            "critical_active": sum(
+                1 for doc in previous_active_list if _source_severity(doc) == "critical"
+            ),
+            "high_active": sum(
+                1 for doc in previous_active_list if _source_severity(doc) == "high"
+            ),
+        }
+    )
     payload["comparison"] = {
         key: _comparison_metric(payload[key], previous_payload[key])
         for key in ("total_threats", "ioc_active", "critical_active", "high_active")
     }
+    payload["worldwide_threat"] = payload["total_threats"]
+    payload["thailand_threat"] = 0
     return payload
+
+
+def _build_severity_distribution_from_counts(counts: Dict[str, int]) -> List[Dict[str, Any]]:
+    color_map = {
+        "critical": "#E31B54",
+        "high": "#EC4A0A",
+        "medium": "#FDB022",
+        "low": "#6BADF1",
+        "clean": "#667085",
+    }
+    total = sum(int(counts.get(severity) or 0) for severity in color_map) or 1
+    items = []
+    for severity in ["critical", "high", "medium", "low", "clean"]:
+        value = int(counts.get(severity) or 0)
+        if value == 0 and severity == "clean":
+            continue
+        items.append(
+            {
+                "key": severity,
+                "label": _severity_label(severity),
+                "color": color_map[severity],
+                "value": value,
+                "percentage": round((value / total) * 100, 2),
+            }
+        )
+    return items
 
 
 def _build_threat_volume_nodes(docs: Sequence[Dict[str, Any]], limit: int = 12) -> List[Dict[str, Any]]:
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for doc in docs:
-        grouped[_primary_threat_type(doc)].append(doc)
+        threat_type = _primary_threat_type(doc)
+        if threat_type:
+            grouped[threat_type].append(doc)
 
     nodes: List[Dict[str, Any]] = []
     sorted_groups = sorted(grouped.items(), key=lambda item: len(item[1]), reverse=True)
@@ -1042,6 +1706,19 @@ def _build_threat_volume_nodes(docs: Sequence[Dict[str, Any]], limit: int = 12) 
             }
         )
     return nodes
+
+
+def _build_threat_volume_nodes_from_terms(terms: Sequence[Dict[str, Any]], limit: int = 12) -> List[Dict[str, Any]]:
+    return [
+        {
+            "id": f"{_slugify_text(str(item.get('label') or 'Other'))}:{index}",
+            "label": str(item.get("label") or "Other"),
+            "severity": str(item.get("severity") or "Low"),
+            "value": int(item.get("value") or 0),
+        }
+        for index, item in enumerate(list(terms)[:limit])
+        if int(item.get("value") or 0) > 0
+    ]
 
 
 def _build_heatmap(docs: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1198,9 +1875,9 @@ def _unique_list(values: Iterable[Any], limit: Optional[int] = None) -> List[Any
     return output
 
 
-def _primary_source(doc: Dict[str, Any]) -> str:
+def _primary_source(doc: Dict[str, Any]) -> Optional[str]:
     sources = _normalize_sources(doc)
-    return sources[0] if sources else str(doc.get("source_name") or "unknown")
+    return sources[0] if sources else None
 
 
 def _coordinates_from_doc(doc: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
@@ -1227,7 +1904,13 @@ def _origin_display_severity(severity_counts: Counter) -> str:
     high = int(severity_counts.get("high", 0))
     if critical > 0 and critical >= high:
         return "critical"
-    return "high"
+    if high > 0:
+        return "high"
+    if int(severity_counts.get("medium", 0)) > 0:
+        return "medium"
+    if int(severity_counts.get("low", 0)) > 0:
+        return "low"
+    return "clean"
 
 
 def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_docs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1246,7 +1929,7 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
     for country, value in country_counts.most_common(10):
         docs = origin_docs[country]
         severity_counts = Counter(
-            _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+            _source_severity(doc)
             for doc in docs
         )
         sector_counts = Counter(
@@ -1265,7 +1948,7 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
             source
             for doc in docs
             for source in _normalize_sources(doc)
-            if source in HIGH_CONFIDENCE_SOURCE_NAMES or _safe_float(doc.get("confidence"), 0.0) >= 9.0
+            if _is_high_confidence_source(source) or _safe_float(doc.get("confidence"), 0.0) >= 9.0
         )
         trusted_sources = [
             source
@@ -1319,10 +2002,10 @@ def _group_dimension_values(
     datalake_candidates: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> List[str]:
     if report_key == "intelligence-sources":
-        return _normalize_sources(doc) or ["unknown"]
+        return _normalize_sources(doc)
     if report_key == "threat-types":
         values = doc.get("ai_threat_types") or doc.get("threat_type") or []
-        return [str(value) for value in values if str(value).strip()] or ["Unknown"]
+        return [str(value) for value in values if str(value).strip()]
     if report_key == "attack-origins":
         values = [
             _country_from_doc(candidate)
@@ -1330,9 +2013,9 @@ def _group_dimension_values(
         ]
         values.append(_country_from_doc(doc))
         countries = [str(value) for value in values if str(value or "").strip()]
-        return countries or ["Unknown"]
+        return countries
     sector = _sector_info(doc)
-    return [sector["sector_name_th"] or "ทั่วไป"]
+    return [sector["sector_name_th"]] if sector.get("sector_name_th") else []
 
 
 def _filter_warehouse_docs(
@@ -1341,10 +2024,12 @@ def _filter_warehouse_docs(
     threat_types: Optional[Sequence[str]] = None,
     sources: Optional[Sequence[str]] = None,
     severities: Optional[Sequence[str]] = None,
+    risk_levels: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
     allowed_threat_types = {item.lower() for item in (threat_types or []) if str(item).strip()}
     allowed_sources = {item.lower() for item in (sources or []) if str(item).strip()}
     allowed_severities = {_normalize_severity(item) for item in (severities or []) if str(item).strip()}
+    allowed_risk_levels = {_normalize_severity(item) for item in (risk_levels or []) if str(item).strip()}
     query_text = str(query or "").strip().lower()
     filtered = []
     for doc in docs:
@@ -1357,8 +2042,12 @@ def _filter_warehouse_docs(
             if not doc_sources.intersection(allowed_sources):
                 continue
         if allowed_severities:
-            severity = _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+            severity = _source_severity(doc)
             if severity not in allowed_severities:
+                continue
+        if allowed_risk_levels:
+            risk_level = _ai_severity(doc)
+            if risk_level not in allowed_risk_levels:
                 continue
         if query_text:
             haystack = " ".join(
@@ -1385,6 +2074,19 @@ def _resolve_date_bounds(start_date: Optional[str], end_date: Optional[str]) -> 
 def _ioc_doc_matches_date_range(doc: Dict[str, Any], start_date: Optional[str] = None, end_date: Optional[str] = None) -> bool:
     start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
     if start_bound is None and end_bound is None:
+        return True
+
+    candidate_times = [
+        _parse_dt(doc.get(field))
+        for field in ("published_at", "processed_at", "created_at", "collect_time", "first_seen", "event_time", "last_seen")
+    ]
+    for candidate in candidate_times:
+        if candidate is None:
+            continue
+        if start_bound and candidate < start_bound:
+            continue
+        if end_bound and candidate > end_bound:
+            continue
         return True
 
     observed_from = _parse_dt(
@@ -1421,12 +2123,12 @@ def _collect_ioc_docs(
     sort_by: str = "risk",
     sort_order: str = "desc",
 ) -> List[Dict[str, Any]]:
-    effective_severities = list(severities or risk_levels or [])
     docs = _hits_to_docs(
         _search_warehouse_docs(
             query_text=query or "*",
             ioc_types=list(ioc_types or []) or None,
-            severities=effective_severities or None,
+            severities=list(severities or []) or None,
+            risk_levels=list(risk_levels or []) or None,
             start_date=start_date,
             end_date=end_date,
             sort_by=sort_by,
@@ -1438,7 +2140,8 @@ def _collect_ioc_docs(
         query=query,
         threat_types=threat_types,
         sources=sources,
-        severities=effective_severities or None,
+        severities=list(severities or []) or None,
+        risk_levels=list(risk_levels or []) or None,
     )
     docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date)]
     if high_risk_only:
@@ -1715,7 +2418,7 @@ def _build_report_ranking(
         group_values = _group_dimension_values(report_key, doc, datalake_candidates)
         event_time = _pick_event_time(doc)
         threat_types = [str(item) for item in (doc.get("ai_threat_types") or doc.get("threat_type") or []) if str(item).strip()]
-        severity = _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+        severity = _source_severity(doc)
         for label in group_values:
             current = grouped.setdefault(
                 label,
@@ -1781,6 +2484,325 @@ def _build_report_ranking(
     return ranking_items, top_chart, severity_rows
 
 
+AGGREGATABLE_REPORT_DIMENSIONS = {
+    "intelligence-sources": {"field": "source_name", "missing": "unknown", "chart_title": "Top 5 Sources"},
+    "threat-types": {"field": "ai_threat_types", "missing": "Unknown", "chart_title": "Top 5 Threat Types"},
+    "attack-origins": {"field": "geo_country", "missing": "Unknown", "chart_title": "Top 5 Countries"},
+    "target-sectors": {"field": "target_sector_name_th", "missing": None, "chart_title": "Top 5 Sectors"},
+}
+
+
+def _total_hits_value(result: Dict[str, Any]) -> int:
+    total = (result.get("hits") or {}).get("total")
+    if isinstance(total, dict):
+        return int(total.get("value") or 0)
+    return int(total or 0)
+
+
+def _aggregation_interval(start_date: Optional[str], end_date: Optional[str]) -> str:
+    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
+    if start_bound and end_bound:
+        days = max(1, (end_bound - start_bound).days)
+        if days > 120:
+            return "week"
+        if days > 31:
+            return "day"
+    return "hour"
+
+
+def _format_trend_bucket_label(key_as_string: Optional[str], interval: str) -> str:
+    if not key_as_string:
+        return "-"
+    parsed = _parse_dt(key_as_string)
+    if not parsed:
+        return str(key_as_string)
+    local = parsed.astimezone(BANGKOK_TZ)
+    if interval == "hour":
+        return local.strftime("%m-%d %H:%M")
+    if interval == "week":
+        return local.strftime("%Y-%m-%d")
+    return local.strftime("%m-%d")
+
+
+def _build_aggregated_trend(
+    groups_bucket: Dict[str, Any],
+    report_key: str,
+    interval: str,
+) -> Dict[str, Any]:
+    group_buckets = (groups_bucket.get("buckets") or [])[:5]
+    ordered_bucket_keys: List[int] = []
+    labels_by_key: Dict[int, str] = {}
+    series_by_label: List[Dict[str, Any]] = []
+
+    for bucket in group_buckets:
+        for point in ((bucket.get("timeline") or {}).get("buckets") or []):
+            key = int(point.get("key") or 0)
+            if key not in labels_by_key:
+                ordered_bucket_keys.append(key)
+                labels_by_key[key] = _format_trend_bucket_label(point.get("key_as_string"), interval)
+
+    ordered_bucket_keys.sort()
+    for bucket in group_buckets:
+        timeline = {
+            int(point.get("key") or 0): int(point.get("doc_count") or 0)
+            for point in ((bucket.get("timeline") or {}).get("buckets") or [])
+        }
+        points = [timeline.get(key, 0) for key in ordered_bucket_keys]
+        direction, change_percent = _calculate_change(points)
+        label = str(bucket.get("key") or "")
+        series_by_label.append(
+            {
+                "key": label,
+                "label": label,
+                "points": points,
+                "total": int(bucket.get("doc_count") or 0),
+                "direction": direction,
+                "change_percent": round(change_percent, 2),
+            }
+        )
+
+    title = AGGREGATABLE_REPORT_DIMENSIONS.get(report_key, {}).get("chart_title", "Top 5 Events")
+    return {
+        "title": title,
+        "dimension": report_key,
+        "buckets": [labels_by_key[key] for key in ordered_bucket_keys],
+        "series": series_by_label,
+    }
+
+
+def _build_aggregated_report_payload(
+    report_key: str,
+    *,
+    page: int,
+    page_size: int,
+    query: Optional[str],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    threat_types: Optional[List[str]],
+    sources: Optional[List[str]],
+    severities: Optional[List[str]],
+) -> Optional[Dict[str, Any]]:
+    dimension = AGGREGATABLE_REPORT_DIMENSIONS.get(report_key)
+    if not dimension:
+        return None
+
+    client = get_elastic_client()
+    filters = _warehouse_search_filters(
+        severities=severities,
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+    )
+    must: List[Dict[str, Any]] = []
+    if query and query != "*":
+        must.append(
+            {
+                "multi_match": {
+                    "query": query,
+                    "fields": ["ioc_value^3", "description", "reference", "ai_threat_types", "ai_threat_actors", "source_name"],
+                }
+            }
+        )
+
+    interval = _aggregation_interval(start_date, end_date)
+    requested_group_size = max(page * page_size, 10)
+    group_size = min(max(requested_group_size, 100), 10000)
+    field = str(dimension["field"])
+    terms_config: Dict[str, Any] = {
+        "field": field,
+        "size": group_size,
+        "order": {"_count": "desc"},
+    }
+    if dimension.get("missing") is not None:
+        terms_config["missing"] = dimension["missing"]
+
+    body: Dict[str, Any] = {
+        "size": 0,
+        "track_total_hits": True,
+        "query": {
+            "bool": {
+                "must": must if must else [{"match_all": {}}],
+                "filter": filters,
+            }
+        },
+        "aggs": {
+            "group_count": {"cardinality": {"field": field}},
+            "groups": {
+                "terms": terms_config,
+                "aggs": {
+                    "severity": {"terms": {"field": "severity", "size": 10, "missing": "clean"}},
+                    "top_threat": {"terms": {"field": "ai_threat_types", "size": 1, "missing": "Unknown"}},
+                    "latest_seen": {"max": {"field": "event_time", "format": "strict_date_optional_time"}},
+                    "top_iocs": {
+                        "top_hits": {
+                            "size": 5,
+                            "_source": ["ioc_value", "ioc_type", "event_time", "ai_risk_score"],
+                            "sort": [
+                                {"ai_risk_score": {"order": "desc", "missing": "_last"}},
+                                {"event_time": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
+                            ],
+                        }
+                    },
+                    "timeline": {
+                        "date_histogram": {
+                            "field": "event_time",
+                            "calendar_interval": interval,
+                            "min_doc_count": 0,
+                            "format": "strict_date_optional_time",
+                        }
+                    },
+                },
+            },
+        },
+    }
+    result = _safe_search(client.warehouse_index, body)
+    aggs = result.get("aggregations") or {}
+    if not aggs:
+        result = _safe_search(client.warehouse_index, body)
+        aggs = result.get("aggregations") or {}
+    groups = (aggs.get("groups") or {}).get("buckets")
+    if groups is None:
+        return None
+
+    total_events = _total_hits_value(result)
+    ranking_items: List[Dict[str, Any]] = []
+    for index, bucket in enumerate(groups, start=1):
+        raw_label = bucket.get("key")
+        label_text = str(raw_label or "").strip()
+        if not label_text or label_text.lower() in {"none", "null"}:
+            continue
+        label = label_text
+        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "clean": 0}
+        for severity_bucket in ((bucket.get("severity") or {}).get("buckets") or []):
+            severity = _normalize_severity(severity_bucket.get("key"))
+            severity_counts[severity] = int(severity_bucket.get("doc_count") or 0)
+
+        top_threat_bucket = next(iter((bucket.get("top_threat") or {}).get("buckets") or []), None)
+        top_hits = ((bucket.get("top_iocs") or {}).get("hits") or {}).get("hits") or []
+        sample_iocs = _unique_list([str((hit.get("_source") or {}).get("ioc_value") or "") for hit in top_hits if (hit.get("_source") or {}).get("ioc_value")], limit=5)
+        latest_seen = (bucket.get("latest_seen") or {}).get("value_as_string")
+        item = {
+            "rank": index,
+            "label": label,
+            "group_type": report_key,
+            "change_direction": "flat",
+            "change_percent": 0,
+            "main_threat_type": str(top_threat_bucket.get("key")) if top_threat_bucket else None,
+            "severity_distribution": severity_counts,
+            "total_events": int(bucket.get("doc_count") or 0),
+            "share_percent": _percentage(int(bucket.get("doc_count") or 0), total_events),
+            "sources": [label] if report_key == "intelligence-sources" and label else [],
+            "top_asset": sample_iocs[0] if sample_iocs else None,
+            "sample_iocs": sample_iocs,
+            "last_seen": latest_seen,
+        }
+        if report_key == "attack-origins":
+            item["country_code"] = _country_code_from_name(label)
+        ranking_items.append(item)
+
+    trend_comparison = _build_aggregated_trend(aggs.get("groups") or {}, report_key, interval)
+    series_by_label = {item["label"]: item for item in trend_comparison.get("series") or []}
+    for item in ranking_items:
+        series = series_by_label.get(item["label"]) or {}
+        item["change_direction"] = series.get("direction", "flat")
+        item["change_percent"] = round(_safe_float(series.get("change_percent"), 0.0), 2)
+
+    top_chart = {
+        "items": [
+            {
+                "key": item["label"],
+                "label": item["label"],
+                "value": item["total_events"],
+                "percentage": item["share_percent"],
+                "color": None,
+            }
+            for item in ranking_items[:10]
+        ]
+    }
+    severity_rows = [{"label": item["label"], **item["severity_distribution"]} for item in ranking_items[:10]]
+    group_total = int((aggs.get("group_count") or {}).get("value") or len(ranking_items))
+
+    return {
+        "report_key": report_key,
+        "title": report_key.replace("-", " ").title(),
+        "summary": {
+            "total_groups": group_total,
+            "total_events": total_events,
+            "date_range": {"start_date": start_date, "end_date": end_date},
+        },
+        "filters": {
+            "query": query,
+            "threat_types": threat_types or [],
+            "sources": sources or [],
+            "severities": severities or [],
+        },
+        "top_chart": top_chart,
+        "severity_distribution": {"rows": severity_rows},
+        "trend_comparison": trend_comparison,
+        "ranking": {
+            "items": _page_slice(ranking_items, page, page_size),
+            "total": group_total,
+            "page": page,
+            "page_size": page_size,
+        },
+        "meta": {
+            "aggregation_mode": "elasticsearch",
+            "sample_limited": False,
+        },
+    }
+
+
+def _empty_operations_report_payload(
+    report_key: str,
+    *,
+    page: int,
+    page_size: int,
+    query: Optional[str],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    threat_types: Optional[List[str]],
+    sources: Optional[List[str]],
+    severities: Optional[List[str]],
+    reason: str,
+) -> Dict[str, Any]:
+    return {
+        "report_key": report_key,
+        "title": report_key.replace("-", " ").title(),
+        "summary": {
+            "total_groups": 0,
+            "total_events": 0,
+            "date_range": {"start_date": start_date, "end_date": end_date},
+        },
+        "filters": {
+            "query": query,
+            "threat_types": threat_types or [],
+            "sources": sources or [],
+            "severities": severities or [],
+        },
+        "top_chart": {"items": []},
+        "severity_distribution": {"rows": []},
+        "trend_comparison": {
+            "title": AGGREGATABLE_REPORT_DIMENSIONS.get(report_key, {}).get("chart_title", "Events"),
+            "dimension": report_key,
+            "buckets": [],
+            "series": [],
+        },
+        "ranking": {
+            "items": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+        },
+        "meta": {
+            "aggregation_mode": "elasticsearch",
+            "sample_limited": False,
+            "data_available": False,
+            "reason": reason,
+        },
+    }
+
+
 def _build_time_series_points(counts: Dict[str, Dict[str, int]], bucket_keys: List[str], key: str) -> List[int]:
     return [counts.get(key, {}).get(bucket, 0) for bucket in bucket_keys]
 
@@ -1831,13 +2853,13 @@ def _build_trend_analytics(
     country_counts: Dict[str, Dict[str, int]] = defaultdict(dict)
 
     for doc in warehouse_docs:
-        event_time = _pick_event_time(doc)
+        event_time = _parse_dt(doc.get("processed_at") or doc.get("created_at")) or _pick_event_time(doc)
         if not event_time:
             continue
         hour_key = _to_bangkok_hour(event_time)
         if hour_key not in training_keys:
             continue
-        severity = _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+        severity = _source_severity(doc)
         training_point = training_buckets.setdefault(hour_key, {"hour": hour_key, "label": hour_key[5:], "total": 0, "critical": 0, "high": 0})
         training_point["total"] += 1
         if severity == "critical":
@@ -2004,7 +3026,7 @@ def _build_executive_attack_volume_trend(
         bucket = buckets.get(day_key)
         if not bucket:
             continue
-        severity = _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+        severity = _source_severity(doc)
         bucket["total"] += 1
         if severity == "critical":
             bucket["critical"] += 1
@@ -2018,8 +3040,184 @@ def _build_executive_attack_volume_trend(
     }
 
 
+def _build_executive_attack_volume_trend_from_buckets(buckets: Sequence[Dict[str, Any]], forecast_days: int = 7) -> Dict[str, Any]:
+    points = []
+    for bucket in buckets:
+        parsed = _parse_dt(bucket.get("key_as_string"))
+        if not parsed:
+            continue
+        local = parsed.astimezone(BANGKOK_TZ)
+        severity_counts = _severity_counts_from_filter_agg(bucket.get("severity") or {})
+        points.append(
+            {
+                "timestamp": local.isoformat(),
+                "label": local.strftime("%m-%d %H:%M") if local.hour else local.strftime("%d-%m-%y"),
+                "total": int(bucket.get("doc_count") or 0),
+                "critical": int(severity_counts.get("critical") or 0),
+                "high": int(severity_counts.get("high") or 0),
+                "point_type": "historical",
+            }
+        )
+    daily_agg: Dict[str, Dict[str, int]] = {}
+    for p in points:
+        ts = _parse_dt(p["timestamp"])
+        if not ts:
+            continue
+        day_key = ts.strftime("%Y-%m-%d")
+        day_bucket = daily_agg.setdefault(day_key, {"total": 0, "critical": 0, "high": 0})
+        day_bucket["total"] += p["total"]
+        day_bucket["critical"] += p["critical"]
+        day_bucket["high"] += p["high"]
+    daily_keys = sorted(daily_agg.keys())
+    forecast_points: List[Dict[str, Any]] = []
+    if daily_keys:
+        season = min(7, max(1, len(daily_keys)))
+        total_fc = holt_winters_forecast([daily_agg[k]["total"] for k in daily_keys], forecast_days, season_length=season)
+        critical_fc = holt_winters_forecast([daily_agg[k]["critical"] for k in daily_keys], forecast_days, season_length=season)
+        high_fc = holt_winters_forecast([daily_agg[k]["high"] for k in daily_keys], forecast_days, season_length=season)
+        last_day = datetime.strptime(daily_keys[-1], "%Y-%m-%d").replace(tzinfo=BANGKOK_TZ)
+        for i in range(forecast_days):
+            fc_day = last_day + timedelta(days=i + 1)
+            forecast_points.append(
+                {
+                    "timestamp": fc_day.isoformat(),
+                    "label": fc_day.strftime("%d-%m-%y"),
+                    "total": total_fc[i],
+                    "critical": critical_fc[i],
+                    "high": high_fc[i],
+                    "point_type": "forecast",
+                }
+            )
+    return {
+        "points": points + forecast_points,
+        "forecast_start_index": len(points),
+    }
+
+
+def _build_threat_level_from_aggregations(
+    stats: Dict[str, Any],
+    aggs: Dict[str, Any],
+    *,
+    now: datetime,
+) -> Dict[str, Any]:
+    total = int(stats.get("total_threats") or 0)
+    critical = int((stats.get("severity_counts") or {}).get("critical") or 0)
+    high = int((stats.get("severity_counts") or {}).get("high") or 0)
+    critical_high = critical + high
+    severity_ratio = critical_high / total if total else 0
+    if critical > 0 and severity_ratio >= 0.2:
+        score, level, level_th = 90, "Critical", "วิกฤต"
+    elif critical_high > 0 and severity_ratio >= 0.05:
+        score, level, level_th = 70, "High", "สูง"
+    elif critical_high > 0:
+        score, level, level_th = 45, "Medium", "ปานกลาง"
+    else:
+        score, level, level_th = 20 if total else 0, "Low", "ต่ำ"
+
+    top_sectors = []
+    for bucket in ((aggs.get("sectors") or {}).get("buckets") or [])[:5]:
+        key = str(bucket.get("key") or "").strip()
+        if not key or key.lower() in {"none", "null", "unknown", "ทั่วไป"}:
+            continue
+        top_sectors.append(
+            {
+                "sector": key,
+                "sector_name": key,
+                "sector_name_th": key,
+                "count": int(bucket.get("doc_count") or 0),
+            }
+        )
+    return {
+        "date": _to_bangkok_date(now),
+        "timezone": "Asia/Bangkok",
+        "score": score,
+        "level": level,
+        "level_th": level_th,
+        "factors": [
+            {"name": "source_severity_ratio", "score": round(severity_ratio * 100, 2), "description": "Calculated from source severity field"},
+        ],
+        "inputs": {
+            "total_iocs": total,
+            "baseline_avg_14d": 0,
+            "spike_ratio": 0,
+            "critical_high_ratio": round(severity_ratio, 4),
+            "high_critical_sector_count": len(top_sectors),
+            "cii_sector_present": False,
+            "named_actor_count": 0,
+        },
+        "top_sectors": top_sectors,
+        "named_actors": [],
+    }
+
+
+def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
+    origins = []
+    trusted_source_union = set()
+    for bucket in ((aggs.get("countries") or {}).get("buckets") or [])[:10]:
+        country = str(bucket.get("key") or "").strip()
+        if not country or country.lower() in {"none", "null", "unknown", "-"}:
+            continue
+        severity_counts = _severity_counts_from_filter_agg(bucket.get("severity") or {})
+        source_buckets = (bucket.get("sources") or {}).get("buckets") or []
+        trusted_sources = [
+            str(source_bucket.get("key") or "")
+            for source_bucket in source_buckets
+            if _is_high_confidence_source(source_bucket.get("key"))
+            or int(source_bucket.get("doc_count") or 0) >= 5
+        ][:4]
+        trusted_source_union.update(trusted_sources)
+        sector_bucket = next(iter((bucket.get("sectors") or {}).get("buckets") or []), None)
+        primary_sector = str((sector_bucket or {}).get("key") or "General/Multiple")
+        origins.append(
+            {
+                "country_code": _country_code_from_name(country),
+                "country_name": country,
+                "value": int(bucket.get("doc_count") or 0),
+                "latitude": None,
+                "longitude": None,
+                "severity": _origin_display_severity(Counter(severity_counts)),
+                "critical_count": int(severity_counts.get("critical") or 0),
+                "high_count": int(severity_counts.get("high") or 0),
+                "primary_sector": primary_sector,
+                "high_confidence_sources": len(trusted_sources),
+                "trusted_sources": trusted_sources,
+            }
+        )
+    all_source_buckets = (aggs.get("sources") or {}).get("buckets") or []
+    all_trusted_sources = {
+        str(source_bucket.get("key") or "")
+        for source_bucket in all_source_buckets
+        if _is_high_confidence_source(source_bucket.get("key"))
+    }
+    trusted_source_union.update(all_trusted_sources)
+
+    return {
+        "target_country": "Thailand",
+        "high_confidence_sources": len(trusted_source_union),
+        "origins": origins,
+        "connections": [
+            {
+                "origin_country": origin["country_name"],
+                "target_country": "Thailand",
+                "count": origin["value"],
+                "severity": origin["severity"],
+            }
+            for origin in origins
+        ],
+    }
+
+
+def _operations_overview_from_aggs(aggs: Dict[str, Any], recent_stats: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {
+        "active_ioc": int((aggs.get("active_iocs") or {}).get("value") or aggs.get("total") or 0),
+        "critical_ioc_active": int((aggs.get("critical_active") or {}).get("doc_count") or 0),
+        "new_ioc": int((recent_stats or {}).get("total_threats") or 0),
+        "sources_active": int((aggs.get("source_count") or {}).get("value") or 0),
+    }
+
+
 def _operations_overview(docs: List[Dict[str, Any]], anchor_end: Optional[datetime] = None) -> Dict[str, Any]:
-    severities = [_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in docs]
+    severities = [_source_severity(doc) for doc in docs]
     unique_sources = {source for doc in docs for source in _normalize_sources(doc)}
     anchor = anchor_end or datetime.now(UTC)
     recent_cutoff = anchor - timedelta(days=1)
@@ -2048,15 +3246,16 @@ def _action_status(doc: Dict[str, Any], assignment: Optional[Dict[str, Any]]) ->
 
 
 def _build_action_ticket(doc: Dict[str, Any], assignment: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    severity = _severity_label(_normalize_severity(doc.get("ai_severity") or doc.get("severity")))
+    severity = _severity_label(_source_severity(doc))
     sector = _sector_info(doc)
     action_meta = derive_action_metadata(doc)
     country = _country_from_doc(doc)
     ioc_type = str(doc.get("ioc_type", "")).lower()
     context_parts = [
-        ", ".join(doc.get("ai_threat_types") or []) or "Unknown Threat",
         sector["sector_name"],
     ]
+    if doc.get("ai_threat_types"):
+        context_parts.insert(0, ", ".join(doc.get("ai_threat_types") or []))
     if country:
         context_parts.append(country)
     timestamp = _pick_event_time(doc)
@@ -2068,9 +3267,9 @@ def _build_action_ticket(doc: Dict[str, Any], assignment: Optional[Dict[str, Any
         "ioc_type": ioc_type,
         "ioc_type_label": IOC_TYPE_LABELS.get(ioc_type, str(doc.get("ioc_type", "unknown")).upper()),
         "context": " · ".join(part for part in context_parts if part),
-        "sources": _normalize_sources(doc) or ["unknown"],
+        "sources": _normalize_sources(doc),
         "sla": "2 hours" if severity == "Critical" else "24 hours",
-        "event_time": (timestamp or datetime.now(UTC)).isoformat().replace("+00:00", "Z"),
+        "event_time": timestamp.isoformat().replace("+00:00", "Z") if timestamp else None,
         "owner_name": (assignment or {}).get("assignee", {}).get("name"),
     }
 
@@ -2083,11 +3282,12 @@ def _build_action_detail(doc: Dict[str, Any]) -> Dict[str, Any]:
     datalake_docs = _fetch_datalake_by_indicators([(doc.get("ioc_type", ""), doc.get("ioc_value", ""))], limit=100)
     primary_event = datalake_docs[0] if datalake_docs else {}
     sector = _sector_info(doc)
-    related_nodes = [
-        {"id": f"ioc:{doc.get('ioc_value')}", "type": "ioc", "label": doc.get("ioc_value")},
-        {"id": f"type:{(doc.get('ai_threat_types') or ['unknown'])[0]}", "type": "threat_type", "label": (doc.get("ai_threat_types") or ["Unknown"])[0]},
-    ]
-    related_edges = [{"source": related_nodes[0]["id"], "target": related_nodes[1]["id"], "relation": "classified_as"}]
+    related_nodes = [{"id": f"ioc:{doc.get('ioc_value')}", "type": "ioc", "label": doc.get("ioc_value")}]
+    related_edges = []
+    threat_types = [item for item in (doc.get("ai_threat_types") or []) if str(item).strip()]
+    if threat_types:
+        related_nodes.append({"id": f"type:{threat_types[0]}", "type": "threat_type", "label": threat_types[0]})
+        related_edges.append({"source": related_nodes[0]["id"], "target": related_nodes[1]["id"], "relation": "classified_as"})
     owner = assignment["assignee"] if assignment else {
         "user_id": "usr-unassigned",
         "name": doc.get("reviewed_by") or "Unassigned",
@@ -2117,7 +3317,7 @@ def _build_action_detail(doc: Dict[str, Any]) -> Dict[str, Any]:
             activity_log.append(
                 {
                     "timestamp": event_time.isoformat().replace("+00:00", "Z"),
-                    "message": event.get("description") or event.get("reference") or "Observed in Data Lake",
+                    "message": event.get("description") or event.get("reference"),
                 }
             )
     related_evidence = []
@@ -2132,11 +3332,11 @@ def _build_action_detail(doc: Dict[str, Any]) -> Dict[str, Any]:
         "owner": owner,
         "context": {
             "target": doc.get("ioc_value"),
-            "source": primary_event.get("source_ip") or ", ".join(_normalize_sources(doc) or ["unknown"]),
+            "source": primary_event.get("source_ip") or ", ".join(_normalize_sources(doc)),
             "source_name": primary_event.get("source_name") or _primary_source(doc),
             "target_victim": primary_event.get("target_ip"),
             "sector": sector["sector_name"],
-            "threat_type": ", ".join(doc.get("ai_threat_types") or []) or "Unknown",
+            "threat_type": ", ".join(doc.get("ai_threat_types") or []),
             "country": _country_from_doc(primary_event) or _country_from_doc(doc),
             "description": primary_event.get("description") or doc.get("description") or "",
         },
@@ -2174,10 +3374,10 @@ def _build_ioc_record(rank: int, doc: Dict[str, Any]) -> Dict[str, Any]:
         "ioc_value": doc.get("ioc_value"),
         "ioc_type": ioc_type,
         "ioc_type_label": IOC_TYPE_LABELS.get(ioc_type, ioc_type.upper()),
-        "severity": _severity_label(_normalize_severity(doc.get("ai_severity") or doc.get("severity"))),
+        "severity": _severity_label(_source_severity(doc)),
         "risk_score": int(doc.get("ai_risk_score") or 0),
         "threat_types": doc.get("ai_threat_types") or doc.get("threat_type") or [],
-        "sources": _normalize_sources(doc) or ["unknown"],
+        "sources": _normalize_sources(doc),
         "first_seen": doc.get("first_seen") or doc.get("event_time") or doc.get("collect_time"),
         "last_seen": doc.get("last_seen") or doc.get("collect_time") or doc.get("processed_at"),
     }
@@ -2236,9 +3436,9 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
         history_preview.append(
             {
                 "observed_at": observed_at.isoformat().replace("+00:00", "Z") if observed_at else None,
-                "source": doc.get("source_name") or "unknown",
+                "source": doc.get("source_name"),
                 "severity": _severity_label(_normalize_severity(doc.get("severity"))),
-                "description": doc.get("description") or doc.get("reference") or "-",
+                "description": doc.get("description") or doc.get("reference"),
             }
         )
     references = _unique_list([doc.get("reference") for doc in datalake_docs if doc.get("reference")], limit=10)
@@ -2247,21 +3447,21 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
             "ioc_value": warehouse_doc.get("ioc_value"),
             "ioc_type": warehouse_doc.get("ioc_type"),
             "ioc_type_label": IOC_TYPE_LABELS.get(str(warehouse_doc.get("ioc_type", "")).lower(), str(warehouse_doc.get("ioc_type", "")).upper()),
-            "severity": _severity_label(_normalize_severity(warehouse_doc.get("ai_severity") or warehouse_doc.get("severity"))),
-            "sources": _normalize_sources(warehouse_doc) or ["unknown"],
+            "severity": _severity_label(_source_severity(warehouse_doc)),
+            "sources": _normalize_sources(warehouse_doc),
             "first_seen": warehouse_doc.get("first_seen") or warehouse_doc.get("event_time") or warehouse_doc.get("collect_time"),
             "threat_types": warehouse_doc.get("ai_threat_types") or warehouse_doc.get("threat_type") or [],
         },
         "risk_assessment": {
             "model": warehouse_doc.get("score_model_version") or "ai-scoring",
             "risk_score": int(warehouse_doc.get("ai_risk_score") or 0),
-            "risk_level": _severity_label(_normalize_severity(warehouse_doc.get("ai_severity") or warehouse_doc.get("severity"))),
-            "severity": _severity_label(_normalize_severity(warehouse_doc.get("ai_severity") or warehouse_doc.get("severity"))),
-            "summary": ", ".join(warehouse_doc.get("ai_threat_types") or []) or "Threat score computed from AI scoring pipeline",
+            "risk_level": _severity_label(_ai_severity(warehouse_doc)),
+            "severity": _severity_label(_source_severity(warehouse_doc)),
+            "summary": ", ".join(warehouse_doc.get("ai_threat_types") or []) or None,
             "contributing_factors": breakdown_factors,
         },
         "geo_location_owner": {
-            "country": country or "Unknown",
+            "country": country,
             "city": (
                 ((first_enrichment.get("geo_info") or {}) if isinstance(first_enrichment.get("geo_info"), dict) else {}).get("city")
                 or _fe_ip_info.get("city")
@@ -2322,7 +3522,7 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
 
 
 def _relationship_node(node_id: str, node_type: str, label: Any, **extra: Any) -> Dict[str, Any]:
-    node = {"id": node_id, "type": node_type, "label": str(label or "Unknown")}
+    node = {"id": node_id, "type": node_type, "label": str(label or "")}
     node.update({key: value for key, value in extra.items() if value is not None})
     return node
 
@@ -2382,7 +3582,7 @@ def _build_ioc_relationship_graph(
         "ioc",
         warehouse_doc.get("ioc_value"),
         ioc_type=warehouse_doc.get("ioc_type"),
-        severity=_severity_label(_normalize_severity(warehouse_doc.get("ai_severity") or warehouse_doc.get("severity"))),
+        severity=_severity_label(_source_severity(warehouse_doc)),
         risk_score=int(warehouse_doc.get("ai_risk_score") or 0),
     )
     if ioc_node["id"] not in seen_nodes:
@@ -2410,9 +3610,10 @@ def _build_ioc_relationship_graph(
 
     for doc in datalake_docs:
         observed = (_pick_event_time(doc) or datetime.now(UTC)).isoformat().replace("+00:00", "Z")
-        source_name = doc.get("source_name") or "unknown"
-        source_node = _relationship_node(f"source:{source_name}", "source", source_name)
-        _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, source_node, ioc_node, "observed", observed, observed)
+        source_name = doc.get("source_name")
+        if source_name:
+            source_node = _relationship_node(f"source:{source_name}", "source", source_name)
+            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, source_node, ioc_node, "observed", observed, observed)
         if doc.get("source_ip"):
             source_ip_node = _relationship_node(f"ip:{doc['source_ip']}", "ip", doc["source_ip"])
             _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, source_ip_node, ioc_node, "source_ip", observed, observed)
@@ -2439,7 +3640,7 @@ def _build_ioc_relationship_graph(
             "related_ioc",
             related_doc.get("ioc_value"),
             ioc_type=related_doc.get("ioc_type"),
-            severity=_severity_label(_normalize_severity(related_doc.get("ai_severity") or related_doc.get("severity"))),
+            severity=_severity_label(_source_severity(related_doc)),
             risk_score=int(related_doc.get("ai_risk_score") or 0),
         )
         shared_threats = sorted(
@@ -2474,7 +3675,7 @@ def _build_ioc_relationship_graph(
             "reputation": first_datalake.get("reputation") or first_datalake.get("source_risk_score"),
             "first_seen": first_seen,
             "last_seen": last_seen,
-            "sources": _normalize_sources(warehouse_doc) or ["unknown"],
+            "sources": _normalize_sources(warehouse_doc),
         },
         "relationship": {
             "nodes": nodes,
@@ -2494,7 +3695,7 @@ def _build_ioc_relationship_graph(
 def _date_label_for_doc(doc: Dict[str, Any]) -> str:
     event_time = _pick_event_time(doc)
     if not event_time:
-        return "unknown"
+        return ""
     return event_time.astimezone(BANGKOK_TZ).date().isoformat()
 
 
@@ -2505,11 +3706,11 @@ def _build_threat_type_detail_payload(
     page_size: int,
 ) -> Dict[str, Any]:
     total = len(docs)
-    ioc_type_counts = Counter(str(doc.get("ioc_type", "unknown")).lower() or "unknown" for doc in docs)
-    sector_counts = Counter(_sector_info(doc)["sector_name"] for doc in docs)
+    ioc_type_counts = Counter(str(doc.get("ioc_type") or "").lower() for doc in docs if doc.get("ioc_type"))
+    sector_counts = Counter(_sector_info(doc)["sector_name"] for doc in docs if _sector_info(doc).get("sector_name"))
     actor_counts = Counter(actor for doc in docs for actor in (doc.get("ai_threat_actors") or []) if str(actor).strip())
     source_counts = Counter(source for doc in docs for source in _normalize_sources(doc))
-    severity_counts = Counter(_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in docs)
+    severity_counts = Counter(_source_severity(doc) for doc in docs)
     mitre_values = []
     for doc in docs:
         for technique in doc.get("ai_mitre_techniques") or []:
@@ -2595,24 +3796,28 @@ def _doc_text_blob(doc: Dict[str, Any]) -> str:
     return " ".join(json.dumps(item, ensure_ascii=False, default=str) if isinstance(item, (dict, list)) else str(item or "") for item in fields)
 
 
+def _pick_processed_time(doc: Dict[str, Any]) -> Optional[datetime]:
+    return _parse_dt(doc.get("processed_at") or doc.get("created_at")) or _pick_event_time(doc)
+
+
 def _build_trend_event_rows(docs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for index, doc in enumerate(
-        sorted(docs, key=lambda item: _pick_event_time(item) or datetime.min.replace(tzinfo=UTC), reverse=True),
+        sorted(docs, key=lambda item: _pick_processed_time(item) or datetime.min.replace(tzinfo=UTC), reverse=True),
         start=1,
     ):
-        event_time = _pick_event_time(doc)
+        display_time = _pick_processed_time(doc)
         rows.append(
             {
                 "rank": index,
                 "event_id": doc.get("_id") or _indicator_or_doc_id(doc),
-                "timestamp": (event_time or datetime.now(UTC)).isoformat().replace("+00:00", "Z"),
+                "timestamp": display_time.isoformat().replace("+00:00", "Z") if display_time else None,
                 "ioc_value": doc.get("ioc_value"),
                 "ioc_type": doc.get("ioc_type"),
-                "severity": _severity_label(_normalize_severity(doc.get("ai_severity") or doc.get("severity"))),
+                "severity": _severity_label(_source_severity(doc)),
                 "risk_score": int(doc.get("ai_risk_score") or 0),
                 "threat_types": _as_list(doc.get("ai_threat_types") or doc.get("threat_type")),
-                "sources": _normalize_sources(doc) or ["unknown"],
+                "sources": _normalize_sources(doc),
                 "sector": _sector_info(doc)["sector_name"],
                 "description": doc.get("description"),
             }
@@ -2655,7 +3860,7 @@ def _build_cve_records(
         warehouse_related = bucket["warehouse_docs"]
         risk_score = max((int(doc.get("ai_risk_score") or 0) for doc in warehouse_related), default=0)
         severity = max(
-            (_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in all_docs),
+            (_source_severity(doc) for doc in all_docs),
             key=lambda item: SEVERITY_ORDER.get(item, 0),
             default="low",
         )
@@ -2686,11 +3891,11 @@ def _build_threat_landscape_payload(
 ) -> Dict[str, Any]:
     threat_counts = Counter(threat for doc in warehouse_docs for threat in _as_list(doc.get("ai_threat_types") or doc.get("threat_type")))
     actor_counts = Counter(actor for doc in warehouse_docs for actor in (doc.get("ai_threat_actors") or []) if str(actor).strip())
-    sector_counts = Counter(_sector_info(doc)["sector_name"] for doc in warehouse_docs)
+    sector_counts = Counter(_sector_info(doc)["sector_name"] for doc in warehouse_docs if _sector_info(doc).get("sector_name"))
     source_counts = Counter(source for doc in list(warehouse_docs) + list(datalake_docs) for source in _normalize_sources(doc))
     country_counts = Counter(country for country in (_country_from_doc(doc) for doc in list(datalake_docs) + list(warehouse_docs)) if country)
-    ioc_type_counts = Counter(str(doc.get("ioc_type") or "unknown").lower() for doc in warehouse_docs)
-    severity_counts = Counter(_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in warehouse_docs)
+    ioc_type_counts = Counter(str(doc.get("ioc_type") or "").lower() for doc in warehouse_docs if doc.get("ioc_type"))
+    severity_counts = Counter(_source_severity(doc) for doc in warehouse_docs)
     total = len(warehouse_docs)
     high_risk = sum(1 for doc in warehouse_docs if int(doc.get("ai_risk_score") or 0) >= 80)
     return {
@@ -2741,11 +3946,14 @@ def _filter_news_docs(docs: List[Dict[str, Any]], query_text: Optional[str] = No
 def _build_news_articles(docs: List[Dict[str, Any]], query_text: Optional[str] = None, sources: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     articles: Dict[str, Dict[str, Any]] = {}
     for doc in _filter_news_docs(docs, query_text=query_text, sources=sources):
-        source_name = doc.get("source_name") or "unknown"
-        title_source = str(doc.get("title") or doc.get("description") or doc.get("reference") or doc.get("ioc_value") or "Threat intelligence article").strip()
-        title = title_source.split(".")[0][:120] or "Threat intelligence article"
-        published_at = (_pick_event_time(doc) or datetime.now(UTC)).astimezone(UTC).isoformat().replace("+00:00", "Z")
-        article_key = _hash_id(source_name, str(doc.get("reference") or title), _to_bangkok_date(_pick_event_time(doc) or datetime.now(UTC)))
+        source_name = doc.get("source_name")
+        event_time = _pick_event_time(doc)
+        title_source = str(doc.get("title") or doc.get("description") or doc.get("reference") or doc.get("ioc_value") or "").strip()
+        title = title_source.split(".")[0][:120]
+        if not source_name or not title or not event_time:
+            continue
+        published_at = event_time.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        article_key = _hash_id(source_name, str(doc.get("reference") or title), _to_bangkok_date(event_time))
         article = articles.setdefault(
             article_key,
             {
@@ -2848,18 +4056,21 @@ def dashboard_logout(
 
 @router.get("/lookups/threat-types", tags=["Lookups"])
 def list_threat_types(active: bool = True, query: Optional[str] = None, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    warehouse = _hits_to_docs(_search_warehouse_docs(limit=5000))
-    datalake = _hits_to_docs(_search_datalake_docs(limit=5000))
-    values = []
-    for doc in warehouse:
-        values.extend(doc.get("ai_threat_types") or [])
-        values.extend(doc.get("threat_type") or [])
-    for doc in datalake:
-        values.extend(doc.get("threat_type") or [])
-    items = _lookup_items(values)
+    cache_key = _cache_key("lookups_threat_types", active=active, query=query)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+    warehouse_aggs = _warehouse_dashboard_aggs()
+    datalake_aggs = _datalake_dashboard_aggs()
+    counts = Counter()
+    for bucket in ((warehouse_aggs.get("threat_types") or {}).get("buckets") or []):
+        counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
+    for bucket in ((datalake_aggs.get("threat_types") or {}).get("buckets") or []):
+        counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
+    items = _lookup_items_from_counts(counts)
     if query:
         items = [item for item in items if query.lower() in item["label"].lower()]
-    return _success({"items": items})
+    return _cache_set(cache_key, _success({"items": items}), ttl=300)
 
 
 @router.get("/lookups/severities", tags=["Lookups"])
@@ -2876,41 +4087,49 @@ def list_risk_levels(active: bool = True, current_user: Dict[str, Any] = Depends
 
 @router.get("/lookups/sources", tags=["Lookups"])
 def list_sources(active: bool = True, query: Optional[str] = None, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    warehouse = _hits_to_docs(_search_warehouse_docs(limit=5000))
-    datalake = _hits_to_docs(_search_datalake_docs(limit=5000))
-    values = []
-    for doc in warehouse + datalake:
-        values.extend(_normalize_sources(doc))
-    items = _lookup_items(values)
+    cache_key = _cache_key("lookups_sources", active=active, query=query)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+    warehouse_aggs = _warehouse_dashboard_aggs()
+    datalake_aggs = _datalake_dashboard_aggs()
+    counts = Counter()
+    for bucket in ((warehouse_aggs.get("sources") or {}).get("buckets") or []):
+        counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
+    for bucket in ((datalake_aggs.get("sources") or {}).get("buckets") or []):
+        counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
+    items = _lookup_items_from_counts(counts)
     if query:
         items = [item for item in items if query.lower() in item["label"].lower()]
-    return _success({"items": items})
+    return _cache_set(cache_key, _success({"items": items}), ttl=300)
 
 
 @router.get("/lookups/sectors", tags=["Lookups"])
 def list_sectors(active: bool = True, query: Optional[str] = None, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    docs = _hits_to_docs(_search_warehouse_docs(limit=5000))
-    sectors: Dict[str, Dict[str, Any]] = {}
-    for doc in docs:
-        sector = _sector_info(doc)
-        key = sector["sector"]
-        current = sectors.setdefault(
-            key,
+    cache_key = _cache_key("lookups_sectors", active=active, query=query)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+    warehouse_aggs = _warehouse_dashboard_aggs()
+    items = []
+    for bucket in ((warehouse_aggs.get("sectors") or {}).get("buckets") or []):
+        label = str(bucket.get("key") or "").strip()
+        if not label or label.lower() in {"none", "null", "unknown"}:
+            continue
+        items.append(
             {
-                "value": key,
-                "label": sector["sector_name"],
-                "label_th": sector["sector_name_th"],
+                "value": label,
+                "label": label,
+                "label_th": label,
                 "description": None,
                 "active": active,
-                "count": 0,
-            },
+                "count": int(bucket.get("doc_count") or 0),
+            }
         )
-        current["count"] += 1
-    items = sorted(sectors.values(), key=lambda item: (-item["count"], item["label"].lower()))
     if query:
         needle = query.lower()
         items = [item for item in items if needle in item["label"].lower() or needle in str(item.get("label_th", "")).lower()]
-    return _success({"items": items})
+    return _cache_set(cache_key, _success({"items": items}), ttl=300)
 
 
 @router.get("/lookups/export-formats", tags=["Lookups"])
@@ -2943,27 +4162,42 @@ def executive_dashboard(
     if not start_date:
         start_date = _to_bangkok_date(now - timedelta(hours=24))
 
-    visible_docs = _hits_to_docs(_search_warehouse_docs(start_date=start_date, end_date=end_date, sort_by="time", limit=5000))
-    active_ioc_docs = _collect_ioc_docs(start_date=start_date, end_date=end_date, sort_by="time")
-    visible_datalake_docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
-    threat_level_docs = _hits_to_docs(_search_warehouse_docs(start_date=_to_bangkok_date(now - timedelta(days=14)), end_date=end_date, sort_by="time", limit=5000))
+    current_stats = _warehouse_summary_stats(start_date, end_date)
+    current_aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_trend=True)
     previous_start_date, previous_end_date = _previous_date_window(start_date, end_date)
-    previous_visible_docs = (
-        _hits_to_docs(_search_warehouse_docs(start_date=previous_start_date, end_date=previous_end_date, sort_by="time", limit=5000))
-        if previous_start_date and previous_end_date
-        else []
-    )
-    previous_active_ioc_docs = (
-        _collect_ioc_docs(start_date=previous_start_date, end_date=previous_end_date, sort_by="time")
-        if previous_start_date and previous_end_date
-        else []
-    )
-    severity_distribution = _build_severity_distribution(visible_docs)
-    treemap_nodes = _build_threat_volume_nodes(visible_docs)
-    threat_level = _build_threat_level(threat_level_docs, now=now)
-    primary_sector = threat_level["top_sectors"][0] if threat_level["top_sectors"] else {"sector_name": "General/Multiple"}
-    attack_origin_map = _build_attack_origin_map(visible_docs, visible_datalake_docs)
-    attack_volume_trend = _build_executive_attack_volume_trend(visible_docs, now=now, start_date=start_date, end_date=end_date)
+    previous_stats = _warehouse_summary_stats(previous_start_date, previous_end_date) if previous_start_date and previous_end_date else None
+    severity_distribution = _build_severity_distribution_from_counts(current_stats.get("severity_counts") or {})
+    treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("threat_types") or [])
+    threat_level = _build_threat_level_from_aggregations(current_stats, current_aggs, now=now)
+    primary_sector = threat_level["top_sectors"][0] if threat_level["top_sectors"] else {"sector_name": "", "count": 0}
+    attack_origin_map = _build_attack_origin_map_from_aggs(current_aggs)
+    is_single_day = start_date == end_date
+    if is_single_day:
+        trend_training_docs = _hits_to_docs(
+            _search_warehouse_docs(
+                start_date=(now - timedelta(hours=72)).isoformat(),
+                end_date=now.isoformat(),
+                sort_by="time",
+                limit=5000,
+            )
+        )
+        trend_datalake_docs = _fetch_datalake_by_indicators(
+            [(doc.get("ioc_type", ""), doc.get("ioc_value", "")) for doc in trend_training_docs],
+            limit=5000,
+        )
+        trend = _build_trend_analytics(trend_training_docs, trend_datalake_docs, now=now)
+        attack_volume_trend = {
+            "points": [
+                {**point, "timestamp": point["hour"], "point_type": "historical"}
+                for point in trend["attack_volume_trend"]["historical"]
+            ] + [
+                {**point, "timestamp": point["hour"], "point_type": "forecast"}
+                for point in trend["attack_volume_trend"]["forecast"]
+            ],
+            "forecast_start_index": len(trend["attack_volume_trend"]["historical"]),
+        }
+    else:
+        attack_volume_trend = _build_executive_attack_volume_trend_from_buckets((current_aggs.get("trend") or {}).get("buckets") or [])
     payload = {
         "threat_level": {
             "date": threat_level["date"],
@@ -2977,10 +4211,8 @@ def executive_dashboard(
             },
         },
         "exposure_today": _build_exposure_summary(
-            visible_docs,
-            active_ioc_docs,
-            previous_visible_docs=previous_visible_docs,
-            previous_active_docs=previous_active_ioc_docs,
+            current_stats=current_stats,
+            previous_stats=previous_stats,
         ),
         "severity_distribution": severity_distribution,
         "threat_volume_severity": {"nodes": treemap_nodes},
@@ -3031,21 +4263,18 @@ def operations_dashboard(
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
     anchor_end = _resolve_anchor_end(end_date) if end_date else None
-    docs = _hits_to_docs(_search_warehouse_docs(start_date=start_date, end_date=end_date, sort_by="time", limit=5000))
-    heatmap_docs = _collect_ioc_docs(start_date=start_date, end_date=end_date, sort_by="time")
-    datalake_docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
-    source_counts = Counter(source for doc in docs for source in _normalize_sources(doc))
-    threat_counts = Counter(threat for doc in docs for threat in (doc.get("ai_threat_types") or doc.get("threat_type") or []))
-    country_counts = Counter(country for country in (_country_from_doc(doc) for doc in datalake_docs + docs) if country)
-    sector_counts = Counter(_sector_info(doc)["sector_name_th"] for doc in docs)
+    aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_heatmap=True)
+    recent_start = _to_bangkok_date((anchor_end or datetime.now(UTC)) - timedelta(days=1))
+    recent_end = _to_bangkok_date(anchor_end or datetime.now(UTC))
+    recent_stats = _warehouse_summary_stats(recent_start, recent_end)
     payload = {
-        "overview": _operations_overview(docs, anchor_end=anchor_end),
-        "incident_by_severity": _build_severity_distribution(docs),
-        "attack_time_heatmap": _build_heatmap(heatmap_docs),
-        "top_intelligence_sources": _build_top_list(source_counts),
-        "top_threat_types": _build_top_list(threat_counts),
-        "top_attack_origins": _build_top_list(country_counts),
-        "target_sectors": _build_top_list(sector_counts),
+        "overview": _operations_overview_from_aggs(aggs, recent_stats=recent_stats),
+        "incident_by_severity": _build_severity_distribution_from_counts(_severity_counts_from_filter_agg(aggs.get("severity_counts") or {})),
+        "attack_time_heatmap": _build_heatmap_from_histogram((aggs.get("heatmap") or {}).get("buckets") or []),
+        "top_intelligence_sources": _terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
+        "top_threat_types": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
+        "top_attack_origins": _terms_items_from_buckets((aggs.get("countries") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
+        "target_sectors": _terms_items_from_buckets((aggs.get("sectors") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
     }
     return _success(payload)
 
@@ -3107,46 +4336,49 @@ def operations_report(
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
     normalized_key = _normalize_report_key(report_key)
-    docs = _hits_to_docs(_search_warehouse_docs(start_date=start_date, end_date=end_date, sort_by="time", limit=5000))
-    docs = _filter_warehouse_docs(docs, query=query, threat_types=threat_types, sources=sources, severities=severities)
-    datalake_docs = _fetch_datalake_by_indicators([(doc.get("ioc_type", ""), doc.get("ioc_value", "")) for doc in docs], limit=5000)
-    trend = _build_trend_analytics(docs, datalake_docs)
-    chart_key = {
-        "intelligence-sources": "sources",
-        "threat-types": "threat_types",
-        "attack-origins": "countries",
-        "target-sectors": "sectors",
-    }[normalized_key]
-    chart = trend["comparison_charts"][chart_key]
-    datalake_lookup: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for doc in datalake_docs:
-        datalake_lookup[_indicator_id(doc.get("ioc_type", ""), doc.get("ioc_value", ""))].append(doc)
-    ranking_items, top_chart, severity_rows = _build_report_ranking(normalized_key, docs, datalake_lookup, chart)
-    payload = {
-        "report_key": normalized_key,
-        "title": normalized_key.replace("-", " ").title(),
-        "summary": {
-            "total_groups": len(ranking_items),
-            "total_events": len(docs),
-            "date_range": {"start_date": start_date, "end_date": end_date},
-        },
-        "filters": {
-            "query": query,
-            "threat_types": threat_types or [],
-            "sources": sources or [],
-            "severities": severities or [],
-        },
-        "top_chart": top_chart,
-        "severity_distribution": {"rows": severity_rows},
-        "trend_comparison": chart,
-        "ranking": {
-            "items": _page_slice(ranking_items, page, page_size),
-            "total": len(ranking_items),
-            "page": page,
-            "page_size": page_size,
-        },
-    }
-    return _success(payload)
+    cache_key = _cache_key(
+        "operations_report",
+        report_key=normalized_key,
+        page=page,
+        page_size=page_size,
+        query=query,
+        start_date=start_date,
+        end_date=end_date,
+        threat_types=threat_types,
+        sources=sources,
+        severities=severities,
+    )
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    aggregated_payload = _build_aggregated_report_payload(
+        normalized_key,
+        page=page,
+        page_size=page_size,
+        query=query,
+        start_date=start_date,
+        end_date=end_date,
+        threat_types=threat_types,
+        sources=sources,
+        severities=severities,
+    )
+    if aggregated_payload:
+        return _cache_set(cache_key, _success(aggregated_payload))
+
+    payload = _empty_operations_report_payload(
+        normalized_key,
+        page=page,
+        page_size=page_size,
+        query=query,
+        start_date=start_date,
+        end_date=end_date,
+        threat_types=threat_types,
+        sources=sources,
+        severities=severities,
+        reason="aggregation_unavailable",
+    )
+    return _cache_set(cache_key, _success(payload), ttl=15)
 
 
 @router.post("/reports/operations/{report_key}/preview", tags=["Reports"])
@@ -3234,6 +4466,10 @@ def threat_trend_events(
     severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    cache_key = _cache_key("threat_trend_events", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, threat_types=threat_types, sources=sources, severities=severities)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
     docs = _collect_ioc_docs(
         query=query,
         start_date=start_date,
@@ -3243,6 +4479,14 @@ def threat_trend_events(
         severities=severities,
         sort_by="time",
     )
+    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
+    if start_bound or end_bound:
+        docs = [
+            doc for doc in docs
+            if (lambda t: t is not None and (start_bound is None or t >= start_bound) and (end_bound is None or t <= end_bound))(
+                _parse_dt(doc.get("processed_at") or doc.get("created_at")) or _pick_event_time(doc)
+            )
+        ]
     rows = _build_trend_event_rows(docs)
     payload = {
         "summary": {
@@ -3260,7 +4504,7 @@ def threat_trend_events(
         },
         "items": _page_slice(rows, page, page_size),
     }
-    return _paged(payload, page=page, page_size=page_size, total=len(rows))
+    return _cache_set(cache_key, _paged(payload, page=page, page_size=page_size, total=len(rows)))
 
 
 @router.get("/cve-intelligence", tags=["Threat Intelligence"])
@@ -3274,6 +4518,10 @@ def cve_intelligence(
     severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    cache_key = _cache_key("cve_intelligence", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, sources=sources, severities=severities)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
     warehouse_docs = _hits_to_docs(_search_warehouse_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, sort_by="risk", limit=5000))
     warehouse_docs = [doc for doc in warehouse_docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date)]
     datalake_docs = _hits_to_docs(_search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, severities=severities, limit=5000))
@@ -3290,7 +4538,7 @@ def cve_intelligence(
         },
         "items": _page_slice(records, page, page_size),
     }
-    return _paged(payload, page=page, page_size=page_size, total=len(records))
+    return _cache_set(cache_key, _paged(payload, page=page, page_size=page_size, total=len(records)))
 
 
 @router.get("/cve-intelligence/{cve_id}", tags=["Threat Intelligence"])
@@ -3322,6 +4570,10 @@ def threat_landscape(
     severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    cache_key = _cache_key("threat_landscape", start_date=start_date, end_date=end_date, query=query, sources=sources, threat_types=threat_types, severities=severities)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
     warehouse_docs = _collect_ioc_docs(
         query=query,
         start_date=start_date,
@@ -3341,7 +4593,7 @@ def threat_landscape(
         "threat_types": threat_types or [],
         "severities": severities or [],
     }
-    return _success(payload)
+    return _cache_set(cache_key, _success(payload))
 
 
 @router.get("/operations/attack-time-report", tags=["Operations"])
@@ -3384,13 +4636,13 @@ def attack_time_report(
         paged_items.append(
             {
                 "event_id": event["_id"],
-                "timestamp": (timestamp or datetime.now(UTC)).isoformat().replace("+00:00", "Z"),
+                "timestamp": timestamp.isoformat().replace("+00:00", "Z") if timestamp else None,
                 "severity": _severity_label(_normalize_severity(event.get("severity"))),
                 "threat_types": event.get("threat_type") or [],
                 "ioc_value": event.get("ioc_value"),
                 "source_attacker": event.get("source_ip"),
                 "target_victim": event.get("target_ip"),
-                "source_name": event.get("source_name") or "unknown",
+                "source_name": event.get("source_name"),
                 "description": event.get("description"),
             }
         )
@@ -3427,13 +4679,13 @@ def operation_event_detail(event_id: str, current_user: Dict[str, Any] = Depends
         "event_id": event_id,
         "formatted": {
             "event_id": event_id,
-            "timestamp": (timestamp or datetime.now(UTC)).isoformat().replace("+00:00", "Z"),
+            "timestamp": timestamp.isoformat().replace("+00:00", "Z") if timestamp else None,
             "severity": _severity_label(_normalize_severity(document.get("severity"))),
             "threat_types": document.get("threat_type") or [],
             "ioc_value": document.get("ioc_value"),
             "source_attacker": document.get("source_ip"),
             "target_victim": document.get("target_ip"),
-            "source_name": document.get("source_name") or "unknown",
+            "source_name": document.get("source_name"),
             "description": document.get("description"),
         },
         "raw_json": document,
@@ -3454,6 +4706,10 @@ def list_actions(
     status: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    cache_key = _cache_key("list_actions", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, threat_types=threat_types, sources=sources, severities=severities, status=status)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
     docs = _search_action_docs(
         query_text=query or "*",
         start_date=start_date,
@@ -3473,7 +4729,7 @@ def list_actions(
     facets = {
         "threat_types": [{"value": key, "label": key, "count": value} for key, value in Counter(threat for doc in filtered_docs for threat in (doc.get("ai_threat_types") or [])).most_common(10)],
         "sources": [{"value": key, "label": key, "count": value} for key, value in Counter(source for doc in filtered_docs for source in _normalize_sources(doc)).most_common(10)],
-        "severities": [{"value": key, "label": _severity_label(key), "count": value} for key, value in Counter(_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in filtered_docs).most_common(5)],
+        "severities": [{"value": key, "label": _severity_label(key), "count": value} for key, value in Counter(_source_severity(doc) for doc in filtered_docs).most_common(5)],
         "statuses": [{"value": key, "label": key.replace("_", " ").title(), "count": value} for key, value in Counter(item["status"] for item in items).most_common()],
     }
     summary = {
@@ -3483,7 +4739,7 @@ def list_actions(
         "closed": sum(1 for item in items if item["status"] == "closed"),
     }
     paged_items = _page_slice(items, page, page_size)
-    return _paged({"summary": summary, "facets": facets, "items": paged_items}, page=page, page_size=page_size, total=len(items))
+    return _cache_set(cache_key, _paged({"summary": summary, "facets": facets, "items": paged_items}, page=page, page_size=page_size, total=len(items)))
 
 
 @router.post("/reports/actions/preview", tags=["Reports"])
@@ -3659,8 +4915,13 @@ def list_iocs(
     sort_order: str = "desc",
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    docs = _collect_ioc_docs(
-        query=query,
+    cache_key = _cache_key("list_iocs", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, sources=sources, threat_types=threat_types, risk_levels=risk_levels, ioc_types=ioc_types, severities=severities, high_risk_only=high_risk_only, sort_by=sort_by, sort_order=sort_order)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+    min_risk_score = 80 if high_risk_only else None
+    search_result = _search_warehouse_docs(
+        query_text=query or "*",
         start_date=start_date,
         end_date=end_date,
         sources=sources,
@@ -3668,23 +4929,38 @@ def list_iocs(
         risk_levels=risk_levels,
         ioc_types=ioc_types,
         severities=severities,
-        high_risk_only=high_risk_only,
+        min_risk_score=min_risk_score,
         sort_by=sort_by,
-        sort_order=sort_order,
+        limit=page_size,
+        offset=max(page - 1, 0) * page_size,
+    )
+    docs = _hits_to_docs(search_result)
+    total = _search_total(search_result)
+    aggs = _warehouse_dashboard_aggs(
+        query=query,
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        risk_levels=risk_levels,
+        severities=severities,
+        min_risk_score=min_risk_score,
     )
     items = [_build_ioc_record(index + 1, doc) for index, doc in enumerate(docs)]
+    severity_facet_counts = _severity_counts_from_filter_agg(aggs.get("severity_counts") or {})
+    risk_facet_counts = _severity_counts_from_filter_agg(aggs.get("risk_level_counts") or {})
     facets = {
-        "sources": [{"value": key, "label": key, "count": value} for key, value in Counter(source for doc in docs for source in _normalize_sources(doc)).most_common(10)],
-        "threat_types": [{"value": key, "label": key, "count": value} for key, value in Counter(threat for doc in docs for threat in (doc.get("ai_threat_types") or doc.get("threat_type") or [])).most_common(10)],
-        "risk_levels": [{"value": key, "label": _severity_label(key), "count": value} for key, value in Counter(_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in docs).most_common(5)],
-        "ioc_types": [{"value": key, "label": key.upper(), "count": value} for key, value in Counter(str(doc.get("ioc_type", "")).lower() for doc in docs).most_common(10)],
-        "severities": [{"value": key, "label": _severity_label(key), "count": value} for key, value in Counter(_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in docs).most_common(5)],
+        "sources": [{"value": item["key"], "label": item["label"], "count": item["value"]} for item in _terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=total, limit=10)],
+        "threat_types": [{"value": item["key"], "label": item["label"], "count": item["value"]} for item in _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], total=total, limit=10)],
+        "risk_levels": [{"value": key, "label": _severity_label(key), "count": value} for key, value in risk_facet_counts.items() if value > 0],
+        "ioc_types": [{"value": item["key"], "label": IOC_TYPE_LABELS.get(item["key"], item["key"].upper()), "count": item["value"]} for item in _terms_items_from_buckets((aggs.get("ioc_types") or {}).get("buckets") or [], total=total, limit=10)],
+        "severities": [{"value": key, "label": _severity_label(key), "count": value} for key, value in severity_facet_counts.items() if value > 0],
     }
     quick_filters = {
         "ioc_types": [{"value": item["value"], "label": item["label"], "count": next((facet["count"] for facet in facets["ioc_types"] if facet["value"] == item["value"]), 0)} for item in IOC_TYPE_LOOKUPS],
         "severities": [{"value": item["value"], "label": item["label"], "count": next((facet["count"] for facet in facets["severities"] if facet["value"] == item["value"]), 0)} for item in RISK_LEVELS],
     }
-    return _paged({"summary": {"total_indicators": len(items)}, "quick_filters": quick_filters, "facets": facets, "items": _page_slice(items, page, page_size)}, page=page, page_size=page_size, total=len(items))
+    return _cache_set(cache_key, _paged({"summary": {"total_indicators": total}, "quick_filters": quick_filters, "facets": facets, "items": items}, page=page, page_size=page_size, total=total))
 
 
 @router.get("/iocs/relationships", tags=["IOCs"])
@@ -3708,8 +4984,10 @@ def ioc_relationships(
         search_text = str(query or "").strip()
         if not search_text:
             raise HTTPException(status_code=400, detail="Provide query, ioc_id, or ioc_type and ioc_value")
-        matches = _collect_ioc_docs(query=search_text, sort_by="risk")
-        warehouse_doc = matches[0] if matches else None
+        warehouse_doc = _get_warehouse_doc_by_value(search_text)
+        if not warehouse_doc:
+            matches = _collect_ioc_docs(query=search_text, sort_by="risk")
+            warehouse_doc = matches[0] if matches else None
     if not warehouse_doc:
         raise HTTPException(status_code=404, detail="IOC not found")
 
@@ -3747,10 +5025,10 @@ def ioc_events(ioc_id: str, page: int = 1, page_size: int = 20, current_user: Di
     )
     items = [
         {
-            "observed_at": ((_pick_event_time(doc) or datetime.now(UTC)).isoformat().replace("+00:00", "Z")),
-            "source": doc.get("source_name") or "unknown",
+            "observed_at": (_pick_event_time(doc).isoformat().replace("+00:00", "Z") if _pick_event_time(doc) else None),
+            "source": doc.get("source_name"),
             "severity": _severity_label(_normalize_severity(doc.get("severity"))),
-            "description": doc.get("description") or doc.get("reference") or "-",
+            "description": doc.get("description") or doc.get("reference"),
         }
         for doc in _page_slice(docs, page, page_size)
     ]
@@ -3764,74 +5042,113 @@ def ioc_analytics(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    warehouse_docs = _collect_ioc_docs(start_date=start_date, end_date=end_date)
-    datalake_docs = _hits_to_docs(_search_datalake_docs(start_date=start_date, end_date=end_date, limit=5000))
+    cache_key = _cache_key("ioc_analytics", tab=tab, start_date=start_date, end_date=end_date)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
     if tab == "ioc-summary":
-        by_type = Counter(str(doc.get("ioc_type", "")).lower() for doc in warehouse_docs)
-        by_severity = Counter(_normalize_severity(doc.get("ai_severity") or doc.get("severity")) for doc in warehouse_docs)
-        by_source_breakdown: Dict[str, Dict[str, int]] = defaultdict(lambda: {"critical": 0, "high": 0, "medium": 0, "low": 0, "clean": 0})
-        by_type_breakdown: Dict[str, Dict[str, int]] = defaultdict(lambda: {"critical": 0, "high": 0, "medium": 0, "low": 0, "clean": 0})
-        for doc in warehouse_docs:
-            severity = _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
-            for source in _normalize_sources(doc):
-                by_source_breakdown[source][severity] += 1
-            ioc_type = IOC_TYPE_LABELS.get(str(doc.get("ioc_type", "")).lower(), str(doc.get("ioc_type", "")).upper())
-            by_type_breakdown[ioc_type][severity] += 1
-        risk_distribution = [
-            {"bucket": "0-19", "value": sum(1 for doc in warehouse_docs if int(doc.get("ai_risk_score") or 0) < 20)},
-            {"bucket": "20-39", "value": sum(1 for doc in warehouse_docs if 20 <= int(doc.get("ai_risk_score") or 0) < 40)},
-            {"bucket": "40-59", "value": sum(1 for doc in warehouse_docs if 40 <= int(doc.get("ai_risk_score") or 0) < 60)},
-            {"bucket": "60-79", "value": sum(1 for doc in warehouse_docs if 60 <= int(doc.get("ai_risk_score") or 0) < 80)},
-            {"bucket": "80-100", "value": sum(1 for doc in warehouse_docs if int(doc.get("ai_risk_score") or 0) >= 80)},
+        aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date)
+        total = int(aggs.get("total") or 0)
+        severity_counts = _severity_counts_from_filter_agg(aggs.get("severity_counts") or {})
+        by_source_breakdown = [
+            {
+                "source": str(bucket.get("key") or ""),
+                **_severity_counts_from_filter_agg(bucket.get("severity") or {}),
+            }
+            for bucket in ((aggs.get("severity_by_source") or {}).get("buckets") or [])
+            if str(bucket.get("key") or "").strip().lower() not in {"", "none", "null", "unknown"}
         ]
+        by_type_breakdown = [
+            {
+                "type": IOC_TYPE_LABELS.get(str(bucket.get("key") or "").lower(), str(bucket.get("key") or "").upper()),
+                **_severity_counts_from_filter_agg(bucket.get("severity") or {}),
+            }
+            for bucket in ((aggs.get("severity_by_type") or {}).get("buckets") or [])
+            if str(bucket.get("key") or "").strip().lower() not in {"", "none", "null", "unknown"}
+        ]
+        risk_counts = _range_counts_from_agg(aggs.get("risk_score_ranges") or {}, ["0-19", "20-39", "40-59", "60-79", "80-100"])
+        risk_distribution = [{"bucket": key, "value": value} for key, value in risk_counts.items()]
         payload = {
             "tab": "ioc-summary",
             "cards": {
-                "total_ioc": len(warehouse_docs),
-                "clean_ioc": by_severity.get("clean", 0),
-                "active_ioc": len(warehouse_docs),
-                "risk_ioc": sum(1 for doc in warehouse_docs if int(doc.get("ai_risk_score") or 0) >= 80),
+                "total_ioc": total,
+                "clean_ioc": severity_counts.get("clean", 0),
+                "active_ioc": int((aggs.get("active_iocs") or {}).get("value") or total),
+                "risk_ioc": int((aggs.get("high_risk") or {}).get("doc_count") or 0),
+                "avg_risk_score": round(float((aggs.get("avg_risk_score") or {}).get("value") or 0), 1),
             },
             "charts": {
-                "ioc_by_type": [{"key": key, "label": IOC_TYPE_LABELS.get(key, key.upper()), "color": None, "value": value, "percentage": round((value / max(len(warehouse_docs), 1)) * 100, 2)} for key, value in by_type.most_common()],
-                "ioc_by_severity": _build_severity_distribution(warehouse_docs),
-                "severity_by_source": [{"source": source, **breakdown} for source, breakdown in by_source_breakdown.items()],
-                "severity_by_type": [{"type": ioc_type, **breakdown} for ioc_type, breakdown in by_type_breakdown.items()],
+                "ioc_by_type": _terms_items_from_buckets((aggs.get("ioc_types") or {}).get("buckets") or [], total=total, labels=IOC_TYPE_LABELS, limit=25),
+                "ioc_by_severity": _build_severity_distribution_from_counts(severity_counts),
+                "threat_type_distribution": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], total=total, limit=25),
+                "severity_by_source": by_source_breakdown,
+                "severity_by_type": by_type_breakdown,
                 "risk_score_distribution": risk_distribution,
             },
         }
-        return _success(payload)
+        return _cache_set(cache_key, _success(payload))
 
     if tab == "statistics-import":
-        by_source = Counter(doc.get("source_name") or "unknown" for doc in datalake_docs)
-        by_type = Counter(str(doc.get("ioc_type", "")).lower() for doc in datalake_docs)
-        threat_type_distribution = Counter(threat for doc in datalake_docs for threat in (doc.get("threat_type") or []))
-        by_severity = Counter(_normalize_severity(doc.get("severity")) for doc in datalake_docs)
-        daily_counts: Dict[str, int] = defaultdict(int)
-        for doc in datalake_docs:
-            timestamp = _pick_event_time(doc)
-            if timestamp:
-                daily_counts[_to_bangkok_date(timestamp)] += 1
+        aggs = _datalake_dashboard_aggs(start_date=start_date, end_date=end_date)
+        total = int(aggs.get("total") or 0)
+        using_warehouse_fallback = False
+        if total == 0:
+            # The UAT target keeps processed warehouse docs, but may not retain a
+            # raw datalake mirror. Show actual imported warehouse data instead of
+            # a misleading all-zero import dashboard.
+            aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_trend=True)
+            total = int(aggs.get("total") or 0)
+            using_warehouse_fallback = True
+        timeline_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: {"value": 0, "trusted": 0, "news": 0, "other": 0})
+        timeline_buckets = (
+            ((aggs.get("trend") or {}).get("buckets") or [])
+            if using_warehouse_fallback
+            else ((aggs.get("import_timeline") or {}).get("buckets") or [])
+        )
+        for bucket in timeline_buckets:
+            parsed = _parse_dt(bucket.get("key_as_string"))
+            timestamp = parsed.astimezone(BANGKOK_TZ).date().isoformat() if parsed else str(bucket.get("key_as_string") or "")
+            bucket_total = int(bucket.get("doc_count") or 0)
+            row = timeline_counts[timestamp]
+            row["value"] += bucket_total
+            source_buckets = ((bucket.get("sources") or {}).get("buckets") or [])
+            source_total = 0
+            for source_bucket in source_buckets:
+                value = int(source_bucket.get("doc_count") or 0)
+                source_total += value
+                row[_source_category(source_bucket.get("key"))] += value
+            if not source_buckets or source_total < bucket_total:
+                row["other"] += max(0, bucket_total - source_total)
+        timeline_points = [
+            {"timestamp": timestamp, **values}
+            for timestamp, values in sorted(timeline_counts.items())
+        ]
+        active_days = len([point for point in timeline_points if int(point.get("value") or 0) > 0]) or 1
+        severity_counts = _severity_counts_from_filter_agg(aggs.get("severity_counts") or {})
+        quality_complete = int((aggs.get("quality_complete") or {}).get("doc_count") or 0)
+        data_quality_score = round((quality_complete / total) * 100) if total > 0 else 0
+        source_items = _format_source_terms(_terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=total, limit=25))
         payload = {
             "tab": "statistics-import",
             "cards": {
-                "total_import": len(datalake_docs),
-                "successful_import": len(datalake_docs),
+                "total_import": total,
+                "successful_import": total,
                 "failed_import": 0,
-                "avg_import_per_day": round(sum(daily_counts.values()) / max(len(daily_counts), 1), 2),
+                "avg_import_per_day": round(total / active_days, 2),
+                "data_quality_score": data_quality_score,
             },
             "charts": {
-                "import_volume_over_time": {"points": [{"timestamp": day, "value": value} for day, value in sorted(daily_counts.items())]},
-                "ioc_by_intelligence_source": [{"key": key, "label": key, "color": None, "value": value, "percentage": round((value / max(len(datalake_docs), 1)) * 100, 2)} for key, value in by_source.most_common()],
-                "ioc_by_type": [{"key": key, "label": IOC_TYPE_LABELS.get(key, key.upper()), "color": None, "value": value, "percentage": round((value / max(len(datalake_docs), 1)) * 100, 2)} for key, value in by_type.most_common()],
-                "threat_type_distribution": [{"key": key, "label": key, "color": None, "value": value, "percentage": round((value / max(len(datalake_docs), 1)) * 100, 2)} for key, value in threat_type_distribution.most_common()],
-                "ioc_by_severity": [{"key": key, "label": _severity_label(key), "color": None, "value": value, "percentage": round((value / max(len(datalake_docs), 1)) * 100, 2)} for key, value in by_severity.most_common()],
-                "import_by_source": [{"key": key, "label": key, "value": value} for key, value in by_source.most_common()],
-                "import_by_type": [{"key": key, "label": IOC_TYPE_LABELS.get(key, key.upper()), "value": value} for key, value in by_type.most_common()],
-                "import_by_severity": [{"key": key, "label": _severity_label(key), "value": value} for key, value in by_severity.most_common()],
+                "import_volume_over_time": {"points": timeline_points},
+                "ioc_by_intelligence_source": source_items,
+                "ioc_by_type": _terms_items_from_buckets((aggs.get("ioc_types") or {}).get("buckets") or [], total=total, labels=IOC_TYPE_LABELS, limit=25),
+                "threat_type_distribution": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], total=total, limit=25),
+                "ioc_by_severity": _build_severity_distribution_from_counts(severity_counts),
+                "import_by_source": [{"key": item["key"], "label": item["label"], "value": item["value"]} for item in source_items],
+                "import_by_type": [{"key": item["key"], "label": item["label"], "value": item["value"]} for item in _terms_items_from_buckets((aggs.get("ioc_types") or {}).get("buckets") or [], total=total, labels=IOC_TYPE_LABELS, limit=25)],
+                "import_by_severity": [{"key": key, "label": _severity_label(key), "value": value} for key, value in severity_counts.items()],
             },
         }
-        return _success(payload)
+        return _cache_set(cache_key, _success(payload))
 
     raise HTTPException(status_code=400, detail="Unsupported analytics tab")
 
@@ -3948,7 +5265,8 @@ def most_frequent_threats_preview(request: MostFrequentThreatsRequest, current_u
             },
         )
         item["hits"] += 1
-        item["sources"].add(doc.get("source_name") or "unknown")
+        if doc.get("source_name"):
+            item["sources"].add(doc.get("source_name"))
     items = []
     for index, item in enumerate(sorted(grouped.values(), key=lambda current: current["hits"], reverse=True), start=1):
         items.append(
@@ -4007,6 +5325,10 @@ def list_news(
     sort_by: str = "published_at",
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    cache_key = _cache_key("list_news", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, sources=sources, sort_by=sort_by)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
     docs = _hits_to_docs(_search_datalake_docs(query_text=query or "*", start_date=start_date, end_date=end_date, sources=sources, limit=5000))
     items = _build_news_articles(docs, query_text=query, sources=sources)
     if sort_by == "title":
@@ -4026,7 +5348,7 @@ def list_news(
             key=lambda item: _parse_dt(item.get("published_at")) or datetime.min.replace(tzinfo=UTC),
             reverse=True,
         )
-    return _paged({"items": _page_slice(items, page, page_size)}, page=page, page_size=page_size, total=len(items))
+    return _cache_set(cache_key, _paged({"items": _page_slice(items, page, page_size)}, page=page, page_size=page_size, total=len(items)))
 
 
 @router.get("/news/{article_id}", tags=["News"])
@@ -4223,9 +5545,11 @@ def mark_all_notifications_read(payload: Optional[BulkNotificationReadRequest] =
 
 @router.post("/ml/feedback", tags=["ML Feedback"], status_code=201)
 def create_ml_feedback(request: MLFeedbackRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    reviewer = str(current_user.get("email") or current_user.get("name") or current_user.get("user_id") or "unknown")
+    reviewer = current_user.get("email") or current_user.get("name") or current_user.get("user_id")
+    if not reviewer:
+        raise HTTPException(status_code=400, detail="Reviewer identity is required")
     payload = request.model_dump()
-    payload["reviewer"] = reviewer
+    payload["reviewer"] = str(reviewer)
     feedback_id = get_elastic_client().save_ml_feedback(payload)
     if not feedback_id:
         raise HTTPException(status_code=500, detail="Failed to save ML feedback")

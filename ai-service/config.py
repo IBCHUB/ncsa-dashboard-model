@@ -271,7 +271,7 @@ SECTORS = {
         "weight": 1.4,  # Highest impact multiplier
         "keywords": [
             "government", "ministry", "agency", "federal", "state", "municipal",
-            "embassy", "diplomatic", "military", "defense", "intelligence",
+            "embassy", "diplomatic", "military", "defense",
             "parliament", "senate", "congress", "election", "voting",
             "public sector", "civil service", "national security"
         ],

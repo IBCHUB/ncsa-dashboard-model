@@ -116,6 +116,21 @@ def test_sso_exchange_requires_internal_api_key(client):
     assert invalid_key.status_code == 403
 
 
+def test_ioc_date_range_keeps_recently_processed_old_iocs():
+    doc = {
+        "first_seen": "2024-05-12T21:52:54Z",
+        "last_seen": "2025-11-10T09:11:11Z",
+        "processed_at": "2026-05-13T23:09:58Z",
+        "published_at": "2026-05-13T23:09:58Z",
+    }
+
+    assert dashboard_router._ioc_doc_matches_date_range(
+        doc,
+        start_date="2026-05-08",
+        end_date="2026-05-14",
+    )
+
+
 def test_executive_and_operations_dashboards(client):
     test_client, _ = client
     headers = _login(test_client)
@@ -208,7 +223,9 @@ def test_executive_and_operations_dashboards(client):
     assert operations_report.status_code == 200
     report_payload = operations_report.json()["data"]
     assert report_payload["report_key"] == "attack-origins"
-    assert report_payload["ranking"]["items"][0]["severity_distribution"]["critical"] >= 0
+    assert report_payload["ranking"]["items"] == []
+    assert report_payload["meta"]["aggregation_mode"] == "elasticsearch"
+    assert report_payload["meta"]["reason"] == "aggregation_unavailable"
 
     operations_preview = test_client.post(
         "/api/v1/reports/operations/attack-origin/preview",

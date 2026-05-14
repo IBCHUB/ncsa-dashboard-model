@@ -8,9 +8,13 @@ notifications, enforcement points, and export jobs.
 
 from __future__ import annotations
 
+import base64
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
+import json
 import os
 import secrets
 import threading
@@ -25,6 +29,18 @@ def _isoformat(value: Optional[datetime]) -> Optional[str]:
     if value is None:
         return None
     return value.isoformat().replace("+00:00", "Z")
+
+
+def _b64encode_json(payload: Dict[str, Any]) -> str:
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64decode_json(value: str) -> Dict[str, Any]:
+    padded = value + ("=" * (-len(value) % 4))
+    raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    decoded = json.loads(raw.decode("utf-8"))
+    return decoded if isinstance(decoded, dict) else {}
 
 
 def _group_permissions() -> Dict[str, List[Dict[str, Any]]]:
@@ -200,6 +216,9 @@ class DashboardState:
     action_notes: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
+    def _session_secret(self) -> str:
+        return os.getenv("DASHBOARD_SESSION_SECRET") or os.getenv("JWT_SECRET") or ""
+
     def _cleanup_sessions(self) -> None:
         now = _utcnow()
         expired = [
@@ -218,8 +237,8 @@ class DashboardState:
         return None
 
     def _create_session_locked(self, user: Dict[str, Any]) -> Dict[str, Any]:
-        token = secrets.token_urlsafe(24)
         expires_at = _utcnow() + timedelta(seconds=self.token_ttl_seconds)
+        token = self._create_signed_session_token(user, expires_at) or secrets.token_urlsafe(24)
         self.sessions[token] = {
             "user_id": user["user_id"],
             "expires_at": expires_at,
@@ -230,6 +249,62 @@ class DashboardState:
             "expires_in": self.token_ttl_seconds,
             "user": self.public_user(user),
         }
+
+    def _create_signed_session_token(self, user: Dict[str, Any], expires_at: datetime) -> Optional[str]:
+        secret = self._session_secret()
+        if not secret:
+            return None
+        user_payload = {
+            key: user.get(key)
+            for key in (
+                "user_id",
+                "sso_id",
+                "username",
+                "name",
+                "role_name",
+                "email",
+                "group_id",
+                "user_group",
+                "national_id",
+                "phone_number",
+                "avatar_url",
+                "status",
+                "last_password_reset_at",
+            )
+        }
+        payload = {
+            "typ": "dashboard-session",
+            "exp": int(expires_at.timestamp()),
+            "iat": int(_utcnow().timestamp()),
+            "nonce": secrets.token_hex(8),
+            "user": user_payload,
+        }
+        body = _b64encode_json(payload)
+        signature = hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
+        encoded_signature = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+        return f"ds1.{body}.{encoded_signature}"
+
+    def _verify_signed_session_token(self, token: str) -> Optional[Dict[str, Any]]:
+        secret = self._session_secret()
+        if not secret or not token.startswith("ds1."):
+            return None
+        try:
+            _, body, encoded_signature = token.split(".", 2)
+            expected = hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
+            actual = base64.urlsafe_b64decode((encoded_signature + "=" * (-len(encoded_signature) % 4)).encode("ascii"))
+            if not hmac.compare_digest(actual, expected):
+                return None
+            payload = _b64decode_json(body)
+            if str(payload.get("typ") or "") != "dashboard-session":
+                return None
+            if int(payload.get("exp") or 0) <= int(_utcnow().timestamp()):
+                return None
+            user = payload.get("user")
+            if not isinstance(user, dict) or user.get("status") != "active":
+                return None
+            return user
+        except Exception:
+            return None
 
     def authenticate_sso(self, identity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         sso_id = str(identity.get("sso_id") or identity.get("id") or identity.get("sub") or "").strip()
@@ -317,9 +392,10 @@ class DashboardState:
         with self.lock:
             self._cleanup_sessions()
             session = self.sessions.get(token)
-            if not session:
-                return None
-            user = self.users.get(session["user_id"])
+            if session:
+                user = self.users.get(session["user_id"])
+            else:
+                user = self._verify_signed_session_token(token)
             if not user or user.get("status") != "active":
                 return None
             return deepcopy(user)

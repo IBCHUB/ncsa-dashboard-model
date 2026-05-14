@@ -29,6 +29,7 @@ from services.dashboard_router import router as dashboard_router
 from services.external_sharing_router import router as external_sharing_router
 from utils.pipeline_documents import build_enriched_ioc_document
 from utils.sanitizer import sanitize_text
+from utils.cors import build_cors_origins
 
 # Configure logging
 logging.basicConfig(
@@ -52,15 +53,7 @@ app = FastAPI(
 )
 
 # CORS middleware
-cors_origin_setting = os.getenv("AI_SERVICE_CORS_ORIGINS", "*").strip()
-if cors_origin_setting == "*" or not cors_origin_setting:
-    cors_origins = ["*"]
-else:
-    cors_origins = [
-        origin.strip()
-        for origin in cors_origin_setting.split(",")
-        if origin.strip()
-    ]
+cors_origins = build_cors_origins(os.getenv("AI_SERVICE_CORS_ORIGINS", "*"))
 allow_credentials = "*" not in cors_origins
 
 app.add_middleware(

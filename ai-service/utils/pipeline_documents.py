@@ -531,6 +531,9 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         },
     )
 
+    score_breakdown = score_result.get("breakdown", {}) if isinstance(score_result.get("breakdown", {}), dict) else {}
+    target_sector = score_breakdown.get("target_sector", {}) if isinstance(score_breakdown.get("target_sector", {}), dict) else {}
+
     document = {
         "ioc_value": ioc_value,
         "ioc_type": ioc_type,
@@ -554,6 +557,10 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "last_seen": last_seen,
         "ioc_age_days": ioc_age_days,
         "geo_country": geo_countries[0] if geo_countries else primary.get("geo_country"),
+        "target_sector": target_sector.get("sector"),
+        "target_sector_name": target_sector.get("sector_name"),
+        "target_sector_name_th": target_sector.get("sector_name_th"),
+        "target_sector_icon": target_sector.get("icon"),
         "ai_risk_score": score_result.get("risk_score", 0),
         "ai_severity": score_result.get("severity", "low"),
         "ai_severity_th": score_result.get("severity_th", "ต่ำ"),
@@ -576,7 +583,7 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "classifier_input_chars": classification_result["classifier_input_chars"],
         "classifier_effective_input_chars": classification_result["classifier_effective_input_chars"],
         "classification_time_ms": classification_result["classification_time_ms"],
-        "ai_score_breakdown": score_result.get("breakdown", {}),
+        "ai_score_breakdown": score_breakdown,
         "ai_top_factors": score_result.get("top_factors", []),
         "score_model_version": score_result.get("score_model_version"),
         "score_config_version": score_result.get("score_config_version"),
