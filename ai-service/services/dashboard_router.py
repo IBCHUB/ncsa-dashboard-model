@@ -3490,7 +3490,7 @@ def _build_executive_attack_volume_trend_from_buckets(buckets: Sequence[Dict[str
         day_bucket["high"] += p["high"]
     daily_keys = sorted(daily_agg.keys())
     forecast_points: List[Dict[str, Any]] = []
-    if daily_keys:
+    if daily_keys and forecast_days > 0:
         season = min(7, max(1, len(daily_keys)))
         total_fc = holt_winters_forecast([daily_agg[k]["total"] for k in daily_keys], forecast_days, season_length=season)
         critical_fc = holt_winters_forecast([daily_agg[k]["critical"] for k in daily_keys], forecast_days, season_length=season)
@@ -4734,11 +4734,14 @@ def executive_dashboard(
     previous_start_date, previous_end_date = _previous_date_window(start_date, end_date)
     previous_stats = _warehouse_summary_stats(previous_start_date, previous_end_date, time_mode=TIME_MODE_OBSERVED) if previous_start_date and previous_end_date else None
     severity_distribution = _build_severity_distribution_from_counts(current_stats.get("severity_counts") or {})
-    treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("sector_terms") or [])
+    treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("threat_types") or [])
+    sector_treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("sector_terms") or [])
     threat_level = _build_threat_level_from_aggregations(current_stats, current_aggs, now=now)
     primary_sector = threat_level["top_sectors"][0] if threat_level["top_sectors"] else {"sector_name": "", "count": 0}
     attack_origin_map = _build_attack_origin_map_from_aggs(current_aggs)
     is_single_day = start_date == end_date
+    today_bkk = _to_bangkok_date(datetime.now(UTC))
+    include_forecast = is_single_day and end_date >= today_bkk
     if is_single_day:
         trend_training_docs = _scroll_all_warehouse_docs(
             start_date=(now - timedelta(hours=72)).isoformat(),
@@ -4750,18 +4753,22 @@ def executive_dashboard(
             [(doc.get("ioc_type", ""), doc.get("ioc_value", "")) for doc in trend_training_docs],
         )
         trend = _build_trend_analytics(trend_training_docs, trend_datalake_docs, now=now)
+        forecast_points = trend["attack_volume_trend"]["forecast"] if include_forecast else []
         attack_volume_trend = {
             "points": [
                 {**point, "timestamp": point["hour"], "point_type": "historical"}
                 for point in trend["attack_volume_trend"]["historical"]
             ] + [
                 {**point, "timestamp": point["hour"], "point_type": "forecast"}
-                for point in trend["attack_volume_trend"]["forecast"]
+                for point in forecast_points
             ],
             "forecast_start_index": len(trend["attack_volume_trend"]["historical"]),
         }
     else:
-        attack_volume_trend = _build_executive_attack_volume_trend_from_buckets((current_aggs.get("trend") or {}).get("buckets") or [])
+        attack_volume_trend = _build_executive_attack_volume_trend_from_buckets(
+            (current_aggs.get("trend") or {}).get("buckets") or [],
+            forecast_days=0,
+        )
     payload = {
         "threat_level": {
             "date": threat_level["date"],
@@ -4780,6 +4787,7 @@ def executive_dashboard(
         ),
         "severity_distribution": severity_distribution,
         "threat_volume_severity": {"nodes": treemap_nodes},
+        "sector_threat_volume_severity": {"nodes": sector_treemap_nodes},
         "attack_volume_trend": attack_volume_trend,
         "attack_origin_map": attack_origin_map,
     }
@@ -4831,16 +4839,11 @@ def operations_dashboard(
     recent_start = _to_bangkok_date((anchor_end or datetime.now(UTC)) - timedelta(days=1))
     recent_end = _to_bangkok_date(anchor_end or datetime.now(UTC))
     recent_stats = _warehouse_summary_stats(recent_start, recent_end, time_mode=TIME_MODE_OBSERVED)
-    observed_docs = _collect_ioc_docs(
-        start_date=start_date,
-        end_date=end_date,
-        sort_by="risk",
-        time_mode=TIME_MODE_OBSERVED,
-    )
+    heatmap_buckets = (aggs.get("heatmap") or {}).get("buckets") or []
     payload = {
         "overview": _operations_overview_from_aggs(aggs, recent_stats=recent_stats),
         "incident_by_severity": _build_severity_distribution_from_counts(_severity_counts_from_filter_agg(aggs.get("severity_counts") or {})),
-        "attack_time_heatmap": _build_heatmap(observed_docs, time_mode=TIME_MODE_OBSERVED, start_date=start_date, end_date=end_date),
+        "attack_time_heatmap": _build_heatmap_from_histogram(heatmap_buckets),
         "top_intelligence_sources": _terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
         "top_threat_types": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
         "top_attack_origins": _terms_items_from_buckets((aggs.get("countries") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
@@ -5537,7 +5540,7 @@ def ioc_relationships(
         if not search_text:
             raise HTTPException(status_code=400, detail="Provide query, ioc_id, or ioc_type and ioc_value")
         warehouse_doc = _get_warehouse_doc_by_value(search_text)
-        if not warehouse_doc:
+        if not warehouse_doc and _infer_ioc_type_from_value(search_text):
             matches = _collect_ioc_docs(query=search_text, sort_by="risk", time_mode=TIME_MODE_OBSERVED)
             warehouse_doc = matches[0] if matches else None
     if not warehouse_doc:
