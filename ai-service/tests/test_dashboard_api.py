@@ -74,6 +74,133 @@ def test_attack_origin_trend_filters_missing_and_non_country_series():
     assert "not-a-country" not in labels
 
 
+def test_attack_time_heatmap_shape_changes_by_date_range():
+    docs = [
+        {
+            "ioc_value": "one.example",
+            "ai_threat_types": ["Phishing"],
+            "last_seen": "2026-03-11T02:00:00Z",
+            "warehouse_eligible": True,
+        },
+        {
+            "ioc_value": "two.example",
+            "ai_threat_types": ["Malware"],
+            "last_seen": "2026-03-11T05:00:00Z",
+            "warehouse_eligible": True,
+        },
+    ]
+
+    today = dashboard_router._build_heatmap(docs, start_date="2026-03-11", end_date="2026-03-11")
+    assert today["mode"] == "time-threat-type"
+    assert today["y_axis"] == [
+        "00:00 - 03:00",
+        "03:00 - 06:00",
+        "06:00 - 09:00",
+        "09:00 - 12:00",
+        "12:00 - 15:00",
+        "15:00 - 18:00",
+        "18:00 - 21:00",
+        "21:00 - 00:00",
+    ]
+    assert today["x_axis"] == ["Phishing", "Malware"]
+
+    last_week = dashboard_router._build_heatmap(docs, start_date="2026-03-09", end_date="2026-03-15")
+    assert last_week["mode"] == "time-date"
+    assert "11-03-26" in last_week["x_axis"]
+
+    last_month = dashboard_router._build_heatmap(docs, start_date="2026-03-01", end_date="2026-03-31")
+    assert last_month["mode"] == "time-day"
+    assert last_month["x_axis"][0] == "1"
+    assert "11" in last_month["x_axis"]
+
+    last_six_months = dashboard_router._build_heatmap(docs, start_date="2026-01-01", end_date="2026-06-30")
+    assert last_six_months["mode"] == "time-month"
+    assert last_six_months["x_axis"][:2] == ["Jan 2026", "Feb 2026"]
+
+
+def test_attack_time_event_row_does_not_invent_target_victim():
+    row_without_target = dashboard_router._attack_time_event_row(
+        {
+            "_id": "domain:no-target.example",
+            "ioc_value": "no-target.example",
+            "severity": "low",
+            "ai_threat_types": ["Malware"],
+            "source_name": "Cyble Threat Intelligence Feed",
+            "last_seen": "2026-05-11T06:31:54Z",
+        },
+        time_mode=dashboard_router.TIME_MODE_OBSERVED,
+        start_date="2026-05-09",
+        end_date="2026-05-15",
+    )
+    assert row_without_target["target_victim"] is None
+
+    row_with_target = dashboard_router._attack_time_event_row(
+        {
+            "_id": "domain:target.example",
+            "ioc_value": "target.example",
+            "severity": "low",
+            "ai_threat_types": ["Malware"],
+            "source_name": "Cyble Threat Intelligence Feed",
+            "last_seen": "2026-05-11T06:31:54Z",
+            "target_country": "Thailand",
+        },
+        time_mode=dashboard_router.TIME_MODE_OBSERVED,
+        start_date="2026-05-09",
+        end_date="2026-05-15",
+    )
+    assert row_with_target["target_victim"] == "Thailand"
+
+
+def test_trend_event_rows_are_hourly_volume_logs():
+    docs = [
+        {
+            "_id": "critical-1",
+            "severity": "critical",
+            "last_seen": "2026-01-05T09:12:00+07:00",
+            "target_sector_name": "National Security",
+            "ai_threat_types": ["Web Defacement"],
+        },
+        {
+            "_id": "high-1",
+            "severity": "high",
+            "last_seen": "2026-01-05T09:42:00+07:00",
+            "target_sector_name": "National Security",
+            "ai_threat_types": ["Web Defacement"],
+        },
+        {
+            "_id": "medium-1",
+            "severity": "medium",
+            "last_seen": "2026-01-05T10:01:00+07:00",
+            "target_sector_name": "Banking & Finance",
+            "ai_threat_types": ["Malware"],
+        },
+        {
+            "_id": "clean-1",
+            "severity": "clean",
+            "last_seen": "2026-01-05T09:30:00+07:00",
+            "target_sector_name": "National Security",
+            "ai_threat_types": ["Web Defacement"],
+        },
+    ]
+
+    rows = dashboard_router._build_trend_event_rows(
+        docs,
+        start_date="2026-01-05",
+        end_date="2026-01-05",
+        time_mode=dashboard_router.TIME_MODE_OBSERVED,
+    )
+
+    assert len(rows) == 2
+    national_security = next(row for row in rows if row["sector"] == "National Security")
+    assert national_security["timestamp"] == "2026-01-05T09:00:00+07:00"
+    assert national_security["threat_types"] == ["Web Defacement"]
+    assert national_security["critical"] == 1
+    assert national_security["high"] == 1
+    assert national_security["medium"] == 0
+    assert national_security["low"] == 0
+    assert national_security["total"] == 2
+
+
 def test_auth_and_lookup_contracts(client):
     test_client, _ = client
     headers = _login(test_client)

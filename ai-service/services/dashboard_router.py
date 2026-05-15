@@ -1276,6 +1276,235 @@ def _build_heatmap_from_histogram(buckets: Sequence[Dict[str, Any]]) -> Dict[str
     }
 
 
+def _hour_range_label(hour: int, span: int = 3) -> str:
+    start = int(hour) % 24
+    end = (start + span) % 24
+    return f"{start:02d}:00 - {end:02d}:00"
+
+
+def _heatmap_time_axis() -> List[str]:
+    return [_hour_range_label(hour) for hour in range(0, 24, 3)]
+
+
+def _attack_time_heatmap_mode(start_date: Optional[str], end_date: Optional[str]) -> str:
+    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
+    if not start_bound or not end_bound:
+        return "day-hour"
+    start_local = start_bound.astimezone(BANGKOK_TZ).date()
+    end_local = end_bound.astimezone(BANGKOK_TZ).date()
+    day_count = max(1, (end_local - start_local).days + 1)
+    if day_count <= 1:
+        return "time-threat-type"
+    if day_count <= 7:
+        return "time-date"
+    if day_count <= 45 and start_local.year == end_local.year and start_local.month == end_local.month:
+        return "time-day"
+    if day_count <= 45:
+        return "time-date"
+    return "time-month"
+
+
+def _attack_time_x_axis(mode: str, start_date: Optional[str], end_date: Optional[str]) -> List[str]:
+    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
+    if not start_bound or not end_bound:
+        return [f"{hour:02d}:00" for hour in range(24)]
+    start_local = start_bound.astimezone(BANGKOK_TZ).date()
+    end_local = end_bound.astimezone(BANGKOK_TZ).date()
+    if mode == "time-day":
+        return [str(day) for day in range(start_local.day, end_local.day + 1)]
+    if mode == "time-date":
+        day_count = max(1, (end_local - start_local).days + 1)
+        return [(start_local + timedelta(days=offset)).strftime("%d-%m-%y") for offset in range(day_count)]
+    if mode == "time-month":
+        labels: List[str] = []
+        cursor = date(start_local.year, start_local.month, 1)
+        end_month = date(end_local.year, end_local.month, 1)
+        while cursor <= end_month:
+            labels.append(cursor.strftime("%b %Y"))
+            if cursor.month == 12:
+                cursor = date(cursor.year + 1, 1, 1)
+            else:
+                cursor = date(cursor.year, cursor.month + 1, 1)
+        return labels
+    return []
+
+
+def _attack_time_x_label(mode: str, localized: datetime) -> str:
+    if mode == "time-day":
+        return str(localized.day)
+    if mode == "time-date":
+        return localized.strftime("%d-%m-%y")
+    if mode == "time-month":
+        return localized.strftime("%b %Y")
+    return f"{localized.hour:02d}:00"
+
+
+def _primary_threat_label(doc: Dict[str, Any]) -> str:
+    values = doc.get("ai_threat_types") or doc.get("threat_type") or []
+    if isinstance(values, str):
+        values = [values]
+    for value in values:
+        label = str(value or "").strip()
+        if label:
+            return label
+    return "Other"
+
+
+def _build_time_matrix_heatmap(mode: str, x_axis: Sequence[str], counts: Dict[tuple, int]) -> Dict[str, Any]:
+    y_axis = _heatmap_time_axis()
+    cells = [
+        {"x": x_label, "y": y_label, "value": int(counts.get((x_label, y_label), 0))}
+        for y_label in y_axis
+        for x_label in x_axis
+    ]
+    peak_cell = max(cells, key=lambda item: item["value"]) if cells else {"x": "", "y": "", "value": 0}
+    return {
+        "mode": mode,
+        "x_axis": list(x_axis),
+        "y_axis": y_axis,
+        "cells": cells,
+        "peak": {
+            "day": str(peak_cell.get("x") or "-"),
+            "hour": str(peak_cell.get("y") or "-"),
+            "end_hour": "",
+            "label": f"{peak_cell.get('x') or '-'}, {peak_cell.get('y') or '-'}",
+            "value": int(peak_cell.get("value") or 0),
+        },
+    }
+
+
+def _build_attack_time_heatmap_from_docs(
+    docs: List[Dict[str, Any]],
+    *,
+    time_mode: str = TIME_MODE_OBSERVED,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    mode = _attack_time_heatmap_mode(start_date, end_date)
+    if mode == "day-hour":
+        return _build_day_hour_heatmap(docs, time_mode=time_mode, start_date=start_date, end_date=end_date)
+
+    if mode == "time-threat-type":
+        threat_counts = Counter(_primary_threat_label(doc) for doc in docs)
+        x_axis = [label for label, _ in threat_counts.most_common(12)] or ["Other"]
+    else:
+        x_axis = _attack_time_x_axis(mode, start_date, end_date)
+
+    x_lookup = set(x_axis)
+    counts: Dict[tuple, int] = defaultdict(int)
+    for doc in docs:
+        event_time = _pick_display_time_in_range(doc, time_mode, start_date, end_date)
+        if not event_time:
+            continue
+        localized = event_time.astimezone(BANGKOK_TZ)
+        y_label = _hour_range_label((localized.hour // 3) * 3)
+        x_label = _primary_threat_label(doc) if mode == "time-threat-type" else _attack_time_x_label(mode, localized)
+        if x_label in x_lookup:
+            counts[(x_label, y_label)] += 1
+    return _build_time_matrix_heatmap(mode, x_axis, counts)
+
+
+def _build_attack_time_heatmap_from_aggs(
+    *,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    sources: Optional[List[str]] = None,
+    threat_types: Optional[List[str]] = None,
+    severities: Optional[List[str]] = None,
+    query: Optional[str] = None,
+    time_mode: str = TIME_MODE_OBSERVED,
+) -> Dict[str, Any]:
+    mode = _attack_time_heatmap_mode(start_date, end_date)
+    if mode == "day-hour":
+        return _build_heatmap_from_histogram([])
+
+    client = get_elastic_client()
+    filters = _warehouse_search_filters(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        time_mode=time_mode,
+    )
+    must: List[Dict[str, Any]] = []
+    if query and query != "*":
+        must.append(
+            {
+                "multi_match": {
+                    "query": query,
+                    "fields": ["ioc_value^3", "description", "reference", "ai_threat_types", "ai_threat_actors", "source_name"],
+                }
+            }
+        )
+    histogram_field = "last_seen" if time_mode == TIME_MODE_OBSERVED else "processed_at"
+    date_histogram: Dict[str, Any] = {
+        "field": histogram_field,
+        "fixed_interval": "3h",
+        "min_doc_count": 0,
+        "format": "strict_date_optional_time",
+        "time_zone": "Asia/Bangkok",
+    }
+    bounds = _date_histogram_bounds(start_date, end_date)
+    if bounds:
+        date_histogram["extended_bounds"] = bounds
+        date_histogram["hard_bounds"] = bounds
+
+    if mode == "time-threat-type":
+        aggs: Dict[str, Any] = {
+            "threat_types": {
+                "terms": {"field": "ai_threat_types", "size": 12, "missing": "Other"},
+                "aggs": {"time_ranges": {"date_histogram": date_histogram}},
+            }
+        }
+    else:
+        aggs = {"time_ranges": {"date_histogram": date_histogram}}
+
+    result = _safe_search(
+        client.warehouse_index,
+        {
+            "size": 0,
+            "track_total_hits": False,
+            "query": {"bool": {"must": must if must else [{"match_all": {}}], "filter": filters}},
+            "aggs": aggs,
+        },
+    )
+    aggregations = result.get("aggregations") or {}
+
+    if mode == "time-threat-type":
+        threat_buckets = (aggregations.get("threat_types") or {}).get("buckets") or []
+        x_axis = [str(bucket.get("key") or "Other") for bucket in threat_buckets if int(bucket.get("doc_count") or 0) > 0] or ["Other"]
+        x_lookup = set(x_axis)
+        counts: Dict[tuple, int] = defaultdict(int)
+        for bucket in threat_buckets:
+            x_label = str(bucket.get("key") or "Other")
+            if x_label not in x_lookup:
+                continue
+            for time_bucket in ((bucket.get("time_ranges") or {}).get("buckets") or []):
+                parsed = _parse_dt(time_bucket.get("key_as_string"))
+                if not parsed:
+                    continue
+                localized = parsed.astimezone(BANGKOK_TZ)
+                y_label = _hour_range_label((localized.hour // 3) * 3)
+                counts[(x_label, y_label)] += int(time_bucket.get("doc_count") or 0)
+        return _build_time_matrix_heatmap(mode, x_axis, counts)
+
+    x_axis = _attack_time_x_axis(mode, start_date, end_date)
+    x_lookup = set(x_axis)
+    counts = defaultdict(int)
+    for time_bucket in ((aggregations.get("time_ranges") or {}).get("buckets") or []):
+        parsed = _parse_dt(time_bucket.get("key_as_string"))
+        if not parsed:
+            continue
+        localized = parsed.astimezone(BANGKOK_TZ)
+        x_label = _attack_time_x_label(mode, localized)
+        if x_label not in x_lookup:
+            continue
+        y_label = _hour_range_label((localized.hour // 3) * 3)
+        counts[(x_label, y_label)] += int(time_bucket.get("doc_count") or 0)
+    return _build_time_matrix_heatmap(mode, x_axis, counts)
+
+
 def _warehouse_dashboard_aggs(
     *,
     start_date: Optional[str] = None,
@@ -1330,8 +1559,28 @@ def _warehouse_dashboard_aggs(
         "source_count": {"cardinality": {"field": "source_name", "precision_threshold": 40000}},
         "severity_counts": {"filters": {"filters": _severity_filters_config("severity")}},
         "risk_level_counts": {"filters": {"filters": _severity_filters_config("ai_severity")}},
-        "critical_active": {"filter": {"term": {"severity": "critical"}}},
-        "high_active": {"filter": {"term": {"severity": "high"}}},
+        "critical_active": {
+            "filter": {"term": {"severity": "critical"}},
+            "aggs": {
+                "active_iocs": {
+                    "cardinality": {
+                        "field": "canonical_ioc_key.keyword",
+                        "precision_threshold": 40000,
+                    }
+                }
+            },
+        },
+        "high_active": {
+            "filter": {"term": {"severity": "high"}},
+            "aggs": {
+                "active_iocs": {
+                    "cardinality": {
+                        "field": "canonical_ioc_key.keyword",
+                        "precision_threshold": 40000,
+                    }
+                }
+            },
+        },
         "clean_count": {"filter": {"term": {"severity": "clean"}}},
         "risk_score_ranges": {
             "range": {
@@ -2028,7 +2277,7 @@ def _build_threat_volume_nodes_from_terms(terms: Sequence[Dict[str, Any]], limit
     ]
 
 
-def _build_heatmap(
+def _build_day_hour_heatmap(
     docs: List[Dict[str, Any]],
     time_mode: str = TIME_MODE_OBSERVED,
     start_date: Optional[str] = None,
@@ -2059,11 +2308,42 @@ def _build_heatmap(
         "peak": {
             "day": y_axis[peak_day_index],
             "hour": x_axis[peak_hour_index],
-            "end_hour": f"{peak_hour_index + 1:02d}:00",
+            "end_hour": f"{(peak_hour_index + 1) % 24:02d}:00",
             "label": peak_label,
             "value": peak_value,
         },
     }
+
+
+def _build_heatmap(
+    docs: List[Dict[str, Any]],
+    time_mode: str = TIME_MODE_OBSERVED,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    return _build_attack_time_heatmap_from_docs(
+        docs,
+        time_mode=time_mode,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def _target_victim_from_doc(doc: Dict[str, Any]) -> Optional[str]:
+    for field in (
+        "target_victim",
+        "target_ip",
+        "target_country",
+        "target_country_name",
+        "victim_country",
+        "victim_country_name",
+        "target_organization",
+        "target_org",
+    ):
+        value = str(doc.get(field) or "").strip()
+        if value and value.lower() not in {"none", "null", "unknown", "n/a", "-"}:
+            return value
+    return None
 
 
 def _attack_time_event_row(
@@ -2082,7 +2362,7 @@ def _attack_time_event_row(
         "threat_types": threat_types,
         "ioc_value": doc.get("ioc_value") or doc.get("value"),
         "source_attacker": doc.get("source_ip") or _country_from_doc(doc),
-        "target_victim": doc.get("target_ip") or "Thailand",
+        "target_victim": _target_victim_from_doc(doc),
         "source_name": sources[0] if sources else None,
         "description": doc.get("description") or doc.get("reference"),
     }
@@ -3073,7 +3353,8 @@ def _build_aggregated_report_payload(
 
     total_events = _total_hits_value(result)
     ranking_items: List[Dict[str, Any]] = []
-    for index, bucket in enumerate(groups, start=1):
+    visible_rank = 1
+    for bucket in groups:
         label = _report_dimension_label(report_key, bucket.get("key"))
         if not label:
             continue
@@ -3087,7 +3368,7 @@ def _build_aggregated_report_payload(
         sample_iocs = _unique_list([str((hit.get("_source") or {}).get("ioc_value") or "") for hit in top_hits if (hit.get("_source") or {}).get("ioc_value")], limit=5)
         latest_seen = (bucket.get("latest_seen") or {}).get("value_as_string")
         item = {
-            "rank": index,
+            "rank": visible_rank,
             "label": label,
             "group_type": report_key,
             "change_direction": "flat",
@@ -3104,6 +3385,7 @@ def _build_aggregated_report_payload(
         if report_key == "attack-origins":
             item["country_code"] = _country_code_from_name(label)
         ranking_items.append(item)
+        visible_rank += 1
 
     if report_key == "attack-origins" and not ranking_items and total_events > 0:
         severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "clean": 0}
@@ -4343,28 +4625,57 @@ def _pick_processed_time(doc: Dict[str, Any]) -> Optional[datetime]:
     return _parse_dt(doc.get("processed_at") or doc.get("created_at")) or _pick_event_time(doc)
 
 
-def _build_trend_event_rows(docs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for index, doc in enumerate(
-        sorted(docs, key=lambda item: _pick_processed_time(item) or datetime.min.replace(tzinfo=UTC), reverse=True),
-        start=1,
-    ):
-        display_time = _pick_processed_time(doc)
-        rows.append(
+def _build_trend_event_rows(
+    docs: Sequence[Dict[str, Any]],
+    *,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    time_mode: str = TIME_MODE_OBSERVED,
+) -> List[Dict[str, Any]]:
+    grouped: Dict[tuple, Dict[str, Any]] = {}
+    for doc in docs:
+        severity = _source_severity(doc)
+        if severity == "clean":
+            continue
+        display_time = _pick_display_time_in_range(doc, time_mode, start_date, end_date)
+        if not display_time:
+            continue
+        hour_bucket = _start_bangkok_hour(display_time)
+        sector = _sector_info(doc)
+        sector_name = str(sector.get("sector_name") or "General/Multiple").strip() or "General/Multiple"
+        threat_type = _primary_threat_type(doc) or "Other"
+        key = (hour_bucket.isoformat(), sector_name, threat_type)
+        row = grouped.setdefault(
+            key,
             {
-                "rank": index,
-                "event_id": doc.get("_id") or _indicator_or_doc_id(doc),
-                "timestamp": display_time.isoformat().replace("+00:00", "Z") if display_time else None,
-                "ioc_value": doc.get("ioc_value"),
-                "ioc_type": doc.get("ioc_type"),
-                "severity": _severity_label(_source_severity(doc)),
-                "risk_score": int(doc.get("ai_risk_score") or 0),
-                "threat_types": _as_list(doc.get("ai_threat_types") or doc.get("threat_type")),
-                "sources": _normalize_sources(doc),
-                "sector": _sector_info(doc)["sector_name"],
-                "description": doc.get("description"),
-            }
+                "rank": 0,
+                "event_id": f"trend::{hour_bucket.isoformat()}::{sector_name}::{threat_type}",
+                "timestamp": hour_bucket.isoformat(),
+                "sector": sector_name,
+                "threat_types": [threat_type],
+                "severity": "Low",
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+                "total": 0,
+            },
         )
+        row[severity] = int(row.get(severity) or 0) + 1
+        row["total"] = int(row.get("total") or 0) + 1
+        if SEVERITY_ORDER[severity] > SEVERITY_ORDER[_normalize_severity(str(row.get("severity") or "low"))]:
+            row["severity"] = _severity_label(severity)
+
+    rows = sorted(
+        grouped.values(),
+        key=lambda item: (
+            _parse_dt(item.get("timestamp")) or datetime.min.replace(tzinfo=UTC),
+            int(item.get("total") or 0),
+        ),
+        reverse=True,
+    )
+    for index, row in enumerate(rows, start=1):
+        row["rank"] = index
     return rows
 
 
@@ -4853,15 +5164,14 @@ def operations_dashboard(
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
     anchor_end = _resolve_anchor_end(end_date) if end_date else None
-    aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_heatmap=True, time_mode=TIME_MODE_OBSERVED)
+    aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED)
     recent_start = _to_bangkok_date((anchor_end or datetime.now(UTC)) - timedelta(days=1))
     recent_end = _to_bangkok_date(anchor_end or datetime.now(UTC))
     recent_stats = _warehouse_summary_stats(recent_start, recent_end, time_mode=TIME_MODE_OBSERVED)
-    heatmap_buckets = (aggs.get("heatmap") or {}).get("buckets") or []
     payload = {
         "overview": _operations_overview_from_aggs(aggs, recent_stats=recent_stats),
         "incident_by_severity": _build_severity_distribution_from_counts(_severity_counts_from_filter_agg(aggs.get("severity_counts") or {})),
-        "attack_time_heatmap": _build_heatmap_from_histogram(heatmap_buckets),
+        "attack_time_heatmap": _build_attack_time_heatmap_from_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED),
         "top_intelligence_sources": _terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
         "top_threat_types": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
         "top_attack_origins": _terms_items_from_buckets((aggs.get("countries") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
@@ -5072,13 +5382,23 @@ def threat_trend_events(
         return_es_total=True,
         time_mode=TIME_MODE_OBSERVED,
     )
-    rows = _build_trend_event_rows(docs)
-    display_total = max(es_total, len(rows))
+    rows = _build_trend_event_rows(docs, start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED)
+    severity_totals = {
+        "critical": sum(int(item.get("critical") or 0) for item in rows),
+        "high": sum(int(item.get("high") or 0) for item in rows),
+        "medium": sum(int(item.get("medium") or 0) for item in rows),
+        "low": sum(int(item.get("low") or 0) for item in rows),
+    }
+    total_threats = sum(severity_totals.values())
     payload = {
         "summary": {
-            "total_events": display_total,
-            "critical": sum(1 for item in rows if str(item.get("severity")).lower() == "critical"),
-            "high": sum(1 for item in rows if str(item.get("severity")).lower() == "high"),
+            "total_events": total_threats,
+            "critical": severity_totals["critical"],
+            "high": severity_totals["high"],
+            "medium": severity_totals["medium"],
+            "low": severity_totals["low"],
+            "raw_event_count": es_total,
+            "grouped_row_count": len(rows),
         },
         "filters": {
             "query": query,
@@ -5090,7 +5410,7 @@ def threat_trend_events(
         },
         "items": _page_slice(rows, page, page_size),
     }
-    return _cache_set(cache_key, _paged(payload, page=page, page_size=page_size, total=display_total))
+    return _cache_set(cache_key, _paged(payload, page=page, page_size=page_size, total=len(rows)))
 
 
 @router.get("/cve-intelligence", tags=["Threat Intelligence"])
@@ -5227,8 +5547,8 @@ def attack_time_report(
     paged_items = [_attack_time_event_row(event, TIME_MODE_OBSERVED, start_date, end_date) for event in _page_slice(sorted_events, page, page_size)]
     payload = {
         "summary": {
-            "peak_attack_time": {"day": peak[0], "time_range": f"{peak[1]:02d}:00 - {min(23, peak[1] + 2):02d}:00"},
-            "quietest_period": {"day": quiet[0], "time_range": f"{quiet[1]:02d}:00 - {min(23, quiet[1] + 2):02d}:00"},
+            "peak_attack_time": {"day": peak[0], "time_range": _hour_range_label(peak[1], span=1)},
+            "quietest_period": {"day": quiet[0], "time_range": _hour_range_label(quiet[1], span=1)},
             "avg_attack_rate": _average_events_per_day(total_events, docs, start_date, end_date, TIME_MODE_OBSERVED),
             "highest_day": peak[0],
             "total_events": total_events,
@@ -5641,12 +5961,19 @@ def ioc_analytics(
         ]
         risk_counts = _range_counts_from_agg(aggs.get("risk_score_ranges") or {}, ["0-19", "20-39", "40-59", "60-79", "80-100"])
         risk_distribution = [{"bucket": key, "value": value} for key, value in risk_counts.items()]
+        unique_iocs = int((aggs.get("active_iocs") or {}).get("value") or total)
+        critical_unique_iocs = int(((aggs.get("critical_active") or {}).get("active_iocs") or {}).get("value") or 0)
         payload = {
             "tab": "ioc-summary",
             "cards": {
                 "total_ioc": total,
                 "clean_ioc": severity_counts.get("clean", 0),
-                "active_ioc": int((aggs.get("active_iocs") or {}).get("value") or total),
+                # Backward compatible alias: the UI now presents this as "New IOCs"
+                # for the selected observed date range.
+                "active_ioc": unique_iocs,
+                "new_ioc": unique_iocs,
+                "critical_ioc": critical_unique_iocs,
+                "critical_ioc_docs": severity_counts.get("critical", 0),
                 "risk_ioc": int((aggs.get("high_risk") or {}).get("doc_count") or 0),
                 "avg_risk_score": round(float((aggs.get("avg_risk_score") or {}).get("value") or 0), 1),
             },
