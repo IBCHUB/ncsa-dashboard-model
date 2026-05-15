@@ -94,3 +94,48 @@ def holt_winters_forecast(
         result.append(max(0, round(forecast_value)))
 
     return result
+
+
+def has_forecast_signal(
+    values: list[int | float],
+    *,
+    min_non_zero_points: int = 3,
+    min_non_zero_ratio: float = 0.25,
+) -> bool:
+    """
+    Return whether a series has enough signal to forecast without repeating
+    isolated import spikes as if they were a real trend.
+    """
+    if not values:
+        return False
+
+    non_zero_points = sum(1 for value in values if value > 0)
+    if non_zero_points < min_non_zero_points:
+        return False
+
+    return (non_zero_points / len(values)) >= min_non_zero_ratio
+
+
+def guarded_holt_winters_forecast(
+    values: list[int | float],
+    horizon: int,
+    season_length: int = 24,
+    *,
+    min_non_zero_points: int = 3,
+    min_non_zero_ratio: float = 0.25,
+) -> list[int]:
+    """
+    Forecast only when historical data is dense enough to support a trend.
+
+    Sparse cybersecurity feeds often contain one-off backfill spikes. Plain
+    seasonal fallback repeats those spikes and creates misleading future peaks,
+    so sparse input is treated as a zero forecast.
+    """
+    if not has_forecast_signal(
+        values,
+        min_non_zero_points=min_non_zero_points,
+        min_non_zero_ratio=min_non_zero_ratio,
+    ):
+        return [0 for _ in range(horizon)]
+
+    return holt_winters_forecast(values, horizon, season_length=season_length)

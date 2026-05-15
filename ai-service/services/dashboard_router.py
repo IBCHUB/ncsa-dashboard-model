@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 from config import NEWS_SOURCES
 from elastic_client import get_elastic_client
 from models.actions import ACTION_CLOSED, ACTION_IN_PROGRESS, ACTION_OPEN, derive_action_metadata
-from models.forecaster import holt_winters_forecast
+from models.forecaster import guarded_holt_winters_forecast
 from services.dashboard_bootstrap import get_dashboard_state
 
 logger = logging.getLogger(__name__)
@@ -3615,9 +3615,9 @@ def _build_trend_analytics(
     training_list = [training_buckets.get(_to_bangkok_hour(item), {"hour": _to_bangkok_hour(item), "label": _to_bangkok_hour(item)[5:], "total": 0, "critical": 0, "high": 0}) for item in training_hours]
 
     forecast_hours_list = [current_hour + timedelta(hours=index) for index in range(forecast_hours)]
-    total_forecast = holt_winters_forecast([point["total"] for point in training_list], forecast_hours)
-    critical_forecast = holt_winters_forecast([point["critical"] for point in training_list], forecast_hours)
-    high_forecast = holt_winters_forecast([point["high"] for point in training_list], forecast_hours)
+    total_forecast = guarded_holt_winters_forecast([point["total"] for point in training_list], forecast_hours)
+    critical_forecast = guarded_holt_winters_forecast([point["critical"] for point in training_list], forecast_hours)
+    high_forecast = guarded_holt_winters_forecast([point["high"] for point in training_list], forecast_hours)
     forecast = [
         {
             "hour": _to_bangkok_hour(hour),
@@ -3792,9 +3792,21 @@ def _build_executive_attack_volume_trend_from_buckets(buckets: Sequence[Dict[str
     forecast_points: List[Dict[str, Any]] = []
     if daily_keys and forecast_days > 0:
         season = min(7, max(1, len(daily_keys)))
-        total_fc = holt_winters_forecast([daily_agg[k]["total"] for k in daily_keys], forecast_days, season_length=season)
-        critical_fc = holt_winters_forecast([daily_agg[k]["critical"] for k in daily_keys], forecast_days, season_length=season)
-        high_fc = holt_winters_forecast([daily_agg[k]["high"] for k in daily_keys], forecast_days, season_length=season)
+        total_fc = guarded_holt_winters_forecast(
+            [daily_agg[k]["total"] for k in daily_keys],
+            forecast_days,
+            season_length=season,
+        )
+        critical_fc = guarded_holt_winters_forecast(
+            [daily_agg[k]["critical"] for k in daily_keys],
+            forecast_days,
+            season_length=season,
+        )
+        high_fc = guarded_holt_winters_forecast(
+            [daily_agg[k]["high"] for k in daily_keys],
+            forecast_days,
+            season_length=season,
+        )
         last_day = datetime.strptime(daily_keys[-1], "%Y-%m-%d").replace(tzinfo=BANGKOK_TZ)
         for i in range(forecast_days):
             fc_day = last_day + timedelta(days=i + 1)
@@ -5083,21 +5095,25 @@ def executive_dashboard(
         )
         trend = _build_trend_analytics(trend_training_docs, trend_datalake_docs, now=now)
         forecast_points = trend["attack_volume_trend"]["forecast"] if include_forecast else []
+        historical_points = [
+            {**point, "timestamp": point["hour"], "point_type": "historical"}
+            for point in trend["attack_volume_trend"]["historical"]
+        ]
         attack_volume_trend = {
-            "points": [
-                {**point, "timestamp": point["hour"], "point_type": "historical"}
-                for point in trend["attack_volume_trend"]["historical"]
-            ] + [
+            "points": historical_points + [
                 {**point, "timestamp": point["hour"], "point_type": "forecast"}
                 for point in forecast_points
             ],
-            "forecast_start_index": len(trend["attack_volume_trend"]["historical"]),
+            "forecast_start_index": len(historical_points),
         }
+        threat_volume_trend = attack_volume_trend
     else:
-        attack_volume_trend = _build_executive_attack_volume_trend_from_buckets(
+        forecast_days = 7 if end_date >= today_bkk else 0
+        threat_volume_trend = _build_executive_attack_volume_trend_from_buckets(
             (current_aggs.get("trend") or {}).get("buckets") or [],
-            forecast_days=0,
+            forecast_days=forecast_days,
         )
+        attack_volume_trend = threat_volume_trend
     payload = {
         "threat_level": {
             "date": threat_level["date"],
@@ -5117,6 +5133,7 @@ def executive_dashboard(
         "severity_distribution": severity_distribution,
         "threat_volume_severity": {"nodes": treemap_nodes},
         "sector_threat_volume_severity": {"nodes": sector_treemap_nodes},
+        "threat_volume_trend": threat_volume_trend,
         "attack_volume_trend": attack_volume_trend,
         "attack_origin_map": attack_origin_map,
     }
@@ -5879,7 +5896,17 @@ def ioc_relationships(
             raise HTTPException(status_code=400, detail="Provide query, ioc_id, or ioc_type and ioc_value")
         warehouse_doc = _get_warehouse_doc_by_value(search_text)
         if not warehouse_doc and _infer_ioc_type_from_value(search_text):
-            matches = _collect_ioc_docs(query=search_text, sort_by="risk", time_mode=TIME_MODE_OBSERVED)
+            # Never fall back to _collect_ioc_docs() here. That helper scrolls all
+            # matching warehouse docs into Python and can stall the AI service for
+            # a missing IOC on large datasets.
+            matches = _hits_to_docs(
+                _search_warehouse_docs(
+                    query_text=search_text,
+                    sort_by="risk",
+                    limit=1,
+                    time_mode=TIME_MODE_OBSERVED,
+                )
+            )
             warehouse_doc = matches[0] if matches else None
     if not warehouse_doc:
         raise HTTPException(status_code=404, detail="IOC not found")
@@ -6128,6 +6155,7 @@ def ioc_report_export(
         ioc_types=request.ioc_types or None,
         severities=request.severities or None,
         high_risk_only=request.high_risk_only,
+        time_mode=TIME_MODE_OBSERVED,
     )
     items = [_build_ioc_record(index + 1, doc) for index, doc in enumerate(docs)]
     selected_format, file_content, media_type = _build_ioc_export_artifact(items, request.export_format)

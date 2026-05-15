@@ -604,6 +604,21 @@ def test_ioc_listing_detail_and_events(client):
     assert import_tab.json()["data"]["charts"]["import_by_source"][0]["value"] >= 1
 
 
+def test_ioc_relationships_missing_query_does_not_collect_all_docs(client, monkeypatch):
+    test_client, _ = client
+    headers = _login(test_client)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("_collect_ioc_docs must not be used by /iocs/relationships fallback")
+
+    monkeypatch.setattr(dashboard_router, "_collect_ioc_docs", fail_if_called)
+
+    response = test_client.get("/api/v1/iocs/relationships?query=missing.example", headers=headers)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "IOC not found"
+
+
 def test_threat_type_detail_report(client):
     test_client, _ = client
     headers = _login(test_client)

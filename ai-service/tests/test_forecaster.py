@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from models.forecaster import holt_winters_forecast, seasonal_average
+from models.forecaster import (
+    guarded_holt_winters_forecast,
+    has_forecast_signal,
+    holt_winters_forecast,
+    seasonal_average,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -124,3 +129,20 @@ def test_seasonal_average_repeats_last_season():
     last_season = values[-24:]
     expected = [max(0, round(last_season[i % 24])) for i in range(48)]
     assert result == expected
+
+
+def test_has_forecast_signal_rejects_single_sparse_spike():
+    values = [0, 0, 103, 0, 0, 0, 0]
+    assert has_forecast_signal(values) is False
+
+
+def test_guarded_forecast_does_not_repeat_sparse_spike():
+    values = [0, 0, 103, 0, 0, 0, 0]
+    assert guarded_holt_winters_forecast(values, horizon=7, season_length=7) == [0] * 7
+
+
+def test_guarded_forecast_allows_dense_pattern():
+    values = [10, 12, 11, 13, 12, 14, 13, 15]
+    forecast = guarded_holt_winters_forecast(values, horizon=3, season_length=4)
+    assert len(forecast) == 3
+    assert any(value > 0 for value in forecast)
