@@ -1,6 +1,6 @@
 # TCTI AI Service and Data Pipeline
 
-Last updated: 2026-05-13
+Last updated: 2026-05-15
 
 This repository contains the backend AI service, datalake adapters, pipeline, Elasticsearch client, dashboard API, and external sharing API for the TCTI cyber intelligence platform.
 
@@ -43,6 +43,7 @@ The datalake is treated as read-only in UAT/production. The pipeline tracks proc
 | `ai-service/models/validation.py` | Warehouse eligibility / validation policy |
 | `ai-service/services/dashboard_router.py` | `/api/v1` dashboard API |
 | `ai-service/services/external_sharing_router.py` | `/api/v1/external` partner sharing API |
+| `ai-service/tests/test_dashboard_api.py` | Dashboard API integration tests |
 
 ## Pipeline Summary
 

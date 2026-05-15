@@ -1,6 +1,6 @@
 # API Inventory
 
-Generated from the current FastAPI source code on 2026-05-13.
+Generated from the current FastAPI source code on 2026-05-15.
 
 This file is the complete route inventory for `ncsa-dashboard-model`. It lists every FastAPI route currently declared in:
 
@@ -14,10 +14,10 @@ This file is the complete route inventory for `ncsa-dashboard-model`. It lists e
 | API group | Prefix | Routes |
 | --- | --- | ---: |
 | AI service root API | none | 10 |
-| Dashboard API | `/api/v1` | 66 |
+| Dashboard API | `/api/v1` | 67 |
 | External sharing API | `/api/v1/external` | 19 |
 | Compatibility API | none | 13 |
-| Total | | 108 |
+| Total | | 109 |
 
 ## Auth Legend
 
@@ -121,6 +121,7 @@ Source: `ai-service/services/dashboard_router.py`
 | `POST` | `/api/v1/notifications/read-all` | `Bearer/cookie token` | `mark_all_notifications_read` | Mark notifications as read |
 | `POST` | `/api/v1/ml/feedback` | `Bearer/cookie token` | `create_ml_feedback` | Create ML feedback record; no dashboard UI button currently |
 | `GET` | `/api/v1/ml/feedback` | `Bearer/cookie token` | `list_ml_feedback` | List ML feedback records; no dashboard UI button currently |
+| `GET` | `/api/v1/diagnostics/data-sources` | `Bearer/cookie token` | `data_source_diagnostics` | Document counts and connectivity status for each ES index |
 
 ## External Sharing API
 

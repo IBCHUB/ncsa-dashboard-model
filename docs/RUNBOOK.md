@@ -1,6 +1,6 @@
 # TCTI Operations Runbook
 
-Last updated: 2026-05-13
+Last updated: 2026-05-15
 
 ## Servers
 
@@ -27,6 +27,9 @@ ssh worlddev@192.168.100.44
 
 curl -fsS http://127.0.0.1:9000/health
 curl -fsS -H "X-API-Key: admin-key" http://127.0.0.1:9000/pipeline/status
+
+# Data source diagnostics (requires dashboard session token)
+curl -fsS -H "Authorization: Bearer <token>" http://127.0.0.1:9000/api/v1/diagnostics/data-sources
 
 sudo docker compose -f /opt/tcti/app/docker-compose.yml ps
 sudo docker stats --no-stream --format "{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}" tcti-ai-service

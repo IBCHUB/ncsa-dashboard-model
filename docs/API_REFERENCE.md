@@ -1,6 +1,6 @@
 # TCTI API Reference
 
-Last updated: 2026-05-13
+Last updated: 2026-05-15
 
 This is a code-derived high-level reference. For the complete route-by-route inventory, see [API_INVENTORY.md](API_INVENTORY.md). For exact request/response schemas, inspect FastAPI OpenAPI at `/docs` on the running service.
 
@@ -50,6 +50,7 @@ Main groups in `services/dashboard_router.py`:
 | Users | `/users`, `/user-groups` |
 | Notifications | `/notifications`, `/notifications/{notification_id}/read`, `/notifications/read-all` |
 | ML Feedback | `/ml/feedback` backend endpoints only; no dashboard UI button currently |
+| Diagnostics | `/diagnostics/data-sources` |
 
 ## Compatibility API
 
