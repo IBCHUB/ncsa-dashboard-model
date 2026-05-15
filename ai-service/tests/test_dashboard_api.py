@@ -40,6 +40,40 @@ def _login(test_client):
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_attack_origin_trend_filters_missing_and_non_country_series():
+    groups_bucket = {
+        "buckets": [
+            {
+                "key": "None",
+                "doc_count": 20,
+                "timeline": {"buckets": [{"key": 1778198400000, "key_as_string": "2026-05-08T00:00:00Z", "doc_count": 20}]},
+            },
+            {
+                "key": "US",
+                "doc_count": 2,
+                "timeline": {"buckets": [{"key": 1778198400000, "key_as_string": "2026-05-08T00:00:00Z", "doc_count": 2}]},
+            },
+            {
+                "key": "not-a-country",
+                "doc_count": 10,
+                "timeline": {"buckets": [{"key": 1778198400000, "key_as_string": "2026-05-08T00:00:00Z", "doc_count": 10}]},
+            },
+            {
+                "key": "CA",
+                "doc_count": 1,
+                "timeline": {"buckets": [{"key": 1778198400000, "key_as_string": "2026-05-08T00:00:00Z", "doc_count": 1}]},
+            },
+        ]
+    }
+
+    trend = dashboard_router._build_aggregated_trend(groups_bucket, "attack-origins", "day")
+
+    labels = [item["label"] for item in trend["series"]]
+    assert labels == ["United States", "Canada"]
+    assert "None" not in labels
+    assert "not-a-country" not in labels
+
+
 def test_auth_and_lookup_contracts(client):
     test_client, _ = client
     headers = _login(test_client)

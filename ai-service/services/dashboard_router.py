@@ -2887,17 +2887,43 @@ def _format_trend_bucket_label(key_as_string: Optional[str], interval: str) -> s
     return local.strftime("%m-%d")
 
 
+def _is_missing_dimension_label(value: Any) -> bool:
+    label = str(value or "").strip().lower()
+    return label in {"", "-", "none", "null", "unknown", "n/a", "na"}
+
+
+def _report_dimension_label(report_key: str, raw_value: Any) -> Optional[str]:
+    label_text = str(raw_value or "").strip()
+    if _is_missing_dimension_label(label_text):
+        return None
+    if report_key == "attack-origins":
+        country_label = _country_name_from_code_or_raw(label_text)
+        if _is_missing_dimension_label(country_label) or _country_code_from_name(country_label) is None:
+            return None
+        return country_label
+    if report_key == "intelligence-sources":
+        return _source_display_name(label_text)
+    return label_text
+
+
 def _build_aggregated_trend(
     groups_bucket: Dict[str, Any],
     report_key: str,
     interval: str,
 ) -> Dict[str, Any]:
-    group_buckets = (groups_bucket.get("buckets") or [])[:5]
+    group_buckets = []
+    for bucket in (groups_bucket.get("buckets") or []):
+        label = _report_dimension_label(report_key, bucket.get("key"))
+        if not label:
+            continue
+        group_buckets.append((bucket, label))
+        if len(group_buckets) >= 5:
+            break
     ordered_bucket_keys: List[int] = []
     labels_by_key: Dict[int, str] = {}
     series_by_label: List[Dict[str, Any]] = []
 
-    for bucket in group_buckets:
+    for bucket, _label in group_buckets:
         for point in ((bucket.get("timeline") or {}).get("buckets") or []):
             key = int(point.get("key") or 0)
             if key not in labels_by_key:
@@ -2905,14 +2931,13 @@ def _build_aggregated_trend(
                 labels_by_key[key] = _format_trend_bucket_label(point.get("key_as_string"), interval)
 
     ordered_bucket_keys.sort()
-    for bucket in group_buckets:
+    for bucket, label in group_buckets:
         timeline = {
             int(point.get("key") or 0): int(point.get("doc_count") or 0)
             for point in ((bucket.get("timeline") or {}).get("buckets") or [])
         }
         points = [timeline.get(key, 0) for key in ordered_bucket_keys]
         direction, change_percent = _calculate_change(points)
-        label = str(bucket.get("key") or "")
         series_by_label.append(
             {
                 "key": label,
@@ -3049,16 +3074,9 @@ def _build_aggregated_report_payload(
     total_events = _total_hits_value(result)
     ranking_items: List[Dict[str, Any]] = []
     for index, bucket in enumerate(groups, start=1):
-        raw_label = bucket.get("key")
-        label_text = str(raw_label or "").strip()
-        if not label_text or label_text.lower() in {"none", "null"}:
+        label = _report_dimension_label(report_key, bucket.get("key"))
+        if not label:
             continue
-        if report_key == "attack-origins":
-            label = _country_name_from_code_or_raw(label_text)
-        elif report_key == "intelligence-sources":
-            label = _source_display_name(label_text)
-        else:
-            label = label_text
         severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "clean": 0}
         for severity_bucket in ((bucket.get("severity") or {}).get("buckets") or []):
             severity = _normalize_severity(severity_bucket.get("key"))
