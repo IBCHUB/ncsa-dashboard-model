@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import asyncio
 import logging
 import threading
+
 import time
 import os
 
@@ -227,9 +228,11 @@ async def classify_endpoint(request: ClassifyRequest, api_key: str = Depends(ver
         start = time.time()
 
         sanitized_text = sanitize_text(request.text)["text"]
-        result = classify_threat(sanitized_text, threshold=request.threshold)
-        actors = extract_threat_actors(sanitized_text)
-        mitre = extract_mitre_techniques(sanitized_text)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: classify_threat(sanitized_text, threshold=request.threshold))
+        actors = await loop.run_in_executor(None, lambda: extract_threat_actors(sanitized_text))
+        mitre = await loop.run_in_executor(None, lambda: extract_mitre_techniques(sanitized_text))
+
         
         elapsed = int((time.time() - start) * 1000)
         logger.info(f"Classification completed in {elapsed}ms")
@@ -255,7 +258,9 @@ async def score_endpoint(request: ScoreRequest, api_key: str = Depends(verify_ap
         start = time.time()
 
         sanitized_description = sanitize_text(request.description)["text"]
-        result = calculate_risk_score(
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: calculate_risk_score(
+
             ioc_value=request.ioc_value,
             ioc_type=request.ioc_type,
             description=sanitized_description,
@@ -263,7 +268,8 @@ async def score_endpoint(request: ScoreRequest, api_key: str = Depends(verify_ap
             country_code=request.country_code,
             domain_age_days=request.domain_age_days,
             ioc_age_days=request.ioc_age_days
-        )
+        ))
+
         
         elapsed = int((time.time() - start) * 1000)
         logger.info(f"Scoring completed in {elapsed}ms")
@@ -289,9 +295,10 @@ async def enrich_endpoint(request: EnrichRequest, api_key: str = Depends(verify_
         full_text = sanitize_text(f"{request.title} {request.description}".strip())["text"]
         
         # 1. Classify threat
-        classification = classify_threat(full_text)
-        actors = extract_threat_actors(full_text)
-        mitre = extract_mitre_techniques(full_text)
+        loop = asyncio.get_event_loop()
+        classification = await loop.run_in_executor(None, lambda: classify_threat(full_text))
+        actors = await loop.run_in_executor(None, lambda: extract_threat_actors(full_text))
+        mitre = await loop.run_in_executor(None, lambda: extract_mitre_techniques(full_text))
         
         # 2. Build full classification dict for scorer
         full_classification = {

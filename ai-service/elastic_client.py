@@ -1046,7 +1046,7 @@ class ElasticClient:
             return self._get_unprocessed_iocs_from_readonly_feed(limit)
         else:
             query = {
-                "query": {"bool": {"must": [{"term": {"ai_processed": False}}]}},
+                "query": {"bool": {"must_not": [{"exists": {"field": "ai_processed"}}]}},
                 "sort": [
                     {"event_time": {"order": "asc", "missing": "_last"}},
                     {"collect_time": {"order": "asc", "missing": "_last"}}
@@ -1060,6 +1060,7 @@ class ElasticClient:
             hits = result["hits"]["hits"]
             logger.info(f"Found {len(hits)} hits in datalake")
             return [self._normalize_datalake_hit(hit) for hit in hits]
+
         except Exception as e:
             logger.error(f"Failed to get unprocessed IOCs: {e}")
             return []
@@ -1186,22 +1187,25 @@ class ElasticClient:
             logger.error(f"Failed to search datalake documents: {e}")
             return []
     
-    def mark_as_processed(self, doc_id: str) -> bool:
+    def mark_as_processed(self, doc_id: str, index: str = None) -> bool:
         if DATALAKE_READONLY:
             logger.info("Skipping mark_as_processed for read-only datalake doc %s", doc_id)
             return True
+        target = index or self.datalake_index
         try:
             client = self._get_client(self.datalake_index)
             if ES_CLIENT_AVAILABLE and client:
                 client.update(
-                    index=self.datalake_index,
+                    index=target,
+
                     id=doc_id,
                     body={"doc": {"ai_processed": True}}
                 )
                 return True
             else:
                 resp = httpx.post(
-                    f"{self.datalake_url}/{self.datalake_index}/_update/{quote(doc_id, safe='')}",
+                    f"{self.datalake_url}/{target}/_update/{quote(doc_id, safe='')}",
+
                     json={"doc": {"ai_processed": True}},
                     timeout=10,
                     headers=self._get_headers(self.datalake_index)
