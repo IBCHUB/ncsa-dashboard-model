@@ -6,6 +6,7 @@ FastAPI server for threat classification and risk scoring.
 
 from typing import List, Optional
 import logging
+import asyncio
 import time
 
 from fastapi import FastAPI, HTTPException, Depends, Security
@@ -182,9 +183,10 @@ async def classify_endpoint(request: ClassifyRequest, api_key: str = Depends(ver
     try:
         start = time.time()
         
-        result = classify_threat(request.text, threshold=request.threshold)
-        actors = extract_threat_actors(request.text)
-        mitre = extract_mitre_techniques(request.text)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: classify_threat(request.text, threshold=request.threshold))
+        actors = await loop.run_in_executor(None, lambda: extract_threat_actors(request.text))
+        mitre = await loop.run_in_executor(None, lambda: extract_mitre_techniques(request.text))
         
         elapsed = int((time.time() - start) * 1000)
         logger.info(f"Classification completed in {elapsed}ms")
@@ -209,14 +211,15 @@ async def score_endpoint(request: ScoreRequest, api_key: str = Depends(verify_ap
     try:
         start = time.time()
         
-        result = calculate_risk_score(
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: calculate_risk_score(
             ioc_value=request.ioc_value,
             ioc_type=request.ioc_type,
             description=request.description,
             sources=request.sources,
             country_code=request.country_code,
             domain_age_days=request.domain_age_days
-        )
+        ))
         
         elapsed = int((time.time() - start) * 1000)
         logger.info(f"Scoring completed in {elapsed}ms")
@@ -242,9 +245,10 @@ async def enrich_endpoint(request: EnrichRequest, api_key: str = Depends(verify_
         full_text = f"{request.title} {request.description}".strip()
         
         # 1. Classify threat
-        classification = classify_threat(full_text)
-        actors = extract_threat_actors(full_text)
-        mitre = extract_mitre_techniques(full_text)
+        loop = asyncio.get_event_loop()
+        classification = await loop.run_in_executor(None, lambda: classify_threat(full_text))
+        actors = await loop.run_in_executor(None, lambda: extract_threat_actors(full_text))
+        mitre = await loop.run_in_executor(None, lambda: extract_mitre_techniques(full_text))
         
         # 2. Build full classification dict for scorer
         full_classification = {
@@ -486,18 +490,53 @@ async def run_pipeline(
     processed = 0
     failed = 0
     
+    DETECTED_ACTIVITY_MAP = {
+        "malware_payload":      ["Malware"],
+        "ransomware":           ["Ransomware"],
+        "phishing":             ["Phishing"],
+        "c2_server":            ["C2"],
+        "c2":                   ["C2"],
+        "apt":                  ["APT"],
+        "vulnerability":        ["Vulnerability"],
+        "exploit":              ["Vulnerability"],
+        "ddos":                 ["DDoS"],
+        "botnet":               ["Botnet"],
+        "spam":                 ["Spam"],
+        "credential_theft":     ["Credential Theft"],
+        "data_exfiltration":    ["Data Exfiltration"],
+        "trojan":               ["Malware"],
+        "backdoor":             ["Malware"],
+        "adware":               ["Malware"],
+        "cryptominer":          ["Cryptomining"],
+    }
+
     for ioc in unprocessed:
         try:
             ioc_value = ioc.get("ioc_value", "")
             ioc_type = ioc.get("ioc_type", "unknown")
             description = ioc.get("description", "")
-            sources = [ioc.get("source_name", "unknown")]
-            
-            # Run classification
-            classification = classify_threat(description)
-            threat_actors = extract_threat_actors(description)
-            mitre_techniques = extract_mitre_techniques(description)
-            
+            detected_activity = ioc.get("detected_activity", "")
+            source_index = ioc.get("_index", "")
+            is_cyberint = source_index.startswith("cyberint-feeds")
+            sources = ["cyberint" if is_cyberint else ioc.get("source_name", "unknown")]
+
+            if is_cyberint:
+                # Rule-based: map detected_activity directly, skip ML
+                threat_types = DETECTED_ACTIVITY_MAP.get(
+                    detected_activity.lower().replace(" ", "_"),
+                    [detected_activity] if detected_activity else ["Unknown"]
+                )
+                classification = {"threat_types": threat_types, "confidence": 1.0,
+                                   "labels": threat_types, "scores": [1.0] * len(threat_types)}
+                threat_actors = []
+                mitre_techniques = []
+                logger.info(f"Cyberint rule-based: {ioc_value} → {threat_types}")
+            else:
+                # ML classification for other sources
+                classification = classify_threat(description)
+                threat_actors = extract_threat_actors(description)
+                mitre_techniques = extract_mitre_techniques(description)
+
             # Run scoring
             score_result = calculate_risk_score(
                 ioc_value=ioc_value,
@@ -511,23 +550,23 @@ async def run_pipeline(
                     "confidence": classification["confidence"]
                 }
             )
-            
+
             # Build warehouse document
             warehouse_doc = {
                 "ioc_value": ioc_value,
                 "ioc_type": ioc_type,
-                "source_name": ioc.get("source_name"),
-                "source_type": ioc.get("source_type"),
+                "source_name": "cyberint" if is_cyberint else ioc.get("source_name"),
+                "source_type": detected_activity if is_cyberint else ioc.get("source_type"),
                 "sources": sources,
                 "description": description,
                 "threat_type": ioc.get("threat_type", []),
                 "severity": ioc.get("severity"),
                 "tags": ioc.get("tags", []),
                 "reference": ioc.get("reference"),
-                "collect_time": ioc.get("collect_time"),
-                "event_time": ioc.get("event_time"),
-                "first_seen": ioc.get("event_time"),
-                "last_seen": ioc.get("collect_time"),
+                "collect_time": ioc.get("collect_time") or ioc.get("observation_date"),
+                "event_time": ioc.get("event_time") or ioc.get("observation_date"),
+                "first_seen": ioc.get("event_time") or ioc.get("observation_date"),
+                "last_seen": ioc.get("collect_time") or ioc.get("observation_date"),
                 "geo_country": ioc.get("geo_country"),
                 # AI Enrichment
                 "ai_risk_score": score_result.get("total_score", 0),
@@ -546,7 +585,7 @@ async def run_pipeline(
             
             if saved_id:
                 # Mark as processed in Data Lake
-                es_client.mark_as_processed(ioc.get("_id"))
+                es_client.mark_as_processed(ioc.get("_id"), ioc.get("_index"))
                 processed += 1
             else:
                 failed += 1

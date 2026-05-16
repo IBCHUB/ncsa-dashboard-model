@@ -156,8 +156,8 @@ class ElasticClient:
         query = {
             "query": {
                 "bool": {
-                    "must": [
-                        {"term": {"ai_processed": False}}
+                    "must_not": [
+                        {"exists": {"field": "ai_processed"}}
                     ]
                 }
             },
@@ -167,7 +167,7 @@ class ElasticClient:
         try:
             if ES_CLIENT_AVAILABLE and self.client:
                 result = self.client.search(index=self.datalake_index, body=query)
-                return [hit["_source"] | {"_id": hit["_id"]} for hit in result["hits"]["hits"]]
+                return [hit["_source"] | {"_id": hit["_id"], "_index": hit["_index"]} for hit in result["hits"]["hits"]]
             else:
                 resp = httpx.post(
                     f"{self.url}/{self.datalake_index}/_search",
@@ -175,24 +175,25 @@ class ElasticClient:
                     timeout=30
                 )
                 data = resp.json()
-                return [hit["_source"] | {"_id": hit["_id"]} for hit in data["hits"]["hits"]]
+                return [hit["_source"] | {"_id": hit["_id"], "_index": hit["_index"]} for hit in data["hits"]["hits"]]
         except Exception as e:
             logger.error(f"Failed to get unprocessed IOCs: {e}")
             return []
     
-    def mark_as_processed(self, doc_id: str) -> bool:
+    def mark_as_processed(self, doc_id: str, index: str = None) -> bool:
         """Mark an IOC in Data Lake as processed."""
+        target = index or self.datalake_index
         try:
             if ES_CLIENT_AVAILABLE and self.client:
                 self.client.update(
-                    index=self.datalake_index,
+                    index=target,
                     id=doc_id,
                     body={"doc": {"ai_processed": True}}
                 )
                 return True
             else:
                 resp = httpx.post(
-                    f"{self.url}/{self.datalake_index}/_update/{doc_id}",
+                    f"{self.url}/{target}/_update/{doc_id}",
                     json={"doc": {"ai_processed": True}},
                     timeout=10
                 )
