@@ -355,11 +355,11 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
                     {
                         "name": source_name,
                         "confidence": confidence,
-                        "type": str(doc.get("source_type", "unknown")),
+                        "type": str(doc.get("source_type", "") or doc.get("detected_activity", "") or "unknown"),
                     }
                 )
 
-        source_type = str(doc.get("source_type", "")).strip()
+        source_type = str(doc.get("source_type", "") or doc.get("detected_activity", "") or doc.get("adapter_name", "")).strip()
         if source_type and source_type not in source_types:
             source_types.append(source_type)
 

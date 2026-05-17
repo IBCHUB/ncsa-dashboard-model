@@ -8,7 +8,7 @@ Design reference: 03Attack-Relationship specification.
 
 Graph Schema:
   Nodes: actor, malware, indicator, cve, vendor, threattype, infrastructure, campaign
-  Links: uses, classified_as, hosts, shares_infra, exploits, affects, same_campaign
+  Links: uses, classified_as, hosts, shares_infra, exploits, affects, same_campaign, suggested_actor
 """
 
 from __future__ import annotations
@@ -117,13 +117,76 @@ def _extract_threattype_links(
         _add_link(links_index, indicator_id, tt_id, "classified_as")
 
 
+def _extract_malware_links(
+    doc: Dict[str, Any],
+    indicator_id: str,
+    nodes_by_id: Dict[str, Dict[str, Any]],
+    links_index: Dict[Tuple[str, str, str], float],
+) -> None:
+    """Create malware nodes and hosts links from enrichment.related_entities."""
+    enrichment = doc.get("enrichment")
+    if not isinstance(enrichment, dict):
+        return
+
+    related_entities = _safe_list(enrichment.get("related_entities"))
+    for entity in related_entities:
+        if not isinstance(entity, dict):
+            continue
+        entity_type = _safe_str(entity.get("entity_type")).lower()
+        if "malware" in entity_type:
+            name = _safe_str(entity.get("name") or entity.get("value"))
+            if not name:
+                continue
+            malware_id = _make_node_id("malware", name)
+            _add_node(nodes_by_id, malware_id, "malware", name)
+            _add_link(links_index, indicator_id, malware_id, "hosts")
+
+    malware_family = _safe_str(enrichment.get("malware_family"))
+    if malware_family:
+        malware_id = _make_node_id("malware", malware_family)
+        _add_node(nodes_by_id, malware_id, "malware", malware_family)
+        _add_link(links_index, indicator_id, malware_id, "hosts")
+
+
+def _extract_vendor_links(
+    doc: Dict[str, Any],
+    indicator_id: str,
+    nodes_by_id: Dict[str, Dict[str, Any]],
+    links_index: Dict[Tuple[str, str, str], float],
+) -> None:
+    """Create vendor nodes and affects links from CVE data."""
+    ioc_type = _safe_str(doc.get("ioc_type")).lower()
+    if ioc_type != "cve":
+        return
+
+    enrichment = doc.get("enrichment")
+    vendor = None
+
+    if isinstance(enrichment, dict):
+        cve_info = enrichment.get("cve_info")
+        if isinstance(cve_info, dict):
+            vendor = _safe_str(cve_info.get("vendor"))
+        if not vendor:
+            vendor = _safe_str(enrichment.get("affected_vendor"))
+
+    if not vendor:
+        vendor = _safe_str(doc.get("affected_vendor"))
+
+    if not vendor:
+        return
+
+    vendor_id = _make_node_id("vendor", vendor)
+    _add_node(nodes_by_id, vendor_id, "vendor", vendor)
+    _add_link(links_index, indicator_id, vendor_id, "affects")
+
+
 def _extract_infrastructure_links(
     doc: Dict[str, Any],
     indicator_id: str,
     nodes_by_id: Dict[str, Dict[str, Any]],
     links_index: Dict[Tuple[str, str, str], float],
 ) -> None:
-    """Create infrastructure nodes from enrichment data (ASN, nameservers)."""
+    """Create infrastructure nodes from enrichment data (ASN, nameservers, registrant email, ASN org)."""
     enrichment = doc.get("enrichment")
     if not isinstance(enrichment, dict):
         return
@@ -136,6 +199,14 @@ def _extract_infrastructure_links(
             _add_node(nodes_by_id, infra_id, "infrastructure", asn)
             _add_link(links_index, indicator_id, infra_id, "shares_infra")
 
+    asn_data = enrichment.get("asn_data")
+    if isinstance(asn_data, dict):
+        asn_org = _safe_str(asn_data.get("org"))
+        if asn_org:
+            org_id = _make_node_id("infra", f"org_{asn_org}")
+            _add_node(nodes_by_id, org_id, "infrastructure", asn_org, {"source": "asn_data.org"})
+            _add_link(links_index, indicator_id, org_id, "shares_infra")
+
     whois = enrichment.get("whois")
     if isinstance(whois, dict):
         name_servers = _safe_list(whois.get("name_server"))
@@ -146,6 +217,15 @@ def _extract_infrastructure_links(
             ns_id = _make_node_id("ns", ns_val)
             _add_node(nodes_by_id, ns_id, "infrastructure", ns_val)
             _add_link(links_index, indicator_id, ns_id, "shares_infra")
+
+        registrant_email = _safe_str(whois.get("registrant_email"))
+        if registrant_email:
+            email_id = _make_node_id("infra", f"reg_{registrant_email}")
+            _add_node(
+                nodes_by_id, email_id, "infrastructure", registrant_email,
+                {"source": "whois.registrant_email"},
+            )
+            _add_link(links_index, indicator_id, email_id, "shares_infra")
 
 
 def _extract_campaign_links(
@@ -189,6 +269,44 @@ def _build_campaign_nodes_and_links(
                 )
 
 
+def _build_suggested_actor_links(
+    campaign_members: Dict[Any, List[str]],
+    links_index: Dict[Tuple[str, str, str], float],
+) -> None:
+    """For IOCs in a cluster without an actor, inherit actors from cluster peers.
+
+    If IOC-A in cluster X is linked to Actor-Z via 'uses', and IOC-B is in the
+    same cluster but has no actor link, create a suggested_actor link from IOC-B
+    to Actor-Z.
+    """
+    # Build a lookup: ioc_id -> set of actors already linked
+    ioc_actors: Dict[str, set] = {}
+    for (src, tgt, lt) in links_index:
+        if lt == "uses":
+            # actor -> ioc
+            ioc_actors.setdefault(tgt, set()).add(src)
+
+    for _cluster_label, member_ids in campaign_members.items():
+        unique_members = list(dict.fromkeys(member_ids))
+        if len(unique_members) < 2:
+            continue
+
+        # Collect all actors in this cluster
+        cluster_actors: set = set()
+        for ioc_id in unique_members:
+            cluster_actors.update(ioc_actors.get(ioc_id, set()))
+
+        if not cluster_actors:
+            continue
+
+        # For IOCs without an actor, suggest the cluster actors
+        for ioc_id in unique_members:
+            if ioc_id in ioc_actors:
+                continue
+            for actor_id in cluster_actors:
+                _add_link(links_index, ioc_id, actor_id, "suggested_actor")
+
+
 def build_relationship_graph(documents: list[dict]) -> dict:
     """Build a node-link graph from a list of warehouse documents.
 
@@ -225,10 +343,13 @@ def build_relationship_graph(documents: list[dict]) -> dict:
 
         _extract_actor_links(doc, indicator_id, nodes_by_id, links_index)
         _extract_threattype_links(doc, indicator_id, nodes_by_id, links_index)
+        _extract_malware_links(doc, indicator_id, nodes_by_id, links_index)
+        _extract_vendor_links(doc, indicator_id, nodes_by_id, links_index)
         _extract_infrastructure_links(doc, indicator_id, nodes_by_id, links_index)
         _extract_campaign_links(doc, indicator_id, campaign_members)
 
     _build_campaign_nodes_and_links(campaign_members, nodes_by_id, links_index)
+    _build_suggested_actor_links(campaign_members, links_index)
 
     nodes = list(nodes_by_id.values())
     links = [

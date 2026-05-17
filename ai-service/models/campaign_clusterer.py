@@ -35,11 +35,22 @@ KNOWN_THREAT_TYPES: List[str] = [
     "APT",
 ]
 
-KNOWN_IOC_TYPES: List[str] = ["ip", "domain", "url", "hash", "cve"]
-
 TOP_COUNTRIES: List[str] = [
     "US", "CN", "RU", "DE", "NL",
     "GB", "FR", "KR", "JP", "BR",
+]
+
+TOP_ASNS: List[str] = [
+    "AS13335",  # Cloudflare
+    "AS16509",  # Amazon/AWS
+    "AS14061",  # DigitalOcean
+    "AS15169",  # Google
+    "AS8075",   # Microsoft
+    "AS63949",  # Linode
+    "AS20473",  # Choopa/Vultr
+    "AS24940",  # Hetzner
+    "AS16276",  # OVH
+    "AS45090",  # Tencent
 ]
 
 
@@ -64,13 +75,15 @@ def _one_hot_country(country: str) -> List[float]:
     return [*encoding, is_other]
 
 
-def _one_hot_ioc_type(ioc_type: str) -> List[float]:
-    """One-hot encode IOC type against KNOWN_IOC_TYPES."""
-    normalized = (ioc_type or "").strip().lower()
-    return [
-        1.0 if normalized == t else 0.0
-        for t in KNOWN_IOC_TYPES
+def _one_hot_asn(asn: str) -> List[float]:
+    """One-hot encode ASN against TOP_ASNS + 'other'."""
+    normalized = (asn or "").strip().upper()
+    encoding = [
+        1.0 if normalized == a else 0.0
+        for a in TOP_ASNS
     ]
+    is_other = 1.0 if (normalized and normalized not in TOP_ASNS) else 0.0
+    return [*encoding, is_other]
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -86,13 +99,13 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 def extract_features(documents: Sequence[Dict[str, Any]]) -> np.ndarray:
     """Extract feature vectors from warehouse documents.
 
-    Features per document:
-    - ai_threat_types: one-hot encoded (7 dimensions)
-    - geo_country: one-hot encoded (11 dimensions: top 10 + other)
-    - domain_age_days: numeric, normalized (1 dimension)
-    - ai_risk_score: numeric 0-100 (1 dimension)
-    - source_count: numeric (1 dimension)
-    - ioc_type: one-hot encoded (5 dimensions)
+    Features per document (per spec: 03Attack-Relationship):
+    - ai_threat_types: one-hot encoded (7 dimensions) — behavioral
+    - asn_data.asn: one-hot encoded (11 dimensions: top 10 + other) — infrastructure
+    - geo_country: one-hot encoded (11 dimensions: top 10 + other) — infrastructure
+    - domain_age_days: numeric, normalized (1 dimension) — behavioral
+    - ai_risk_score: numeric 0-100 (1 dimension) — severity
+    - source_count: numeric (1 dimension) — activity
 
     Returns:
         numpy array of shape (len(documents), N) where N is the feature count.
@@ -107,19 +120,32 @@ def extract_features(documents: Sequence[Dict[str, Any]]) -> np.ndarray:
             threat_types_raw = [threat_types_raw]
 
         threat_encoding = _one_hot_threat_types(threat_types_raw)
+
+        # ASN: try asn_data.asn first, fall back to enrichment.ip_info.asn
+        asn_value = ""
+        asn_data = doc.get("asn_data")
+        if isinstance(asn_data, dict):
+            asn_value = asn_data.get("asn", "")
+        if not asn_value:
+            enrichment = doc.get("enrichment")
+            if isinstance(enrichment, dict):
+                ip_info = enrichment.get("ip_info")
+                if isinstance(ip_info, dict):
+                    asn_value = ip_info.get("asn", "")
+        asn_encoding = _one_hot_asn(asn_value)
+
         country_encoding = _one_hot_country(doc.get("geo_country", ""))
         domain_age = _safe_float(doc.get("domain_age_days"), 0.0)
         risk_score = _safe_float(doc.get("ai_risk_score"), 0.0)
         source_count = _safe_float(doc.get("source_count"), 1.0)
-        ioc_type_encoding = _one_hot_ioc_type(doc.get("ioc_type", ""))
 
         row = [
             *threat_encoding,
+            *asn_encoding,
             *country_encoding,
             domain_age,
             risk_score,
             source_count,
-            *ioc_type_encoding,
         ]
         rows.append(row)
 

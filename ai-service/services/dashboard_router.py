@@ -1064,34 +1064,12 @@ def _warehouse_summary_stats(start_date: Optional[str], end_date: Optional[str],
         "track_total_hits": True,
         "query": base_query,
         "aggs": {
-            "active_iocs": {
-                "cardinality": {
-                    "field": "canonical_ioc_key.keyword",
-                    "precision_threshold": 40000,
-                }
-            },
             "severity_counts": {"filters": {"filters": severity_filters}},
             "critical_active": {
                 "filter": {"term": {"severity": "critical"}},
-                "aggs": {
-                    "active_iocs": {
-                        "cardinality": {
-                            "field": "canonical_ioc_key.keyword",
-                            "precision_threshold": 40000,
-                        }
-                    }
-                },
             },
             "high_active": {
                 "filter": {"term": {"severity": "high"}},
-                "aggs": {
-                    "active_iocs": {
-                        "cardinality": {
-                            "field": "canonical_ioc_key.keyword",
-                            "precision_threshold": 40000,
-                        }
-                    }
-                },
             },
             "thailand_threat": {
                 "filter": {
@@ -1143,9 +1121,9 @@ def _warehouse_summary_stats(start_date: Optional[str], end_date: Optional[str],
     sector_terms = _terms_with_severity("sectors")
     return {
         "total_threats": _search_total(result),
-        "ioc_active": int((aggs.get("active_iocs") or {}).get("value") or 0),
-        "critical_active": int(((aggs.get("critical_active") or {}).get("active_iocs") or {}).get("value") or 0),
-        "high_active": int(((aggs.get("high_active") or {}).get("active_iocs") or {}).get("value") or 0),
+        "ioc_active": _search_total(result),
+        "critical_active": int((aggs.get("critical_active") or {}).get("doc_count") or 0),
+        "high_active": int((aggs.get("high_active") or {}).get("doc_count") or 0),
         "thailand_threat": int((aggs.get("thailand_threat") or {}).get("doc_count") or 0),
         "severity_counts": {
             severity: int((severity_buckets.get(severity) or {}).get("doc_count") or 0)
@@ -4435,68 +4413,120 @@ def _build_ioc_relationship_graph(
     for actor in warehouse_doc.get("ai_threat_actors") or []:
         if not str(actor).strip():
             continue
-        target_node = _relationship_node(f"actor:{actor}", "threat_actor", actor)
-        _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, target_node, "attributed_to", first_seen, last_seen)
+        actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
+        _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, actor_node, ioc_node, "uses", first_seen, last_seen)
 
-    sector = _sector_info(warehouse_doc)
-    if sector.get("sector_name") and sector["sector_name"] != "General/Multiple":
-        target_node = _relationship_node(f"sector:{sector['sector']}", "sector", sector["sector_name"], label_th=sector.get("sector_name_th"))
-        _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, target_node, "targets_sector", first_seen, last_seen)
+    # Check if main IOC is a CVE pattern — create cve node instead
+    _cve_pattern = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
+    ioc_value = warehouse_doc.get("ioc_value", "")
+    if _cve_pattern.match(ioc_value):
+        cve_node = _relationship_node(f"cve:{ioc_value.upper()}", "cve", ioc_value.upper())
+        if cve_node["id"] not in seen_nodes:
+            nodes.append(cve_node)
+            seen_nodes.add(cve_node["id"])
+        # Link actors to this CVE with "exploits"
+        for actor in warehouse_doc.get("ai_threat_actors") or []:
+            if not str(actor).strip():
+                continue
+            actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
+            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, actor_node, cve_node, "exploits", first_seen, last_seen)
 
     for doc in datalake_docs:
         observed = (_pick_event_time(doc) or datetime.now(UTC)).isoformat().replace("+00:00", "Z")
-        source_name = doc.get("source_name")
-        if source_name:
-            source_node = _relationship_node(f"source:{source_name}", "source", source_name)
-            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, source_node, ioc_node, "observed", observed, observed)
-        if doc.get("source_ip"):
-            source_ip_node = _relationship_node(f"ip:{doc['source_ip']}", "ip", doc["source_ip"])
-            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, source_ip_node, ioc_node, "source_ip", observed, observed)
-        if doc.get("target_ip"):
-            target_ip_node = _relationship_node(f"ip:{doc['target_ip']}", "ip", doc["target_ip"])
-            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, target_ip_node, "target_ip", observed, observed)
         enrichment = doc.get("enrichment") or {}
         related = enrichment.get("related_entities") if isinstance(enrichment, dict) else {}
         if isinstance(related, dict):
             for malware in related.get("malware_family") or []:
                 malware_node = _relationship_node(f"malware:{malware}", "malware", malware)
-                _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, malware_node, "uses_malware", observed, observed)
+                _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, malware_node, "hosts", observed, observed)
+
+        # Infrastructure nodes from whois and ASN data
+        whois = enrichment.get("whois") if isinstance(enrichment, dict) else {}
+        if isinstance(whois, dict):
+            registrant_email = whois.get("registrant_email")
+            if registrant_email and str(registrant_email).strip():
+                infra_node = _relationship_node(f"infra:email:{registrant_email}", "infrastructure", registrant_email)
+                _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, infra_node, "shares_infra", observed, observed)
+            name_server = whois.get("name_server")
+            if name_server and str(name_server).strip():
+                ns_list = name_server if isinstance(name_server, list) else [name_server]
+                for ns in ns_list:
+                    if str(ns).strip():
+                        infra_node = _relationship_node(f"infra:ns:{ns}", "infrastructure", str(ns))
+                        _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, infra_node, "shares_infra", observed, observed)
+        asn_data = enrichment.get("asn") if isinstance(enrichment, dict) else {}
+        if isinstance(asn_data, dict):
+            asn_org = asn_data.get("org") or asn_data.get("asn_name")
+            asn_number = asn_data.get("asn")
+            if asn_org and str(asn_org).strip():
+                infra_label = f"{asn_org} (AS{asn_number})" if asn_number else str(asn_org)
+                infra_node = _relationship_node(f"infra:asn:{asn_number or asn_org}", "infrastructure", infra_label)
+                _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, infra_node, "shares_infra", observed, observed)
+
+        # CVE nodes from enrichment
+        cve_info = enrichment.get("cve_info") if isinstance(enrichment, dict) else None
+        if isinstance(cve_info, dict):
+            cve_id = cve_info.get("cve_id") or cve_info.get("id")
+            if cve_id and str(cve_id).strip():
+                cve_node = _relationship_node(f"cve:{str(cve_id).upper()}", "cve", str(cve_id).upper())
+                # actors exploit CVE
+                for actor in warehouse_doc.get("ai_threat_actors") or []:
+                    if not str(actor).strip():
+                        continue
+                    actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
+                    _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, actor_node, cve_node, "exploits", observed, observed)
+                # CVE affects vendor
+                vendor_name = cve_info.get("vendor") or enrichment.get("affected_vendor")
+                if vendor_name and str(vendor_name).strip():
+                    vendor_node = _relationship_node(f"vendor:{vendor_name}", "vendor", str(vendor_name))
+                    _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, cve_node, vendor_node, "affects", observed, observed)
+        elif isinstance(enrichment, dict) and enrichment.get("affected_vendor"):
+            # Vendor from affected_vendor field without full cve_info
+            vendor_name = enrichment["affected_vendor"]
+            if str(vendor_name).strip():
+                vendor_node = _relationship_node(f"vendor:{vendor_name}", "vendor", str(vendor_name))
+                # If we have a CVE node from the main IOC, link it
+                if _cve_pattern.match(ioc_value):
+                    cve_node = _relationship_node(f"cve:{ioc_value.upper()}", "cve", ioc_value.upper())
+                    _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, cve_node, vendor_node, "affects", observed, observed)
+
         if doc.get("cluster_label") is not None:
             campaign_label = f"cluster_{doc['cluster_label']}"
             campaign_node = _relationship_node(f"campaign:{doc['cluster_label']}", "campaign", campaign_label)
             _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, campaign_node, "same_campaign", observed, observed)
 
+    # Related IOCs: same_campaign links (IOC → IOC) and suggested_actor inheritance
     for related_doc in related_docs[:20]:
         related_indicator = _indicator_id(related_doc.get("ioc_type", ""), related_doc.get("ioc_value", ""))
         if related_indicator == indicator:
             continue
         related_node = _relationship_node(
             f"ioc:{related_indicator}",
-            "related_ioc",
+            "ioc",
             related_doc.get("ioc_value"),
             ioc_type=related_doc.get("ioc_type"),
             severity=_severity_label(_source_severity(related_doc)),
             risk_score=int(related_doc.get("ai_risk_score") or 0),
         )
-        shared_threats = sorted(
-            {
-                str(item)
-                for item in (warehouse_doc.get("ai_threat_types") or [])
-            }.intersection({str(item) for item in (related_doc.get("ai_threat_types") or [])})
-        )
-        relation = "shares_threat_type" if shared_threats else "related_ioc"
+        rel_first = related_doc.get("first_seen") or related_doc.get("event_time")
+        rel_last = related_doc.get("last_seen") or related_doc.get("processed_at")
+        # IOC → IOC same_campaign link if they share a cluster
         _append_relationship(
-            nodes,
-            edges,
-            relationship_log,
-            seen_nodes,
-            seen_edges,
-            ioc_node,
-            related_node,
-            relation,
-            related_doc.get("first_seen") or related_doc.get("event_time"),
-            related_doc.get("last_seen") or related_doc.get("processed_at"),
+            nodes, edges, relationship_log, seen_nodes, seen_edges,
+            ioc_node, related_node, "same_campaign", rel_first, rel_last,
         )
+        # suggested_actor: inherit actors from cluster peers → link IOC to actor
+        for peer_actor in related_doc.get("ai_threat_actors") or []:
+            if not str(peer_actor).strip():
+                continue
+            # Skip if this actor is already directly linked to the main IOC
+            if peer_actor in (warehouse_doc.get("ai_threat_actors") or []):
+                continue
+            actor_node = _relationship_node(f"actor:{peer_actor}", "actor", peer_actor)
+            _append_relationship(
+                nodes, edges, relationship_log, seen_nodes, seen_edges,
+                ioc_node, actor_node, "suggested_actor", rel_first, rel_last,
+            )
 
     first_datalake = datalake_docs[0] if datalake_docs else {}
     detail = _build_ioc_detail(warehouse_doc, datalake_docs)
@@ -4516,10 +4546,12 @@ def _build_ioc_relationship_graph(
             "nodes": nodes,
             "edges": edges,
             "capabilities": {
-                "actors": any(node["type"] == "threat_actor" for node in nodes),
+                "actors": any(node["type"] == "actor" for node in nodes),
                 "campaigns": any(node["type"] == "campaign" for node in nodes),
                 "malware": any(node["type"] == "malware" for node in nodes),
-                "related_iocs": any(node["type"] == "related_ioc" for node in nodes),
+                "infrastructure": any(node["type"] == "infrastructure" for node in nodes),
+                "cve": any(node["type"] == "cve" for node in nodes),
+                "vendors": any(node["type"] == "vendor" for node in nodes),
             },
         },
         "relationship_log": relationship_log,
@@ -5190,7 +5222,7 @@ def operations_dashboard(
         "incident_by_severity": _build_severity_distribution_from_counts(_severity_counts_from_filter_agg(aggs.get("severity_counts") or {})),
         "attack_time_heatmap": _build_attack_time_heatmap_from_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED),
         "top_intelligence_sources": _terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
-        "top_threat_types": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
+        "top_threat_types": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], limit=5),
         "top_attack_origins": _terms_items_from_buckets((aggs.get("countries") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
         "target_sectors": _terms_items_from_buckets((aggs.get("sectors") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
     }
@@ -5549,6 +5581,15 @@ def attack_time_report(
         time_mode=TIME_MODE_OBSERVED,
     )
     heatmap = _build_heatmap(docs, time_mode=TIME_MODE_OBSERVED, start_date=start_date, end_date=end_date)
+    heatmap_peak = heatmap.get("peak") or {}
+    if heatmap_peak and heatmap_peak.get("value", 0) > 0:
+        peak_day = heatmap_peak.get("day") or heatmap_peak.get("label", "Monday")
+        peak_time = heatmap_peak.get("hour", "00:00")
+        peak_end = heatmap_peak.get("end_hour", "")
+        peak_time_range = f"{peak_time} - {peak_end}" if peak_end else peak_time
+    else:
+        peak_day = "Monday"
+        peak_time_range = "00:00 - 01:00"
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     by_day_hour: Dict[tuple, int] = {(day, hour): 0 for day in day_names for hour in range(24)}
     for doc in docs:
@@ -5557,17 +5598,16 @@ def attack_time_report(
             continue
         local = event_time.astimezone(BANGKOK_TZ)
         by_day_hour[(local.strftime("%A"), local.hour)] = by_day_hour.get((local.strftime("%A"), local.hour), 0) + 1
-    peak = max(by_day_hour.items(), key=lambda item: item[1])[0] if any(v > 0 for v in by_day_hour.values()) else ("Monday", 0)
     quiet = min(by_day_hour.items(), key=lambda item: item[1])[0] if any(v > 0 for v in by_day_hour.values()) else ("Sunday", 3)
     total_events = max(es_total_events, len(docs))
     sorted_events = sorted(docs, key=lambda item: _pick_display_time_in_range(item, TIME_MODE_OBSERVED, start_date, end_date) or datetime.min.replace(tzinfo=UTC), reverse=True)
     paged_items = [_attack_time_event_row(event, TIME_MODE_OBSERVED, start_date, end_date) for event in _page_slice(sorted_events, page, page_size)]
     payload = {
         "summary": {
-            "peak_attack_time": {"day": peak[0], "time_range": _hour_range_label(peak[1], span=1)},
+            "peak_attack_time": {"day": peak_day, "time_range": peak_time_range},
             "quietest_period": {"day": quiet[0], "time_range": _hour_range_label(quiet[1], span=1)},
             "avg_attack_rate": _average_events_per_day(total_events, docs, start_date, end_date, TIME_MODE_OBSERVED),
-            "highest_day": peak[0],
+            "highest_day": peak_day,
             "total_events": total_events,
         },
         "filters": {
@@ -6007,7 +6047,7 @@ def ioc_analytics(
             "charts": {
                 "ioc_by_type": _terms_items_from_buckets((aggs.get("ioc_types") or {}).get("buckets") or [], total=total, labels=IOC_TYPE_LABELS, limit=25),
                 "ioc_by_severity": _build_severity_distribution_from_counts(severity_counts),
-                "threat_type_distribution": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], total=total, limit=25),
+                "threat_type_distribution": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], limit=25),
                 "severity_by_source": by_source_breakdown,
                 "severity_by_type": by_type_breakdown,
                 "risk_score_distribution": risk_distribution,
@@ -6069,7 +6109,7 @@ def ioc_analytics(
                 "import_volume_over_time": {"points": timeline_points},
                 "ioc_by_intelligence_source": source_items,
                 "ioc_by_type": _terms_items_from_buckets((aggs.get("ioc_types") or {}).get("buckets") or [], total=total, labels=IOC_TYPE_LABELS, limit=25),
-                "threat_type_distribution": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], total=total, limit=25),
+                "threat_type_distribution": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], limit=25),
                 "ioc_by_severity": _build_severity_distribution_from_counts(severity_counts),
                 "import_by_source": [{"key": item["key"], "label": item["label"], "value": item["value"]} for item in source_items],
                 "import_by_type": [{"key": item["key"], "label": item["label"], "value": item["value"]} for item in _terms_items_from_buckets((aggs.get("ioc_types") or {}).get("buckets") or [], total=total, labels=IOC_TYPE_LABELS, limit=25)],
