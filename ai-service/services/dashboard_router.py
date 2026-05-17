@@ -584,18 +584,92 @@ def _normalize_sources(doc: Dict[str, Any]) -> List[str]:
     return [item.strip() for item in source_name.split(",") if item.strip()]
 
 
+SECTOR_DISPLAY_NAMES = {
+    "national security": "National Security",
+    "security": "National Security",
+    "ความมั่นคงของรัฐ": "National Security",
+    "ด้านความมั่นคงของรัฐ": "National Security",
+    "government": "Essential Government Services",
+    "public service": "Essential Government Services",
+    "public services": "Essential Government Services",
+    "essential government services": "Essential Government Services",
+    "ภาครัฐ": "Essential Government Services",
+    "บริการภาครัฐ": "Essential Government Services",
+    "บริการภาครัฐที่สำคัญ": "Essential Government Services",
+    "ด้านบริการภาครัฐที่สำคัญ": "Essential Government Services",
+    "finance": "Finance and Banking",
+    "financial": "Finance and Banking",
+    "financial services": "Finance and Banking",
+    "banking": "Finance and Banking",
+    "finance and banking": "Finance and Banking",
+    "ภาคการเงิน": "Finance and Banking",
+    "การเงิน": "Finance and Banking",
+    "การเงินการธนาคาร": "Finance and Banking",
+    "ด้านการเงินการธนาคาร": "Finance and Banking",
+    "technology": "Information Technology and Telecommunications",
+    "telecom": "Information Technology and Telecommunications",
+    "telecommunications": "Information Technology and Telecommunications",
+    "information technology": "Information Technology and Telecommunications",
+    "information technology and telecommunications": "Information Technology and Telecommunications",
+    "เทคโนโลยี": "Information Technology and Telecommunications",
+    "โทรคมนาคม": "Information Technology and Telecommunications",
+    "เทคโนโลยีสารสนเทศและโทรคมนาคม": "Information Technology and Telecommunications",
+    "ด้านเทคโนโลยีสารสนเทศและโทรคมนาคม": "Information Technology and Telecommunications",
+    "transportation": "Transportation and Logistics",
+    "transport": "Transportation and Logistics",
+    "logistics": "Transportation and Logistics",
+    "transportation and logistics": "Transportation and Logistics",
+    "ขนส่ง": "Transportation and Logistics",
+    "คมนาคม": "Transportation and Logistics",
+    "การขนส่งและโลจิสติกส์": "Transportation and Logistics",
+    "ด้านการขนส่งและโลจิสติกส์": "Transportation and Logistics",
+    "energy": "Energy and Public Utilities",
+    "utilities": "Energy and Public Utilities",
+    "energy and public utilities": "Energy and Public Utilities",
+    "พลังงาน": "Energy and Public Utilities",
+    "สาธารณูปโภค": "Energy and Public Utilities",
+    "พลังงานและสาธารณูปโภค": "Energy and Public Utilities",
+    "ด้านพลังงานและสาธารณูปโภค": "Energy and Public Utilities",
+    "health": "Public Health",
+    "healthcare": "Public Health",
+    "public health": "Public Health",
+    "สาธารณสุข": "Public Health",
+    "ด้านสาธารณสุข": "Public Health",
+    "critical infrastructure": "Other Designated CII",
+    "โครงสร้างพื้นฐาน": "Other Designated CII",
+    "โครงสร้างพื้นฐานสำคัญ": "Other Designated CII",
+    "other": "Other Designated CII",
+    "อื่นๆ": "Other Designated CII",
+    "อื่น ๆ": "Other Designated CII",
+}
+
+
+def _sector_display_name(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if lowered in {"none", "null", "unknown", "n/a", "-", "ไม่ระบุ"}:
+        return None
+    if lowered in {"general/multiple", "ทั่วไป"}:
+        return "General/Multiple"
+    return SECTOR_DISPLAY_NAMES.get(lowered) or SECTOR_DISPLAY_NAMES.get(raw) or raw
+
+
 def _sector_info(doc: Dict[str, Any]) -> Dict[str, Any]:
     if doc.get("target_sector") or doc.get("target_sector_name") or doc.get("target_sector_name_th"):
+        sector_name = _sector_display_name(doc.get("target_sector_name") or doc.get("target_sector") or doc.get("target_sector_name_th"))
         return {
             "sector": doc.get("target_sector"),
-            "sector_name": doc.get("target_sector_name"),
+            "sector_name": sector_name,
             "sector_name_th": doc.get("target_sector_name_th"),
             "icon": doc.get("target_sector_icon"),
         }
     sector = (((doc.get("ai_score_breakdown") or {}).get("target_sector") or {}) if isinstance(doc.get("ai_score_breakdown"), dict) else {}) or {}
+    sector_name = _sector_display_name(sector.get("sector_name") or sector.get("sector") or sector.get("sector_name_th"))
     return {
         "sector": sector.get("sector"),
-        "sector_name": sector.get("sector_name"),
+        "sector_name": sector_name,
         "sector_name_th": sector.get("sector_name_th"),
         "icon": sector.get("icon"),
     }
@@ -607,17 +681,50 @@ def _country_from_doc(doc: Dict[str, Any]) -> Optional[str]:
     asn_data = (doc.get("asn_data") or {}) if isinstance(doc.get("asn_data"), dict) else {}
     geo_info = (doc.get("geo_info") or {}) if isinstance(doc.get("geo_info"), dict) else {}
     direct_ip = (doc.get("ip_info") or {}) if isinstance(doc.get("ip_info"), dict) else {}
+    geo_ip = enrichment.get("geo_ip") if isinstance(enrichment, dict) and isinstance(enrichment.get("geo_ip"), dict) else {}
+    source_geo = (((doc.get("source") or {}).get("geo") or {}) if isinstance(doc.get("source"), dict) else {}) or {}
+    destination_geo = (((doc.get("destination") or {}).get("geo") or {}) if isinstance(doc.get("destination"), dict) else {}) or {}
+    victim_geo = (((doc.get("victim") or {}).get("geo") or {}) if isinstance(doc.get("victim"), dict) else {}) or {}
+    target_geo = (((doc.get("target") or {}).get("geo") or {}) if isinstance(doc.get("target"), dict) else {}) or {}
     country = (
         ip_info.get("country")
         or direct_ip.get("country")
+        or geo_ip.get("country_code")
+        or geo_ip.get("country")
         or asn_data.get("country_code")
+        or asn_data.get("country")
         or geo_info.get("country")
+        or geo_info.get("country_code")
         or doc.get("geo_country")
+        or doc.get("country")
+        or doc.get("country_code")
+        or doc.get("victim_country")
+        or doc.get("victim_country_name")
+        or doc.get("source_country")
+        or doc.get("source_country_name")
+        or doc.get("target_country")
+        or doc.get("target_country_name")
+        or doc.get("destination_country")
+        or doc.get("destination_country_name")
+        or doc.get("dst_country")
+        or doc.get("dst_country_name")
+        or source_geo.get("country_code")
+        or source_geo.get("country_name")
+        or source_geo.get("country")
+        or destination_geo.get("country_code")
+        or destination_geo.get("country_name")
+        or destination_geo.get("country")
+        or victim_geo.get("country_code")
+        or victim_geo.get("country_name")
+        or victim_geo.get("country")
+        or target_geo.get("country_code")
+        or target_geo.get("country_name")
+        or target_geo.get("country")
     )
     normalized = str(country or "").strip()
     if not normalized or normalized.lower() in {"none", "null", "unknown", "n/a", "-"}:
         return None
-    return normalized
+    return _country_name_from_code_or_raw(normalized)
 
 
 def _country_code_from_name(country_name: Optional[str]) -> Optional[str]:
@@ -645,6 +752,9 @@ def _country_name_from_code_or_raw(raw_value: Optional[str]) -> str:
     trimmed = str(raw_value).strip()
     if len(trimmed) == 2 and trimmed.isalpha():
         return _COUNTRY_NAME_FROM_CODE.get(trimmed.upper(), trimmed.upper())
+    normalized = trimmed.lower()
+    if normalized in COUNTRY_CODE_MAP:
+        return _COUNTRY_NAME_FROM_CODE.get(COUNTRY_CODE_MAP[normalized], trimmed.title())
     return trimmed
 
 
@@ -685,6 +795,25 @@ def _infer_ioc_type_from_value(value: str) -> Optional[str]:
     if "/" not in candidate and " " not in candidate and "." in candidate:
         return "domain"
     return None
+
+
+def _refang_indicator_value(value: str) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    return (
+        candidate
+        .replace("hxxps://", "https://")
+        .replace("hxxp://", "http://")
+        .replace("HXXPS://", "https://")
+        .replace("HXXP://", "http://")
+        .replace("[.]", ".")
+        .replace("(.)", ".")
+        .replace("{.}", ".")
+        .replace("[@]", "@")
+        .replace("(@)", "@")
+        .replace("{@}", "@")
+    )
 
 
 def _lookup_items(values: Iterable[str]) -> List[Dict[str, Any]]:
@@ -1186,7 +1315,17 @@ def _terms_items_from_buckets(
 
 
 SOURCE_DISPLAY_NAMES = {
-    "cyberint_iocs": "Cyberint IOCs",
+    "cyberint_iocs": "Cyberint IOC Feed",
+    "Cyberint IOCs": "Cyberint IOC Feed",
+    "Cyberint IOC Feed": "Cyberint IOC Feed",
+    "misp_attribute": "MISP Attribute Feed",
+    "MISP": "MISP Intelligence",
+    "sandbox": "Sandbox Analysis",
+    "Zone-H": "Zone-H Defacement Feed",
+    "DarkReading": "DarkReading News",
+    "BleepingComputer News": "BleepingComputer News",
+    "TheHackerNews": "The Hacker News",
+    "tcti-feeds": "TCTI Feed",
 }
 
 
@@ -1198,7 +1337,51 @@ def _source_display_name(value: Any) -> str:
 
 
 def _format_source_terms(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [{**item, "label": _source_display_name(item.get("label") or item.get("key"))} for item in items]
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        raw_key = item.get("label") or item.get("key")
+        label = _source_display_name(raw_key)
+        if label.lower() in {"unknown", "none", "null", "n/a", "-"}:
+            continue
+        value = int(item.get("value") or item.get("count") or 0)
+        current = grouped.setdefault(
+            label,
+            {
+                "key": label,
+                "label": label,
+                "value": 0,
+                "percentage": 0.0,
+                "color": item.get("color"),
+                "source_group": _source_category(raw_key),
+            },
+        )
+        current["value"] += value
+    total = sum(int(item["value"]) for item in grouped.values())
+    for item in grouped.values():
+        item["percentage"] = _percentage(int(item["value"]), total)
+    return sorted(grouped.values(), key=lambda item: int(item["value"]), reverse=True)
+
+
+def _format_sector_terms(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        label = _sector_display_name(item.get("label") or item.get("key")) or "General/Multiple"
+        value = int(item.get("value") or item.get("count") or 0)
+        current = grouped.setdefault(
+            label,
+            {
+                "key": label,
+                "label": label,
+                "value": 0,
+                "percentage": 0.0,
+                "color": item.get("color"),
+            },
+        )
+        current["value"] += value
+    total = sum(int(item["value"]) for item in grouped.values())
+    for item in grouped.values():
+        item["percentage"] = _percentage(int(item["value"]), total)
+    return sorted(grouped.values(), key=lambda item: int(item["value"]), reverse=True)
 
 
 def _source_category(value: Any) -> str:
@@ -1855,6 +2038,19 @@ def _fetch_datalake_by_indicators(indicators: Sequence[Tuple[str, str]]) -> List
     return results
 
 
+def _fetch_datalake_by_cluster(cluster_labels: List, limit: int = 50) -> List[Dict[str, Any]]:
+    labels = [cl for cl in cluster_labels if cl is not None]
+    if not labels:
+        return []
+    client = get_elastic_client()
+    body = {
+        "query": {"terms": {"cluster_label": labels}},
+        "sort": [{"@timestamp": {"order": "desc", "missing": "_last"}}],
+    }
+    raw_hits = client.scroll_search(client.datalake_index, body, page_size=limit)
+    return [{"_id": hit.get("_id"), **(hit.get("_source") or {})} for hit in raw_hits[:limit]]
+
+
 def _datalake_event_time(doc: Dict[str, Any]) -> Optional[datetime]:
     event = doc.get("Event") if isinstance(doc.get("Event"), dict) else {}
     return (
@@ -1926,7 +2122,7 @@ def _get_warehouse_doc_by_indicator(ioc_type: str, ioc_value: str) -> Optional[D
 
 
 def _get_warehouse_doc_by_value(ioc_value: str) -> Optional[Dict[str, Any]]:
-    normalized_value = str(ioc_value or "").strip()
+    normalized_value = _refang_indicator_value(ioc_value)
     if not normalized_value:
         return None
     inferred_type = _infer_ioc_type_from_value(normalized_value)
@@ -3161,6 +3357,8 @@ def _report_dimension_label(report_key: str, raw_value: Any) -> Optional[str]:
         return country_label
     if report_key == "intelligence-sources":
         return _source_display_name(label_text)
+    if report_key == "target-sectors":
+        return _sector_display_name(label_text)
     return label_text
 
 
@@ -4215,7 +4413,7 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
         node_id = f"type:{threat_type}"
         relationship_nodes.append({"id": node_id, "type": "threat_type", "label": threat_type})
         relationship_edges.append({"source": ioc_node_id, "target": node_id, "relation": "classified_as"})
-    for actor in warehouse_doc.get("ai_threat_actors") or []:
+    for actor in _relationship_actors(warehouse_doc):
         node_id = f"actor:{actor}"
         relationship_nodes.append({"id": node_id, "type": "threat_actor", "label": actor})
         relationship_edges.append({"source": ioc_node_id, "target": node_id, "relation": "attributed_to"})
@@ -4346,6 +4544,159 @@ def _relationship_edge(source: str, target: str, relation: str, **extra: Any) ->
     return edge
 
 
+def _relationship_actors(doc: Dict[str, Any], max_actors: int = 5) -> List[str]:
+    """Return actors reliable enough for relationship graph edges.
+
+    Some source-rule records contain a broad actor catalogue from scoring
+    evidence. Treating those as graph evidence creates false relationships.
+    """
+    actors = _unique_list(str(actor).strip() for actor in (doc.get("ai_threat_actors") or []) if str(actor).strip())
+    if len(actors) > max_actors:
+        return []
+    return actors
+
+
+def _is_displayable_relationship_threat_type(value: Any) -> bool:
+    label = str(value or "").strip().lower()
+    return bool(label) and label not in {"other", "unknown", "none", "null", "n/a", "-"}
+
+
+def _iter_relationship_evidence_items(value: Any, depth: int = 0) -> Iterable[Dict[str, Any]]:
+    if depth > 3:
+        return
+    if isinstance(value, dict):
+        yield value
+        raw_evidence = value.get("raw_evidence")
+        if isinstance(raw_evidence, (dict, list)):
+            yield from _iter_relationship_evidence_items(raw_evidence, depth + 1)
+        return
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, (dict, list)):
+                yield from _iter_relationship_evidence_items(item, depth + 1)
+
+
+def _relationship_infer_ioc_type(value: Any, type_hint: Any = None) -> Optional[str]:
+    normalized_hint = str(type_hint or "").strip().lower()
+    hint_map = {
+        "ip": "ip",
+        "ip-src": "ip",
+        "ip-dst": "ip",
+        "ipv4": "ip",
+        "ipv6": "ip",
+        "domain": "domain",
+        "hostname": "domain",
+        "url": "url",
+        "uri": "url",
+        "md5": "hash",
+        "sha1": "hash",
+        "sha256": "hash",
+        "hash": "hash",
+        "hashes": "hash",
+        "cve": "cve",
+        "vulnerability": "cve",
+    }
+    raw = _refang_indicator_value(str(value or "").strip())
+    if not raw:
+        return None
+    if any(char in raw for char in ("[", "]", "{", "}")):
+        return None
+    if re.fullmatch(r"CVE-\d{4}-\d{4,}", raw, flags=re.IGNORECASE):
+        return "cve"
+    if normalized_hint in hint_map:
+        return hint_map[normalized_hint]
+    inferred = _infer_ioc_type_from_value(raw)
+    if inferred == "domain":
+        # Avoid drawing file-like or template fragments as domains.
+        if any(char in raw for char in ("/", "[", "]", "{", "}", " ")):
+            return None
+        labels = raw.split(".")
+        if len(labels) < 2 or not re.fullmatch(r"[A-Za-z]{2,24}", labels[-1]):
+            return None
+        if labels[-1].lower() in {"exe", "dll", "php", "js", "gpg", "bin", "bat", "cmd", "ps1", "sh"}:
+            return None
+    return inferred
+
+
+def _relationship_node_for_indicator(ioc_type: str, ioc_value: str, **extra: Any) -> Dict[str, Any]:
+    normalized_type = str(ioc_type or "").strip().lower()
+    normalized_value = _refang_indicator_value(str(ioc_value or "").strip())
+    if normalized_type == "cve":
+        return _relationship_node(f"cve:{normalized_value.upper()}", "cve", normalized_value.upper(), **extra)
+    return _relationship_node(
+        f"ioc:{_indicator_id(normalized_type, normalized_value)}",
+        "ioc",
+        normalized_value,
+        ioc_type=normalized_type,
+        **extra,
+    )
+
+
+def _extract_relationship_evidence_entries(
+    warehouse_doc: Dict[str, Any],
+    datalake_docs: Sequence[Dict[str, Any]],
+    limit: int = 12,
+) -> List[Dict[str, Any]]:
+    primary_indicator = _indicator_id(warehouse_doc.get("ioc_type", ""), warehouse_doc.get("ioc_value", ""))
+    entries: List[Dict[str, Any]] = []
+    seen: set = {primary_indicator}
+
+    def add_entry(raw_value: Any, type_hint: Any, source_doc: Dict[str, Any], evidence_source: str) -> None:
+        if len(entries) >= limit:
+            return
+        normalized_value = _refang_indicator_value(str(raw_value or "").strip())
+        ioc_type = _relationship_infer_ioc_type(normalized_value, type_hint)
+        if not ioc_type or not normalized_value:
+            return
+        if ioc_type == "cve":
+            normalized_value = normalized_value.upper()
+        indicator = _indicator_id(ioc_type, normalized_value)
+        if indicator in seen:
+            return
+        seen.add(indicator)
+        event_time = _pick_event_time(source_doc)
+        observed = event_time.isoformat().replace("+00:00", "Z") if event_time else None
+        entries.append(
+            {
+                "ioc_type": ioc_type,
+                "ioc_value": normalized_value,
+                "indicator": indicator,
+                "relation": "correlated_with",
+                "evidence_source": evidence_source,
+                "first_seen": source_doc.get("first_seen") or source_doc.get("event_time") or observed,
+                "last_seen": source_doc.get("last_seen") or source_doc.get("processed_at") or observed,
+            }
+        )
+
+    source_docs = [warehouse_doc, *list(datalake_docs)]
+    for source_doc in source_docs:
+        for evidence in _iter_relationship_evidence_items(source_doc.get("source_evidence")):
+            related_iocs = evidence.get("related_iocs")
+            if isinstance(related_iocs, list):
+                related_types = evidence.get("related_ioc_types")
+                for index, raw_value in enumerate(related_iocs):
+                    type_hint = related_types[index] if isinstance(related_types, list) and len(related_types) == len(related_iocs) else None
+                    add_entry(raw_value, type_hint, source_doc, str(evidence.get("evidence_type") or "source_evidence"))
+
+        correlations = source_doc.get("correlations")
+        if not isinstance(correlations, dict):
+            continue
+        related_docs = correlations.get("related_docs")
+        if not isinstance(related_docs, list):
+            continue
+        for related in related_docs:
+            if not isinstance(related, dict):
+                continue
+            add_entry(
+                related.get("original_ioc") or related.get("ioc_value") or related.get("value"),
+                related.get("type") or related.get("ioc_type"),
+                source_doc,
+                "correlations.related_docs",
+            )
+
+    return entries
+
+
 def _append_relationship(
     nodes: List[Dict[str, Any]],
     edges: List[Dict[str, Any]],
@@ -4383,6 +4734,7 @@ def _build_ioc_relationship_graph(
     warehouse_doc: Dict[str, Any],
     datalake_docs: List[Dict[str, Any]],
     related_docs: Sequence[Dict[str, Any]],
+    evidence_entries: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
@@ -4405,16 +4757,77 @@ def _build_ioc_relationship_graph(
     first_seen = warehouse_doc.get("first_seen") or warehouse_doc.get("event_time") or warehouse_doc.get("collect_time")
     last_seen = warehouse_doc.get("last_seen") or warehouse_doc.get("processed_at") or warehouse_doc.get("collect_time")
     for threat_type in warehouse_doc.get("ai_threat_types") or warehouse_doc.get("threat_type") or []:
-        if not str(threat_type).strip():
+        if not _is_displayable_relationship_threat_type(threat_type):
             continue
         target_node = _relationship_node(f"type:{threat_type}", "threat_type", threat_type)
         _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, target_node, "classified_as", first_seen, last_seen)
 
-    for actor in warehouse_doc.get("ai_threat_actors") or []:
+    for actor in _relationship_actors(warehouse_doc):
         if not str(actor).strip():
             continue
         actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
         _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, actor_node, ioc_node, "uses", first_seen, last_seen)
+
+    related_doc_by_indicator = {
+        _indicator_id(doc.get("ioc_type", ""), doc.get("ioc_value", "")): doc
+        for doc in related_docs
+        if doc.get("ioc_type") and doc.get("ioc_value")
+    }
+    for entry in evidence_entries or []:
+        if len(nodes) >= 50 or len(edges) >= 100:
+            break
+        related_node = _relationship_node_for_indicator(
+            entry.get("ioc_type", ""),
+            entry.get("ioc_value", ""),
+            evidence_source=entry.get("evidence_source"),
+        )
+        _append_relationship(
+            nodes,
+            edges,
+            relationship_log,
+            seen_nodes,
+            seen_edges,
+            ioc_node,
+            related_node,
+            entry.get("relation") or "correlated_with",
+            entry.get("first_seen"),
+            entry.get("last_seen"),
+        )
+        related_doc = related_doc_by_indicator.get(entry.get("indicator"))
+        if not related_doc:
+            continue
+        rel_first = related_doc.get("first_seen") or related_doc.get("event_time") or entry.get("first_seen")
+        rel_last = related_doc.get("last_seen") or related_doc.get("processed_at") or entry.get("last_seen")
+        for actor in _relationship_actors(related_doc):
+            actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
+            _append_relationship(
+                nodes,
+                edges,
+                relationship_log,
+                seen_nodes,
+                seen_edges,
+                actor_node,
+                related_node,
+                "uses",
+                rel_first,
+                rel_last,
+            )
+        for threat_type in related_doc.get("ai_threat_types") or related_doc.get("threat_type") or []:
+            if not _is_displayable_relationship_threat_type(threat_type):
+                continue
+            threat_node = _relationship_node(f"type:{threat_type}", "threat_type", threat_type)
+            _append_relationship(
+                nodes,
+                edges,
+                relationship_log,
+                seen_nodes,
+                seen_edges,
+                related_node,
+                threat_node,
+                "classified_as",
+                rel_first,
+                rel_last,
+            )
 
     # Check if main IOC is a CVE pattern — create cve node instead
     _cve_pattern = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
@@ -4425,7 +4838,7 @@ def _build_ioc_relationship_graph(
             nodes.append(cve_node)
             seen_nodes.add(cve_node["id"])
         # Link actors to this CVE with "exploits"
-        for actor in warehouse_doc.get("ai_threat_actors") or []:
+        for actor in _relationship_actors(warehouse_doc):
             if not str(actor).strip():
                 continue
             actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
@@ -4470,7 +4883,7 @@ def _build_ioc_relationship_graph(
             if cve_id and str(cve_id).strip():
                 cve_node = _relationship_node(f"cve:{str(cve_id).upper()}", "cve", str(cve_id).upper())
                 # actors exploit CVE
-                for actor in warehouse_doc.get("ai_threat_actors") or []:
+                for actor in _relationship_actors(warehouse_doc):
                     if not str(actor).strip():
                         continue
                     actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
@@ -4495,11 +4908,36 @@ def _build_ioc_relationship_graph(
             campaign_node = _relationship_node(f"campaign:{doc['cluster_label']}", "campaign", campaign_label)
             _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, campaign_node, "same_campaign", observed, observed)
 
-    # Related IOCs: same_campaign links (IOC → IOC) and suggested_actor inheritance
-    for related_doc in related_docs[:20]:
+    # Hop 2: related IOCs (max 10, sorted by risk score desc).
+    # Keep this graph evidence-based: generic shared threat type is not a
+    # relationship, and actors that appear only on a peer IOC must not be shown
+    # as if they are connected to the searched IOC.
+    MAX_RELATED = 10
+    MAX_NODES = 50
+    MAX_EDGES = 100
+    center_actors = set(_relationship_actors(warehouse_doc))
+    sorted_related = sorted(
+        related_docs,
+        key=lambda d: int(d.get("ai_risk_score") or 0),
+        reverse=True,
+    )
+    hop2_nodes: list = []
+    for related_doc in sorted_related:
+        if len(hop2_nodes) >= MAX_RELATED:
+            break
         related_indicator = _indicator_id(related_doc.get("ioc_type", ""), related_doc.get("ioc_value", ""))
         if related_indicator == indicator:
             continue
+        peer_actors = set(_relationship_actors(related_doc))
+        has_shared_actor = bool(peer_actors & center_actors)
+        if not has_shared_actor and not related_doc.get("cluster_label"):
+            continue
+        hop2_nodes.append(related_doc)
+
+    for related_doc in hop2_nodes:
+        if len(nodes) >= MAX_NODES or len(edges) >= MAX_EDGES:
+            break
+        related_indicator = _indicator_id(related_doc.get("ioc_type", ""), related_doc.get("ioc_value", ""))
         related_node = _relationship_node(
             f"ioc:{related_indicator}",
             "ioc",
@@ -4510,23 +4948,25 @@ def _build_ioc_relationship_graph(
         )
         rel_first = related_doc.get("first_seen") or related_doc.get("event_time")
         rel_last = related_doc.get("last_seen") or related_doc.get("processed_at")
-        # IOC → IOC same_campaign link if they share a cluster
-        _append_relationship(
-            nodes, edges, relationship_log, seen_nodes, seen_edges,
-            ioc_node, related_node, "same_campaign", rel_first, rel_last,
-        )
-        # suggested_actor: inherit actors from cluster peers → link IOC to actor
-        for peer_actor in related_doc.get("ai_threat_actors") or []:
-            if not str(peer_actor).strip():
-                continue
-            # Skip if this actor is already directly linked to the main IOC
-            if peer_actor in (warehouse_doc.get("ai_threat_actors") or []):
-                continue
-            actor_node = _relationship_node(f"actor:{peer_actor}", "actor", peer_actor)
-            _append_relationship(
-                nodes, edges, relationship_log, seen_nodes, seen_edges,
-                ioc_node, actor_node, "suggested_actor", rel_first, rel_last,
-            )
+        peer_actors = _relationship_actors(related_doc)
+        shared_actors = [a for a in peer_actors if a in center_actors]
+        cluster_label = related_doc.get("cluster_label")
+
+        if cluster_label is not None:
+            # The design document defines same_campaign as HDBSCAN cluster
+            # membership. Do not use this relation for generic shared labels.
+            campaign_label = f"cluster_{cluster_label}"
+            campaign_node = _relationship_node(f"campaign:{cluster_label}", "campaign", campaign_label)
+            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges,
+                                 ioc_node, campaign_node, "same_campaign", rel_first, rel_last)
+            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges,
+                                 related_node, campaign_node, "same_campaign", rel_first, rel_last)
+
+        if shared_actors:
+            for actor_name in shared_actors:
+                actor_node = _relationship_node(f"actor:{actor_name}", "actor", actor_name)
+                _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges,
+                                     actor_node, related_node, "uses", rel_first, rel_last)
 
     first_datalake = datalake_docs[0] if datalake_docs else {}
     detail = _build_ioc_detail(warehouse_doc, datalake_docs)
@@ -5039,6 +5479,7 @@ def list_sources(active: bool = True, query: Optional[str] = None, current_user:
     for bucket in ((datalake_aggs.get("sources") or {}).get("buckets") or []):
         counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
     items = _lookup_items_from_counts(counts)
+    items = [{**item, "label": _source_display_name(item.get("label") or item.get("value"))} for item in items]
     if query:
         items = [item for item in items if query.lower() in item["label"].lower()]
     return _cache_set(cache_key, _success({"items": items}), ttl=300)
@@ -5053,14 +5494,15 @@ def list_sectors(active: bool = True, query: Optional[str] = None, current_user:
     warehouse_aggs = _warehouse_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
     items = []
     for bucket in ((warehouse_aggs.get("sectors") or {}).get("buckets") or []):
-        label = str(bucket.get("key") or "").strip()
-        if not label or label.lower() in {"none", "null", "unknown"}:
+        raw_label = str(bucket.get("key") or "").strip()
+        label = _sector_display_name(raw_label)
+        if not label:
             continue
         items.append(
             {
-                "value": label,
+                "value": raw_label,
                 "label": label,
-                "label_th": label,
+                "label_th": raw_label,
                 "description": None,
                 "active": active,
                 "count": int(bucket.get("doc_count") or 0),
@@ -5224,7 +5666,7 @@ def operations_dashboard(
         "top_intelligence_sources": _terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
         "top_threat_types": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], limit=5),
         "top_attack_origins": _terms_items_from_buckets((aggs.get("countries") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
-        "target_sectors": _terms_items_from_buckets((aggs.get("sectors") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
+        "target_sectors": _format_sector_terms(_terms_items_from_buckets((aggs.get("sectors") or {}).get("buckets") or [], total=aggs.get("total"), limit=5)),
     }
     return _success(payload)
 
@@ -5588,8 +6030,8 @@ def attack_time_report(
         peak_end = heatmap_peak.get("end_hour", "")
         peak_time_range = f"{peak_time} - {peak_end}" if peak_end else peak_time
     else:
-        peak_day = "Monday"
-        peak_time_range = "00:00 - 01:00"
+        peak_day = "-"
+        peak_time_range = "-"
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     by_day_hour: Dict[tuple, int] = {(day, hour): 0 for day in day_names for hour in range(24)}
     for doc in docs:
@@ -5598,14 +6040,14 @@ def attack_time_report(
             continue
         local = event_time.astimezone(BANGKOK_TZ)
         by_day_hour[(local.strftime("%A"), local.hour)] = by_day_hour.get((local.strftime("%A"), local.hour), 0) + 1
-    quiet = min(by_day_hour.items(), key=lambda item: item[1])[0] if any(v > 0 for v in by_day_hour.values()) else ("Sunday", 3)
+    quiet = min(by_day_hour.items(), key=lambda item: item[1])[0] if any(v > 0 for v in by_day_hour.values()) else ("-", 0)
     total_events = max(es_total_events, len(docs))
     sorted_events = sorted(docs, key=lambda item: _pick_display_time_in_range(item, TIME_MODE_OBSERVED, start_date, end_date) or datetime.min.replace(tzinfo=UTC), reverse=True)
     paged_items = [_attack_time_event_row(event, TIME_MODE_OBSERVED, start_date, end_date) for event in _page_slice(sorted_events, page, page_size)]
     payload = {
         "summary": {
             "peak_attack_time": {"day": peak_day, "time_range": peak_time_range},
-            "quietest_period": {"day": quiet[0], "time_range": _hour_range_label(quiet[1], span=1)},
+            "quietest_period": {"day": quiet[0], "time_range": "-" if quiet[0] == "-" else _hour_range_label((quiet[1] // 3) * 3, span=3)},
             "avg_attack_rate": _average_events_per_day(total_events, docs, start_date, end_date, TIME_MODE_OBSERVED),
             "highest_day": peak_day,
             "total_events": total_events,
@@ -5922,16 +6364,17 @@ def ioc_relationships(
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
     target_type = str(ioc_type or "").strip().lower()
-    target_value = str(ioc_value or "").strip()
+    target_value = _refang_indicator_value(ioc_value or "")
     if ioc_id:
         try:
             target_type, target_value = _split_indicator_id(ioc_id)
+            target_value = _refang_indicator_value(target_value)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     if target_type and target_value:
         warehouse_doc = _get_warehouse_doc_by_indicator(target_type, target_value)
     else:
-        search_text = str(query or "").strip()
+        search_text = _refang_indicator_value(query or "")
         if not search_text:
             raise HTTPException(status_code=400, detail="Provide query, ioc_id, or ioc_type and ioc_value")
         warehouse_doc = _get_warehouse_doc_by_value(search_text)
@@ -5953,16 +6396,34 @@ def ioc_relationships(
 
     primary_indicator = (warehouse_doc.get("ioc_type", ""), warehouse_doc.get("ioc_value", ""))
     datalake_docs = _fetch_datalake_by_indicators([primary_indicator])
-    threat_types = [str(item) for item in (warehouse_doc.get("ai_threat_types") or []) if str(item).strip()]
-    related_docs = []
-    if threat_types:
-        related_docs = [
-            doc
-            for doc in _hits_to_docs(_search_warehouse_docs(threat_types=threat_types, limit=100))
-            if _indicator_id(doc.get("ioc_type", ""), doc.get("ioc_value", ""))
-            != _indicator_id(warehouse_doc.get("ioc_type", ""), warehouse_doc.get("ioc_value", ""))
-        ]
-    return _success(_build_ioc_relationship_graph(warehouse_doc, datalake_docs, related_docs))
+    primary_id = _indicator_id(*primary_indicator)
+    seen_indicators: set = {primary_id}
+    related_docs: list = []
+    evidence_entries = _extract_relationship_evidence_entries(warehouse_doc, datalake_docs)
+
+    for entry in evidence_entries:
+        did = entry.get("indicator") or _indicator_id(entry.get("ioc_type", ""), entry.get("ioc_value", ""))
+        if did in seen_indicators:
+            continue
+        wdoc = _get_warehouse_doc_by_indicator(entry.get("ioc_type", ""), entry.get("ioc_value", ""))
+        if wdoc:
+            seen_indicators.add(did)
+            related_docs.append(wdoc)
+
+    cluster_labels = [doc.get("cluster_label") for doc in datalake_docs if doc.get("cluster_label") is not None]
+    if cluster_labels:
+        cluster_indicators = [(doc.get("ioc_type", ""), doc.get("ioc_value", ""))
+                              for doc in datalake_docs if doc.get("cluster_label") is not None]
+        cluster_datalake = _fetch_datalake_by_cluster(cluster_labels[:5])
+        for cdoc in cluster_datalake:
+            cind = _indicator_id(cdoc.get("ioc_type", ""), cdoc.get("ioc_value", ""))
+            if cind not in seen_indicators:
+                seen_indicators.add(cind)
+                wdoc = _get_warehouse_doc_by_indicator(cdoc.get("ioc_type", ""), cdoc.get("ioc_value", ""))
+                if wdoc:
+                    related_docs.append(wdoc)
+
+    return _success(_build_ioc_relationship_graph(warehouse_doc, datalake_docs, related_docs, evidence_entries))
 
 
 @router.get("/iocs/{ioc_id}", tags=["IOCs"])

@@ -121,6 +121,73 @@ def _unique(values: List[Any]) -> List[str]:
     return result
 
 
+def _first_text(*values: Any) -> Optional[str]:
+    for value in values:
+        cleaned = _as_text(value)
+        if cleaned and cleaned.lower() not in {"none", "null", "unknown", "n/a", "-"}:
+            return cleaned
+    return None
+
+
+def _dict_at_path(value: Any, *path: str) -> Dict[str, Any]:
+    current = value
+    for key in path:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
+def _extract_geo_country(raw: Dict[str, Any], enrichment: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    enrichment = enrichment if isinstance(enrichment, dict) else {}
+    geo_ip = enrichment.get("geo_ip") if isinstance(enrichment.get("geo_ip"), dict) else {}
+    ip_info = enrichment.get("ip_info") if isinstance(enrichment.get("ip_info"), dict) else {}
+    geo_info = raw.get("geo_info") if isinstance(raw.get("geo_info"), dict) else {}
+    asn_data = raw.get("asn_data") if isinstance(raw.get("asn_data"), dict) else {}
+    event = raw.get("Event") if isinstance(raw.get("Event"), dict) else {}
+    source_geo = _dict_at_path(raw, "source", "geo")
+    destination_geo = _dict_at_path(raw, "destination", "geo")
+    victim_geo = _dict_at_path(raw, "victim", "geo")
+    target_geo = _dict_at_path(raw, "target", "geo")
+    return _first_text(
+        raw.get("geo_country"),
+        raw.get("country"),
+        raw.get("country_code"),
+        raw.get("victim_country"),
+        raw.get("victim_country_name"),
+        raw.get("source_country"),
+        raw.get("source_country_name"),
+        raw.get("target_country"),
+        raw.get("target_country_name"),
+        raw.get("destination_country"),
+        raw.get("destination_country_name"),
+        raw.get("src_country"),
+        raw.get("dst_country"),
+        raw.get("dst_country_name"),
+        source_geo.get("country_code"),
+        source_geo.get("country_name"),
+        source_geo.get("country"),
+        destination_geo.get("country_code"),
+        destination_geo.get("country_name"),
+        destination_geo.get("country"),
+        victim_geo.get("country_code"),
+        victim_geo.get("country_name"),
+        victim_geo.get("country"),
+        target_geo.get("country_code"),
+        target_geo.get("country_name"),
+        target_geo.get("country"),
+        geo_ip.get("country_code"),
+        geo_ip.get("country"),
+        ip_info.get("country"),
+        geo_info.get("country_code"),
+        geo_info.get("country"),
+        asn_data.get("country_code"),
+        asn_data.get("country"),
+        event.get("country"),
+        event.get("threat_level_country"),
+    )
+
+
 def _infer_external_source_type(raw: Dict[str, Any], source_name: str, source_index: str) -> str:
     explicit = _as_text(raw.get("source_type")).lower()
     if explicit:
@@ -446,7 +513,7 @@ def _existing_canonical_adapter(hit: Dict[str, Any], normalize_type, normalize_v
         reference=raw.get("reference") or raw.get("ref_doc_id") or raw.get("doc_hash") or "",
         collect_time=raw.get("collect_time") or raw.get("@timestamp") or raw.get("processed_at"),
         event_time=raw.get("event_time") or raw.get("observation_date") or raw.get("@timestamp") or raw.get("processed_at"),
-        geo_country=raw.get("geo_country"),
+        geo_country=_extract_geo_country(raw, raw.get("enrichment") if isinstance(raw.get("enrichment"), dict) else {}),
         confidence=_parse_int(raw.get("confidence"), 0),
         source_url=raw.get("source_url") or "",
         source_id=raw.get("source_id") or raw.get("id") or hit.get("_id"),
@@ -480,7 +547,7 @@ def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value)
         reference=raw.get("id") or hit.get("_id") or "",
         collect_time=raw.get("@timestamp"),
         event_time=raw.get("observation_date") or raw.get("@timestamp"),
-        geo_country=raw.get("geo_country"),
+        geo_country=_extract_geo_country(raw),
         confidence=_parse_int(raw.get("confidence"), 0),
         source_url="",
         source_id=raw.get("id") or hit.get("_id"),
@@ -523,7 +590,7 @@ def _misp_attribute_adapter(hit: Dict[str, Any], normalize_type, normalize_value
         reference=raw.get("uuid") or event.get("uuid") or hit.get("_id") or "",
         collect_time=collect_time,
         event_time=event_time,
-        geo_country=None,
+        geo_country=_extract_geo_country(raw, {"misp_event": event}),
         confidence=confidence,
         source_url="",
         source_id=raw.get("uuid") or raw.get("id") or hit.get("_id"),
@@ -579,7 +646,7 @@ def _legacy_external_adapter(hit: Dict[str, Any], normalize_type, normalize_valu
         reference=first_source.get("url") or raw.get("reference") or raw.get("ref_doc_id") or raw.get("doc_hash") or "",
         collect_time=first_source.get("collect_time") or raw.get("@timestamp") or raw.get("processed_at"),
         event_time=raw.get("@timestamp") or raw.get("processed_at") or first_source.get("collect_time"),
-        geo_country=geo_ip.get("country_code") or geo_ip.get("country") or raw.get("geo_country"),
+        geo_country=_extract_geo_country(raw, enrichment),
         confidence=confidence,
         source_url=first_source.get("url") or "",
         source_id=raw.get("ref_doc_id") or raw.get("doc_hash") or hit.get("_id"),
