@@ -604,6 +604,47 @@ def test_ioc_listing_detail_and_events(client):
     assert import_tab.json()["data"]["charts"]["import_by_source"][0]["value"] >= 1
 
 
+def test_ioc_detail_uses_enrichment_from_any_datalake_doc():
+    detail_payload = dashboard_router._build_ioc_detail(
+        {
+            "ioc_value": "9.0.2.0",
+            "ioc_type": "ip",
+            "severity": "low",
+            "source_name": "BleepingComputer News",
+            "ai_risk_score": 22,
+            "ai_threat_types": ["Exploited Vulnerability"],
+            "first_seen": "2026-04-22T12:00:00Z",
+        },
+        [
+            {
+                "ioc_value": "9.0.2.0",
+                "ioc_type": "ip",
+                "event_time": "2026-04-22T12:00:00Z",
+                "source_name": "BleepingComputer News",
+            },
+            {
+                "ioc_value": "9.0.2.0",
+                "ioc_type": "ip",
+                "event_time": "2026-04-22T12:05:00Z",
+                "enrichment": {
+                    "geo_ip": {
+                        "country": "United States",
+                        "city": "Durham",
+                        "org": "IBM",
+                        "isp": "IBM",
+                    }
+                },
+            },
+        ],
+    )
+
+    assert detail_payload["geo_location_owner"]["country"] == "United States"
+    assert detail_payload["geo_location_owner"]["city"] == "Durham"
+    assert detail_payload["geo_location_owner"]["asn_org"] == "IBM"
+    assert detail_payload["network_ownership"]["organization"] == "IBM"
+    assert detail_payload["asn_infrastructure"]["asn_name"] == "IBM"
+
+
 def test_ioc_relationships_missing_query_does_not_collect_all_docs(client, monkeypatch):
     test_client, _ = client
     headers = _login(test_client)

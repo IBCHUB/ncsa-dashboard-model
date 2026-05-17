@@ -138,6 +138,14 @@ def _dict_at_path(value: Any, *path: str) -> Dict[str, Any]:
     return current if isinstance(current, dict) else {}
 
 
+def _iter_dicts(value: Any) -> List[Dict[str, Any]]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
 def _extract_geo_country(raw: Dict[str, Any], enrichment: Optional[Dict[str, Any]] = None) -> Optional[str]:
     enrichment = enrichment if isinstance(enrichment, dict) else {}
     geo_ip = enrichment.get("geo_ip") if isinstance(enrichment.get("geo_ip"), dict) else {}
@@ -373,6 +381,7 @@ def _merge_evidence(*items: Dict[str, Any]) -> Dict[str, Any]:
         "source_threat_types": [],
         "source_threat_actors": [],
         "source_mitre_techniques": [],
+        "mitre_tactics": [],
         "source_campaigns": [],
         "source_target_countries": [],
         "source_sectors": [],
@@ -387,6 +396,7 @@ def _merge_evidence(*items: Dict[str, Any]) -> Dict[str, Any]:
             "source_threat_types",
             "source_threat_actors",
             "source_mitre_techniques",
+            "mitre_tactics",
             "source_campaigns",
             "source_target_countries",
             "source_sectors",
@@ -435,14 +445,46 @@ def _extract_summary_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_mitre_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
-    mitre = enrichment.get("mitre") if isinstance(enrichment.get("mitre"), dict) else {}
-    if not mitre:
+    mitre_items = _iter_dicts(enrichment.get("mitre"))
+    if not mitre_items:
         return {}
-    technique = " ".join(part for part in [_as_text(mitre.get("external_id")), _as_text(mitre.get("name"))] if part)
+    techniques: List[str] = []
+    tactics: List[Any] = []
+    actors: List[str] = []
+    campaigns: List[str] = []
+    countries: List[str] = []
+    for mitre in mitre_items:
+        technique = " ".join(part for part in [_as_text(mitre.get("external_id")), _as_text(mitre.get("name"))] if part)
+        if technique:
+            techniques.append(technique)
+        tactics.extend(_as_list(mitre.get("tactics")))
+        for actor in _as_list(mitre.get("actor_groups")):
+            if isinstance(actor, dict):
+                actor_name = _first_text(actor.get("name"), actor.get("group_name"), actor.get("id"))
+                if actor_name:
+                    actors.append(actor_name)
+                for country in _as_list(actor.get("countries")):
+                    country_text = _first_text(country)
+                    if country_text:
+                        countries.append(country_text)
+            else:
+                actor_name = _first_text(actor)
+                if actor_name:
+                    actors.append(actor_name)
+        for campaign in _as_list(mitre.get("campaigns")):
+            if isinstance(campaign, dict):
+                campaign_name = _first_text(campaign.get("name"), campaign.get("id"))
+            else:
+                campaign_name = _first_text(campaign)
+            if campaign_name:
+                campaigns.append(campaign_name)
     evidence = {
         "evidence_type": "mitre",
-        "source_mitre_techniques": [technique] if technique else [],
-        "mitre_tactics": _as_list(mitre.get("tactics")),
+        "source_mitre_techniques": _unique(techniques[:25]),
+        "mitre_tactics": _unique(tactics[:25]),
+        "source_threat_actors": _unique(actors[:25]),
+        "source_campaigns": _unique(campaigns[:25]),
+        "source_target_countries": _unique(countries[:25]),
     }
     return _compact_evidence(evidence)
 

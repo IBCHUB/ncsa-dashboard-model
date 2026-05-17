@@ -239,6 +239,41 @@ def test_legacy_external_extracts_virustotal_and_correlation_evidence():
     assert doc["source_evidence"]["source_mitre_techniques"] == ["T1587.001 Malware"]
 
 
+def test_legacy_external_extracts_list_mitre_evidence():
+    doc = ElasticClient._normalize_datalake_hit({
+        "_index": "tcti-feeds-bleeping-12032026",
+        "_id": "doc-mitre-list",
+        "_source": {
+            "doc_hash": "doc-mitre-list",
+            "ioc": {"type": "ip", "value": "9.0.2.0"},
+            "source": [{"name": "BleepingComputer News", "description": "Exploit chain analysis"}],
+            "enrichment": {
+                "mitre": [
+                    {
+                        "external_id": "T1190",
+                        "name": "Exploit Public-Facing Application",
+                        "tactics": ["initial-access"],
+                        "actor_groups": [{"name": "APT28", "countries": ["RU"]}],
+                    },
+                    {
+                        "external_id": "T1486",
+                        "name": "Data Encrypted for Impact",
+                        "tactics": ["impact"],
+                    },
+                ]
+            },
+        },
+    })
+
+    assert doc["source_evidence"]["source_mitre_techniques"] == [
+        "T1190 Exploit Public-Facing Application",
+        "T1486 Data Encrypted for Impact",
+    ]
+    assert doc["source_evidence"]["mitre_tactics"] == ["initial-access", "impact"]
+    assert doc["source_evidence"]["source_threat_actors"] == ["APT28"]
+    assert doc["source_evidence"]["source_target_countries"] == ["RU"]
+
+
 def test_legacy_external_extracts_sandbox_evidence():
     doc = ElasticClient._normalize_datalake_hit({
         "_index": "tcti-feeds-sandbox-26032026",

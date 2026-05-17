@@ -2019,22 +2019,40 @@ def _fetch_datalake_by_indicators(indicators: Sequence[Tuple[str, str]]) -> List
         batch = unique[index:index + chunk_size]
         should = []
         for ioc_type, ioc_value in batch:
-            should.extend(
+            value_variants = _unique_list(
                 [
-                    {"bool": {"must": [{"term": {"ioc_type": ioc_type}}, {"term": {"ioc_value": ioc_value}}]}},
-                    {"bool": {"must": [{"term": {"ioc_type.keyword": ioc_type}}, {"term": {"ioc_value.keyword": ioc_value}}]}},
-                    {"bool": {"must": [{"term": {"type.keyword": ioc_type}}, {"term": {"value.keyword": ioc_value}}]}},
-                    {"bool": {"must": [{"match_phrase": {"type": ioc_type}}, {"match_phrase": {"value": ioc_value}}]}},
-                    {"bool": {"must": [{"term": {"Attribute.type.keyword": ioc_type}}, {"term": {"Attribute.value.keyword": ioc_value}}]}},
-                    {"bool": {"must": [{"match_phrase": {"Attribute.type": ioc_type}}, {"match_phrase": {"Attribute.value": ioc_value}}]}},
-                ]
+                    value
+                    for value in [
+                    ioc_value,
+                    _refang_indicator_value(ioc_value),
+                    _refang_indicator_value(ioc_value).replace(".", "[.]") if "." in _refang_indicator_value(ioc_value) else None,
+                    ]
+                    if isinstance(value, str) and value.strip()
+                ],
+                limit=3,
             )
+            for value_variant in value_variants:
+                should.extend(
+                    [
+                        {"bool": {"must": [{"term": {"ioc_type": ioc_type}}, {"term": {"ioc_value": value_variant}}]}},
+                        {"bool": {"must": [{"term": {"ioc_type.keyword": ioc_type}}, {"term": {"ioc_value.keyword": value_variant}}]}},
+                        {"bool": {"must": [{"term": {"type.keyword": ioc_type}}, {"term": {"value.keyword": value_variant}}]}},
+                        {"bool": {"must": [{"match_phrase": {"type": ioc_type}}, {"match_phrase": {"value": value_variant}}]}},
+                        {"bool": {"must": [{"term": {"ioc.type.keyword": ioc_type}}, {"term": {"ioc.value.keyword": value_variant}}]}},
+                        {"bool": {"must": [{"match_phrase": {"ioc.type": ioc_type}}, {"match_phrase": {"ioc.value": value_variant}}]}},
+                        {"bool": {"must": [{"term": {"Attribute.type.keyword": ioc_type}}, {"term": {"Attribute.value.keyword": value_variant}}]}},
+                        {"bool": {"must": [{"match_phrase": {"Attribute.type": ioc_type}}, {"match_phrase": {"Attribute.value": value_variant}}]}},
+                    ]
+                )
         body = {
             "query": {"bool": {"should": should, "minimum_should_match": 1}},
-            "sort": [{"@timestamp": {"order": "desc", "missing": "_last"}}, {"observation_date": {"order": "desc", "missing": "_last"}}],
         }
         raw_hits = client.scroll_search(client.datalake_index, body, page_size=2000)
         results.extend({"_id": hit.get("_id"), **(hit.get("_source") or {})} for hit in raw_hits)
+    results.sort(
+        key=lambda item: _datalake_event_time(item) or datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
     return results
 
 
@@ -2065,7 +2083,13 @@ def _datalake_event_source(doc: Dict[str, Any]) -> str:
     event = doc.get("Event") if isinstance(doc.get("Event"), dict) else {}
     orgc = event.get("Orgc") if isinstance(event.get("Orgc"), dict) else {}
     org = event.get("Org") if isinstance(event.get("Org"), dict) else {}
-    return str(doc.get("source_name") or orgc.get("name") or org.get("name") or doc.get("source_type") or "-")
+    source = doc.get("source")
+    source_name = None
+    if isinstance(source, dict):
+        source_name = source.get("name")
+    elif isinstance(source, list):
+        source_name = next((item.get("name") for item in source if isinstance(item, dict) and item.get("name")), None)
+    return str(doc.get("source_name") or source_name or orgc.get("name") or org.get("name") or doc.get("source_type") or "-")
 
 
 def _datalake_event_severity(doc: Dict[str, Any]) -> str:
@@ -2077,16 +2101,120 @@ def _datalake_event_severity(doc: Dict[str, Any]) -> str:
 def _datalake_event_description(doc: Dict[str, Any]) -> str:
     event = doc.get("Event") if isinstance(doc.get("Event"), dict) else {}
     attribute = doc.get("Attribute") if isinstance(doc.get("Attribute"), dict) else {}
+    source = doc.get("source")
+    source_description = None
+    if isinstance(source, dict):
+        source_description = source.get("description")
+    elif isinstance(source, list):
+        source_description = next((item.get("description") for item in source if isinstance(item, dict) and item.get("description")), None)
     return str(
         doc.get("description")
         or doc.get("title")
         or doc.get("reference")
         or attribute.get("comment")
         or event.get("info")
+        or source_description
         or doc.get("value")
         or doc.get("ioc_value")
         or "N/A"
     )
+
+
+def _detail_text(value: Any) -> Optional[str]:
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            cleaned = _detail_text(item)
+            if cleaned:
+                return cleaned
+        return None
+    if isinstance(value, dict):
+        return None
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "null", "unknown", "n/a", "na", "-"}:
+        return None
+    return text
+
+
+def _first_detail_text(*values: Any) -> Optional[str]:
+    for value in values:
+        cleaned = _detail_text(value)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _nested_dict(value: Any, *path: str) -> Dict[str, Any]:
+    current = value
+    for key in path:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
+def _doc_enrichment(doc: Dict[str, Any]) -> Dict[str, Any]:
+    enrichment = doc.get("enrichment")
+    return enrichment if isinstance(enrichment, dict) else {}
+
+
+def _doc_geo_ip(doc: Dict[str, Any]) -> Dict[str, Any]:
+    return _nested_dict(_doc_enrichment(doc), "geo_ip")
+
+
+def _doc_ip_info(doc: Dict[str, Any]) -> Dict[str, Any]:
+    return (
+        (doc.get("ip_info") if isinstance(doc.get("ip_info"), dict) else {})
+        or _nested_dict(_doc_enrichment(doc), "ip_info")
+    )
+
+
+def _doc_asn_data(doc: Dict[str, Any]) -> Dict[str, Any]:
+    direct_ip_info = doc.get("ip_info") if isinstance(doc.get("ip_info"), dict) else {}
+    enrichment = _doc_enrichment(doc)
+    enrichment_ip_info = _nested_dict(enrichment, "ip_info")
+    return (
+        (doc.get("asn_data") if isinstance(doc.get("asn_data"), dict) else {})
+        or _nested_dict(direct_ip_info, "asn_data")
+        or _nested_dict(enrichment, "asn_data")
+        or _nested_dict(enrichment, "asn")
+        or _nested_dict(enrichment_ip_info, "asn_data")
+    )
+
+
+def _doc_whois(doc: Dict[str, Any]) -> Dict[str, Any]:
+    return (
+        (doc.get("whois") if isinstance(doc.get("whois"), dict) else {})
+        or _nested_dict(_doc_enrichment(doc), "whois")
+    )
+
+
+def _doc_geo_info(doc: Dict[str, Any]) -> Dict[str, Any]:
+    return doc.get("geo_info") if isinstance(doc.get("geo_info"), dict) else {}
+
+
+def _first_dict_from_docs(docs: Sequence[Dict[str, Any]], extractor) -> Dict[str, Any]:
+    for doc in docs:
+        candidate = extractor(doc)
+        if isinstance(candidate, dict) and any(_detail_text(value) for value in candidate.values()):
+            return candidate
+    return {}
+
+
+def _first_doc_text(docs: Sequence[Dict[str, Any]], *fields: str) -> Optional[str]:
+    for doc in docs:
+        for field in fields:
+            cleaned = _detail_text(doc.get(field))
+            if cleaned:
+                return cleaned
+    return None
+
+
+def _coordinates_from_docs(docs: Sequence[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
+    for doc in docs:
+        latitude, longitude = _coordinates_from_doc(doc)
+        if latitude is not None and longitude is not None:
+            return latitude, longitude
+    return None, None
 
 
 def _get_processed_doc(doc_id: str) -> Optional[Dict[str, Any]]:
@@ -4429,27 +4557,44 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
             relationship_nodes.append({"id": node_id, "type": "campaign", "label": f"cluster_{doc['cluster_label']}"})
             relationship_edges.append({"source": ioc_node_id, "target": node_id, "relation": "same_campaign"})
     sector = _sector_info(warehouse_doc)
-    country = next((value for value in (_country_from_doc(item) for item in datalake_docs) if value), None) or _country_from_doc(warehouse_doc)
-    first_enrichment = datalake_docs[0] if datalake_docs else {}
-    _fe_enrich = (first_enrichment.get("enrichment") or {}) if isinstance(first_enrichment.get("enrichment"), dict) else {}
-    _fe_ip_info = (_fe_enrich.get("ip_info") or {}) if isinstance(_fe_enrich.get("ip_info"), dict) else {}
-    asn_data = (
-        first_enrichment.get("asn_data")
-        or ((first_enrichment.get("ip_info") or {}).get("asn_data") if isinstance(first_enrichment.get("ip_info"), dict) else {})
-        or _fe_ip_info.get("asn_data")
-        or {}
+    enrichment_docs = [doc for doc in datalake_docs if isinstance(doc, dict)]
+    first_enrichment = enrichment_docs[0] if enrichment_docs else {}
+    country = next((value for value in (_country_from_doc(item) for item in enrichment_docs) if value), None) or _country_from_doc(warehouse_doc)
+    geo_info = _first_dict_from_docs(enrichment_docs, _doc_geo_info)
+    geo_ip = _first_dict_from_docs(enrichment_docs, _doc_geo_ip)
+    ip_info = _first_dict_from_docs(enrichment_docs, _doc_ip_info)
+    asn_data = _first_dict_from_docs(enrichment_docs, _doc_asn_data)
+    whois = _first_dict_from_docs(enrichment_docs, _doc_whois)
+    owner_org = _first_detail_text(
+        whois.get("org"),
+        whois.get("organization"),
+        asn_data.get("org"),
+        asn_data.get("asn_name"),
+        ip_info.get("org"),
+        ip_info.get("isp"),
+        geo_ip.get("org"),
+        geo_ip.get("isp"),
+        geo_ip.get("as_org"),
     )
-    whois = first_enrichment.get("whois") or _fe_enrich.get("whois") or {}
-    latitude, longitude = _coordinates_from_doc(first_enrichment)
+    asn_number = _first_detail_text(
+        asn_data.get("asn"),
+        asn_data.get("as_number"),
+        asn_data.get("number"),
+        ip_info.get("asn"),
+        ip_info.get("as_number"),
+        geo_ip.get("asn"),
+        geo_ip.get("as_number"),
+    )
+    latitude, longitude = _coordinates_from_docs(enrichment_docs)
     history_preview = []
     for doc in datalake_docs[:5]:
         observed_at = _pick_event_time(doc)
         history_preview.append(
             {
                 "observed_at": observed_at.isoformat().replace("+00:00", "Z") if observed_at else None,
-                "source": doc.get("source_name"),
-                "severity": _severity_label(_normalize_severity(doc.get("severity"))),
-                "description": doc.get("description") or doc.get("reference"),
+                "source": _datalake_event_source(doc),
+                "severity": _datalake_event_severity(doc),
+                "description": _datalake_event_description(doc),
             }
         )
     references = _unique_list([doc.get("reference") for doc in datalake_docs if doc.get("reference")], limit=10)
@@ -4473,37 +4618,34 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
         },
         "geo_location_owner": {
             "country": country,
-            "city": (
-                ((first_enrichment.get("geo_info") or {}) if isinstance(first_enrichment.get("geo_info"), dict) else {}).get("city")
-                or _fe_ip_info.get("city")
-            ),
-            "asn_org": asn_data.get("org"),
+            "city": _first_detail_text(geo_info.get("city"), ip_info.get("city"), geo_ip.get("city")),
+            "asn_org": owner_org,
             "latitude": latitude,
             "longitude": longitude,
         },
         "network_ownership": {
-            "organization": whois.get("org") or asn_data.get("org"),
-            "net_name": first_enrichment.get("net_name") or whois.get("net_name"),
-            "net_range": first_enrichment.get("net_range") or whois.get("net_range"),
-            "cidr": first_enrichment.get("cidr") or whois.get("cidr") or _fe_ip_info.get("cidr"),
+            "organization": owner_org,
+            "net_name": _first_detail_text(_first_doc_text(enrichment_docs, "net_name", "netname"), whois.get("net_name"), whois.get("netname")),
+            "net_range": _first_detail_text(_first_doc_text(enrichment_docs, "net_range", "range"), whois.get("net_range"), whois.get("range")),
+            "cidr": _first_detail_text(_first_doc_text(enrichment_docs, "cidr"), whois.get("cidr"), ip_info.get("cidr")),
             "country": country,
-            "allocation_type": first_enrichment.get("allocation_type") or whois.get("allocation_type"),
-            "rir": first_enrichment.get("rir") or whois.get("rir"),
-            "registered_on": first_enrichment.get("registered_on") or whois.get("registered_on"),
-            "last_updated": first_enrichment.get("last_updated") or whois.get("last_updated"),
+            "allocation_type": _first_detail_text(_first_doc_text(enrichment_docs, "allocation_type"), whois.get("allocation_type")),
+            "rir": _first_detail_text(_first_doc_text(enrichment_docs, "rir"), whois.get("rir")),
+            "registered_on": _first_detail_text(_first_doc_text(enrichment_docs, "registered_on"), whois.get("registered_on"), whois.get("creation_date"), whois.get("created")),
+            "last_updated": _first_detail_text(_first_doc_text(enrichment_docs, "last_updated"), whois.get("last_updated"), whois.get("updated_date"), whois.get("updated")),
         },
         "asn_infrastructure": {
-            "asn": asn_data.get("asn"),
-            "asn_name": asn_data.get("org"),
-            "asn_description": asn_data.get("org"),
-            "asn_type": first_enrichment.get("asn_type") or _fe_ip_info.get("asn_type"),
-            "hosting_type": first_enrichment.get("hosting_type") or _fe_ip_info.get("hosting_type"),
+            "asn": asn_number,
+            "asn_name": owner_org,
+            "asn_description": _first_detail_text(asn_data.get("description"), ip_info.get("asn_description"), owner_org),
+            "asn_type": _first_detail_text(_first_doc_text(enrichment_docs, "asn_type"), ip_info.get("asn_type")),
+            "hosting_type": _first_detail_text(_first_doc_text(enrichment_docs, "hosting_type"), ip_info.get("hosting_type")),
         },
         "abuse_contact": {
-            "abuse_email": whois.get("registrant_email") or _fe_ip_info.get("abuse_email"),
-            "abuse_contact": first_enrichment.get("abuse_contact") or _fe_ip_info.get("abuse_contact"),
-            "noc_email": first_enrichment.get("noc_email") or _fe_ip_info.get("noc_email"),
-            "tech_email": first_enrichment.get("tech_email") or _fe_ip_info.get("tech_email"),
+            "abuse_email": _first_detail_text(whois.get("abuse_email"), whois.get("registrant_email"), ip_info.get("abuse_email")),
+            "abuse_contact": _first_detail_text(_first_doc_text(enrichment_docs, "abuse_contact"), ip_info.get("abuse_contact")),
+            "noc_email": _first_detail_text(_first_doc_text(enrichment_docs, "noc_email"), ip_info.get("noc_email")),
+            "tech_email": _first_detail_text(_first_doc_text(enrichment_docs, "tech_email"), ip_info.get("tech_email")),
         },
         "score_breakdown": warehouse_doc.get("ai_score_breakdown") or {},
         "target_sector": sector,
@@ -4516,9 +4658,9 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
             ),
             "source_documents": [
                 {
-                    "source_name": doc.get("source_name"),
+                    "source_name": _datalake_event_source(doc),
                     "reference": doc.get("reference"),
-                    "event_time": (_pick_event_time(doc) or datetime.now(UTC)).isoformat().replace("+00:00", "Z"),
+                    "event_time": (_datalake_event_time(doc) or datetime.now(UTC)).isoformat().replace("+00:00", "Z"),
                 }
                 for doc in datalake_docs[:10]
             ],
@@ -4582,15 +4724,27 @@ def _relationship_infer_ioc_type(value: Any, type_hint: Any = None) -> Optional[
         "ip": "ip",
         "ip-src": "ip",
         "ip-dst": "ip",
+        "ip_address": "ip",
+        "ip-address": "ip",
+        "ip_addresses": "ip",
+        "ip-addresses": "ip",
+        "ipv4-addr": "ip",
         "ipv4": "ip",
         "ipv6": "ip",
         "domain": "domain",
+        "domain-name": "domain",
         "hostname": "domain",
         "url": "url",
         "uri": "url",
+        "file_name": "file",
+        "filename": "file",
+        "file-name": "file",
+        "file": "file",
         "md5": "hash",
         "sha1": "hash",
+        "sha-1": "hash",
         "sha256": "hash",
+        "sha-256": "hash",
         "hash": "hash",
         "hashes": "hash",
         "cve": "cve",
@@ -4853,8 +5007,9 @@ def _build_ioc_relationship_graph(
                 malware_node = _relationship_node(f"malware:{malware}", "malware", malware)
                 _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, malware_node, "hosts", observed, observed)
 
-        # Infrastructure nodes from whois and ASN data
-        whois = enrichment.get("whois") if isinstance(enrichment, dict) else {}
+        # Infrastructure nodes from WHOIS, ASN, and GeoIP owner data. These are
+        # explicit enrichment fields, not fuzzy "similar IOC" links.
+        whois = _doc_whois(doc)
         if isinstance(whois, dict):
             registrant_email = whois.get("registrant_email")
             if registrant_email and str(registrant_email).strip():
@@ -4867,14 +5022,30 @@ def _build_ioc_relationship_graph(
                     if str(ns).strip():
                         infra_node = _relationship_node(f"infra:ns:{ns}", "infrastructure", str(ns))
                         _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, infra_node, "shares_infra", observed, observed)
-        asn_data = enrichment.get("asn") if isinstance(enrichment, dict) else {}
-        if isinstance(asn_data, dict):
-            asn_org = asn_data.get("org") or asn_data.get("asn_name")
-            asn_number = asn_data.get("asn")
-            if asn_org and str(asn_org).strip():
-                infra_label = f"{asn_org} (AS{asn_number})" if asn_number else str(asn_org)
-                infra_node = _relationship_node(f"infra:asn:{asn_number or asn_org}", "infrastructure", infra_label)
-                _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, infra_node, "shares_infra", observed, observed)
+        asn_data = _doc_asn_data(doc)
+        geo_ip = _doc_geo_ip(doc)
+        ip_info = _doc_ip_info(doc)
+        asn_org = _first_detail_text(
+            asn_data.get("org"),
+            asn_data.get("asn_name"),
+            ip_info.get("org"),
+            ip_info.get("isp"),
+            geo_ip.get("org"),
+            geo_ip.get("isp"),
+            geo_ip.get("as_org"),
+        )
+        asn_number = _first_detail_text(
+            asn_data.get("asn"),
+            asn_data.get("as_number"),
+            ip_info.get("asn"),
+            ip_info.get("as_number"),
+            geo_ip.get("asn"),
+            geo_ip.get("as_number"),
+        )
+        if asn_org:
+            infra_label = f"{asn_org} (AS{asn_number})" if asn_number else asn_org
+            infra_node = _relationship_node(f"infra:asn:{asn_number or asn_org}", "infrastructure", infra_label)
+            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, infra_node, "shares_infra", observed, observed)
 
         # CVE nodes from enrichment
         cve_info = enrichment.get("cve_info") if isinstance(enrichment, dict) else None
@@ -6437,10 +6608,30 @@ def ioc_detail(ioc_id: str, current_user: Dict[str, Any] = Depends(require_dashb
 
 
 @router.get("/iocs/{ioc_id}/events", tags=["IOCs"])
-def ioc_events(ioc_id: str, page: int = 1, page_size: int = 20, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def ioc_events(
+    ioc_id: str,
+    page: int = 1,
+    page_size: int = 20,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
     ioc_type, ioc_value = _split_indicator_id(ioc_id)
+    raw_docs = _fetch_datalake_by_indicators([(ioc_type, ioc_value)])
+    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
+    docs = []
+    for doc in raw_docs:
+        observed_time = _datalake_event_time(doc)
+        if start_bound or end_bound:
+            if observed_time is None:
+                continue
+            if start_bound and observed_time < start_bound:
+                continue
+            if end_bound and observed_time > end_bound:
+                continue
+        docs.append(doc)
     docs = sorted(
-        _fetch_datalake_by_indicators([(ioc_type, ioc_value)]),
+        docs,
         key=lambda item: _datalake_event_time(item) or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
