@@ -4923,10 +4923,14 @@ def _build_ioc_relationship_graph(
         actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
         _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, actor_node, ioc_node, "uses", first_seen, last_seen)
 
-    # source_evidence.related_iocs is a candidate/correlation list, not a
-    # documented attack-schema edge. Use it upstream to discover related docs,
-    # but do not emit it into graph/table rows as if it were a direct attack
-    # relationship.
+    # source_evidence.related_iocs is correlation evidence, not direct actor
+    # attribution. It may be used as an IOC -> IOC hop, but any actor/type shown
+    # after that must come from the related IOC's own metadata.
+    evidence_by_indicator: Dict[str, Dict[str, Any]] = {}
+    for entry in evidence_entries or []:
+        entry_indicator = entry.get("indicator") or _indicator_id(entry.get("ioc_type", ""), entry.get("ioc_value", ""))
+        if entry_indicator and entry_indicator not in evidence_by_indicator:
+            evidence_by_indicator[entry_indicator] = dict(entry)
 
     # Check if main IOC is a CVE pattern — create cve node instead
     _cve_pattern = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
@@ -5024,11 +5028,10 @@ def _build_ioc_relationship_graph(
             campaign_node = _relationship_node(f"campaign:{doc['cluster_label']}", "campaign", campaign_label)
             _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, campaign_node, "same_campaign", observed, observed)
 
-    # Hop 2: related IOCs (max 10, sorted by risk score desc).
-    # Keep this graph evidence-based: generic shared threat type or shared
-    # actor labels are not direct attack relationships. Only documented
-    # campaign membership is emitted here; correlation-only rows remain hidden
-    # from the attack relationship UI.
+    # Hop 2: related IOCs (max 10, sorted by risk score desc). Keep this
+    # evidence-based: only related_docs discovered from source evidence or
+    # documented campaign membership are eligible. Do not infer a direct
+    # relationship from a generic shared threat type or actor label.
     MAX_RELATED = 10
     MAX_NODES = 50
     MAX_EDGES = 100
@@ -5044,7 +5047,7 @@ def _build_ioc_relationship_graph(
         related_indicator = _indicator_id(related_doc.get("ioc_type", ""), related_doc.get("ioc_value", ""))
         if related_indicator == indicator:
             continue
-        if related_doc.get("cluster_label") is None:
+        if related_indicator not in evidence_by_indicator and related_doc.get("cluster_label") is None:
             continue
         hop2_nodes.append(related_doc)
 
@@ -5063,6 +5066,27 @@ def _build_ioc_relationship_graph(
         rel_first = related_doc.get("first_seen") or related_doc.get("event_time")
         rel_last = related_doc.get("last_seen") or related_doc.get("processed_at")
         cluster_label = related_doc.get("cluster_label")
+        evidence_entry = evidence_by_indicator.get(related_indicator)
+
+        if evidence_entry:
+            evidence_first = evidence_entry.get("first_seen") or rel_first
+            evidence_last = evidence_entry.get("last_seen") or rel_last
+            _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges,
+                                 ioc_node, related_node, "correlated_with", evidence_first, evidence_last)
+
+            for threat_type in related_doc.get("ai_threat_types") or related_doc.get("threat_type") or []:
+                if not _is_displayable_relationship_threat_type(threat_type):
+                    continue
+                target_node = _relationship_node(f"type:{threat_type}", "threat_type", threat_type)
+                _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges,
+                                     related_node, target_node, "classified_as", rel_first, rel_last)
+
+            for actor in _relationship_actors(related_doc):
+                if not str(actor).strip():
+                    continue
+                actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
+                _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges,
+                                     actor_node, related_node, "uses", rel_first, rel_last)
 
         if cluster_label is not None:
             # The design document defines same_campaign as HDBSCAN cluster

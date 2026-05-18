@@ -660,7 +660,7 @@ def test_ioc_relationships_missing_query_does_not_collect_all_docs(client, monke
     assert response.json()["detail"] == "IOC not found"
 
 
-def test_ioc_relationship_log_deduplicates_edges_and_excludes_correlation_only_rows():
+def test_ioc_relationship_log_deduplicates_edges_and_keeps_evidence_based_two_hop_rows():
     warehouse_doc = {
         "ioc_type": "domain",
         "ioc_value": "vitosc.xyz",
@@ -710,9 +710,9 @@ def test_ioc_relationship_log_deduplicates_edges_and_excludes_correlation_only_r
     assert len(relationship_tuples) == len(set(relationship_tuples))
     assert ("Conti", "uses", "vitosc.xyz") in relationship_tuples
     assert ("vitosc.xyz", "classified_as", "Exploited Vulnerability") in relationship_tuples
-    assert ("vitosc.xyz", "correlated_with", "kali.org") not in relationship_tuples
-    assert ("Conti", "uses", "kali.org") not in relationship_tuples
-    assert ("kali.org", "classified_as", "APT") not in relationship_tuples
+    assert ("vitosc.xyz", "correlated_with", "kali.org") in relationship_tuples
+    assert ("Conti", "uses", "kali.org") in relationship_tuples
+    assert ("kali.org", "classified_as", "APT") in relationship_tuples
 
 
 def test_threat_type_detail_report(client):
