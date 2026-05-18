@@ -4868,9 +4868,10 @@ def _append_relationship(
             nodes.append(node)
             seen_nodes.add(node["id"])
     edge_key = (source_node["id"], target_node["id"], relation)
-    if edge_key not in seen_edges:
-        edges.append(_relationship_edge(source_node["id"], target_node["id"], relation))
-        seen_edges.add(edge_key)
+    if edge_key in seen_edges:
+        return
+    edges.append(_relationship_edge(source_node["id"], target_node["id"], relation))
+    seen_edges.add(edge_key)
     relationship_log.append(
         {
             "source": source_node["label"],
@@ -4922,66 +4923,10 @@ def _build_ioc_relationship_graph(
         actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
         _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, actor_node, ioc_node, "uses", first_seen, last_seen)
 
-    related_doc_by_indicator = {
-        _indicator_id(doc.get("ioc_type", ""), doc.get("ioc_value", "")): doc
-        for doc in related_docs
-        if doc.get("ioc_type") and doc.get("ioc_value")
-    }
-    for entry in evidence_entries or []:
-        if len(nodes) >= 50 or len(edges) >= 100:
-            break
-        related_node = _relationship_node_for_indicator(
-            entry.get("ioc_type", ""),
-            entry.get("ioc_value", ""),
-            evidence_source=entry.get("evidence_source"),
-        )
-        _append_relationship(
-            nodes,
-            edges,
-            relationship_log,
-            seen_nodes,
-            seen_edges,
-            ioc_node,
-            related_node,
-            entry.get("relation") or "correlated_with",
-            entry.get("first_seen"),
-            entry.get("last_seen"),
-        )
-        related_doc = related_doc_by_indicator.get(entry.get("indicator"))
-        if not related_doc:
-            continue
-        rel_first = related_doc.get("first_seen") or related_doc.get("event_time") or entry.get("first_seen")
-        rel_last = related_doc.get("last_seen") or related_doc.get("processed_at") or entry.get("last_seen")
-        for actor in _relationship_actors(related_doc):
-            actor_node = _relationship_node(f"actor:{actor}", "actor", actor)
-            _append_relationship(
-                nodes,
-                edges,
-                relationship_log,
-                seen_nodes,
-                seen_edges,
-                actor_node,
-                related_node,
-                "uses",
-                rel_first,
-                rel_last,
-            )
-        for threat_type in related_doc.get("ai_threat_types") or related_doc.get("threat_type") or []:
-            if not _is_displayable_relationship_threat_type(threat_type):
-                continue
-            threat_node = _relationship_node(f"type:{threat_type}", "threat_type", threat_type)
-            _append_relationship(
-                nodes,
-                edges,
-                relationship_log,
-                seen_nodes,
-                seen_edges,
-                related_node,
-                threat_node,
-                "classified_as",
-                rel_first,
-                rel_last,
-            )
+    # source_evidence.related_iocs is a candidate/correlation list, not a
+    # documented attack-schema edge. Use it upstream to discover related docs,
+    # but do not emit it into graph/table rows as if it were a direct attack
+    # relationship.
 
     # Check if main IOC is a CVE pattern — create cve node instead
     _cve_pattern = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
@@ -5080,13 +5025,13 @@ def _build_ioc_relationship_graph(
             _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges, ioc_node, campaign_node, "same_campaign", observed, observed)
 
     # Hop 2: related IOCs (max 10, sorted by risk score desc).
-    # Keep this graph evidence-based: generic shared threat type is not a
-    # relationship, and actors that appear only on a peer IOC must not be shown
-    # as if they are connected to the searched IOC.
+    # Keep this graph evidence-based: generic shared threat type or shared
+    # actor labels are not direct attack relationships. Only documented
+    # campaign membership is emitted here; correlation-only rows remain hidden
+    # from the attack relationship UI.
     MAX_RELATED = 10
     MAX_NODES = 50
     MAX_EDGES = 100
-    center_actors = set(_relationship_actors(warehouse_doc))
     sorted_related = sorted(
         related_docs,
         key=lambda d: int(d.get("ai_risk_score") or 0),
@@ -5099,9 +5044,7 @@ def _build_ioc_relationship_graph(
         related_indicator = _indicator_id(related_doc.get("ioc_type", ""), related_doc.get("ioc_value", ""))
         if related_indicator == indicator:
             continue
-        peer_actors = set(_relationship_actors(related_doc))
-        has_shared_actor = bool(peer_actors & center_actors)
-        if not has_shared_actor and not related_doc.get("cluster_label"):
+        if related_doc.get("cluster_label") is None:
             continue
         hop2_nodes.append(related_doc)
 
@@ -5119,8 +5062,6 @@ def _build_ioc_relationship_graph(
         )
         rel_first = related_doc.get("first_seen") or related_doc.get("event_time")
         rel_last = related_doc.get("last_seen") or related_doc.get("processed_at")
-        peer_actors = _relationship_actors(related_doc)
-        shared_actors = [a for a in peer_actors if a in center_actors]
         cluster_label = related_doc.get("cluster_label")
 
         if cluster_label is not None:
@@ -5132,12 +5073,6 @@ def _build_ioc_relationship_graph(
                                  ioc_node, campaign_node, "same_campaign", rel_first, rel_last)
             _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges,
                                  related_node, campaign_node, "same_campaign", rel_first, rel_last)
-
-        if shared_actors:
-            for actor_name in shared_actors:
-                actor_node = _relationship_node(f"actor:{actor_name}", "actor", actor_name)
-                _append_relationship(nodes, edges, relationship_log, seen_nodes, seen_edges,
-                                     actor_node, related_node, "uses", rel_first, rel_last)
 
     first_datalake = datalake_docs[0] if datalake_docs else {}
     detail = _build_ioc_detail(warehouse_doc, datalake_docs)

@@ -660,6 +660,61 @@ def test_ioc_relationships_missing_query_does_not_collect_all_docs(client, monke
     assert response.json()["detail"] == "IOC not found"
 
 
+def test_ioc_relationship_log_deduplicates_edges_and_excludes_correlation_only_rows():
+    warehouse_doc = {
+        "ioc_type": "domain",
+        "ioc_value": "vitosc.xyz",
+        "ai_threat_types": ["Exploited Vulnerability"],
+        "ai_threat_actors": ["Conti"],
+        "first_seen": "2026-04-21T10:45:00Z",
+        "last_seen": "2026-04-29T10:41:00Z",
+    }
+    related_doc = {
+        "ioc_type": "domain",
+        "ioc_value": "kali.org",
+        "ai_threat_types": ["APT"],
+        "ai_threat_actors": ["Conti"],
+        "first_seen": "2026-04-21T10:45:00Z",
+        "last_seen": "2026-04-29T10:41:00Z",
+    }
+    evidence_entries = [
+        {
+            "ioc_type": "domain",
+            "ioc_value": "kali.org",
+            "indicator": dashboard_router._indicator_id("domain", "kali.org"),
+            "relation": "correlated_with",
+            "first_seen": "2026-04-21T10:45:00Z",
+            "last_seen": "2026-04-29T10:41:00Z",
+        },
+        {
+            "ioc_type": "domain",
+            "ioc_value": "kali.org",
+            "indicator": dashboard_router._indicator_id("domain", "kali.org"),
+            "relation": "correlated_with",
+            "first_seen": "2026-04-21T10:45:00Z",
+            "last_seen": "2026-04-29T10:41:00Z",
+        },
+    ]
+
+    payload = dashboard_router._build_ioc_relationship_graph(
+        warehouse_doc,
+        [],
+        [related_doc],
+        evidence_entries,
+    )
+
+    relationship_tuples = [
+        (item["source"], item["relationship"], item["target"])
+        for item in payload["relationship_log"]
+    ]
+    assert len(relationship_tuples) == len(set(relationship_tuples))
+    assert ("Conti", "uses", "vitosc.xyz") in relationship_tuples
+    assert ("vitosc.xyz", "classified_as", "Exploited Vulnerability") in relationship_tuples
+    assert ("vitosc.xyz", "correlated_with", "kali.org") not in relationship_tuples
+    assert ("Conti", "uses", "kali.org") not in relationship_tuples
+    assert ("kali.org", "classified_as", "APT") not in relationship_tuples
+
+
 def test_threat_type_detail_report(client):
     test_client, _ = client
     headers = _login(test_client)
