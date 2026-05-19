@@ -169,6 +169,11 @@ def main() -> int:
         action="store_true",
         help="Allow write mode even when dry-run finds zero warehouse-eligible documents",
     )
+    parser.add_argument(
+        "--skip-validation",
+        action="store_true",
+        help="Bypass validation logic: force all documents to warehouse_eligible=True (trust datalake filtering)",
+    )
     args = parser.parse_args()
 
     if args.write and (not args.date_from or not args.date_to):
@@ -200,6 +205,13 @@ def main() -> int:
         try:
             build_result = build_enriched_ioc_document(ioc_docs)
             pipeline_doc = build_result["document"]
+            if args.skip_validation:
+                pipeline_doc = {
+                    **pipeline_doc,
+                    "validation_status": VALIDATED,
+                    "validation_reasons": [],
+                    "warehouse_eligible": True,
+                }
             status = pipeline_doc["validation_status"]
             status_counts[status] += 1
             reason_counts.update(
@@ -258,11 +270,17 @@ def main() -> int:
 
     if args.write and failed == 0:
         written = 0
-        for item in built_documents:
-            if client.save_to_warehouse(dict(item["document"])):
-                written += 1
-            else:
-                failed += 1
+        # Use bulk write for speed (same as main pipeline)
+        BULK_CHUNK_SIZE = 500
+        for chunk_start in range(0, len(built_documents), BULK_CHUNK_SIZE):
+            chunk = built_documents[chunk_start:chunk_start + BULK_CHUNK_SIZE]
+            bulk_result = client.bulk_save_to_warehouse(chunk)
+            chunk_written = int(bulk_result.get("success", 0) or 0)
+            chunk_failed = int(bulk_result.get("failed", 0) or 0)
+            written += chunk_written
+            failed += chunk_failed
+            if len(built_documents) > BULK_CHUNK_SIZE:
+                print(f"  Bulk write progress: {min(chunk_start + BULK_CHUNK_SIZE, len(built_documents))}/{len(built_documents)} ({written} written, {failed} failed)")
         summary["written"] = written
         summary["failed"] = failed
 
