@@ -1823,8 +1823,16 @@ def _warehouse_dashboard_aggs(
             "aggs": {
                 "severity": {"filters": {"filters": _severity_filters_config("severity")}},
                 "sources": {"terms": {"field": "source_name", "size": 10}},
+                "high_severity_sources": {
+                    "filter": {"terms": {"severity": ["high", "critical"]}},
+                    "aggs": {"sources": {"terms": {"field": "source_name", "size": 10}}},
+                },
                 "sectors": {"terms": {"field": "target_sector_name", "size": 5, "missing": "Other"}},
             },
+        },
+        "high_severity_sources": {
+            "filter": {"terms": {"severity": ["high", "critical"]}},
+            "aggs": {"sources": {"terms": {"field": "source_name", "size": 25, "missing": "unknown"}}},
         },
         "sectors": {
             "terms": {"field": "target_sector_name", "size": 25, "missing": "Other"},
@@ -2956,16 +2964,19 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
             if candidate_latitude is not None and candidate_longitude is not None:
                 latitude, longitude = candidate_latitude, candidate_longitude
                 break
+        # Only count sources that contributed to High or Critical severity docs.
+        # "High Confidence Source" should mean: a trusted source that confirmed
+        # a serious threat (not just any low-severity noise).
         source_counter = Counter(
             source
             for doc in docs
+            if _source_severity(doc) in {"high", "critical"}
             for source in _normalize_sources(doc)
             if _is_high_confidence_source(source) or _safe_float(doc.get("confidence"), 0.0) >= 9.0
         )
         trusted_sources = [
             source
-            for source, count in source_counter.most_common(4)
-            if count >= 5
+            for source, _count in source_counter.most_common(4)
         ]
         trusted_source_union.update(trusted_sources)
         origins.append(
@@ -4377,12 +4388,15 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
         value_without_clean = max(total_count - clean_count, 0)
         if value_without_clean == 0:
             continue
-        source_buckets = (bucket.get("sources") or {}).get("buckets") or []
+        # Only count sources that contributed to High/Critical severity docs.
+        # If a country has no high/critical attacks, it gets 0 high-confidence sources.
+        high_sev_sources = (
+            (bucket.get("high_severity_sources") or {}).get("sources") or {}
+        ).get("buckets") or []
         trusted_sources = [
             str(source_bucket.get("key") or "")
-            for source_bucket in source_buckets
+            for source_bucket in high_sev_sources
             if _is_high_confidence_source(source_bucket.get("key"))
-            or int(source_bucket.get("doc_count") or 0) >= 5
         ][:4]
         trusted_source_union.update(trusted_sources)
         sector_buckets = (bucket.get("sectors") or {}).get("buckets") or []
@@ -4408,10 +4422,13 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
                 "trusted_sources": trusted_sources,
             }
         )
-    all_source_buckets = (aggs.get("sources") or {}).get("buckets") or []
+    # Top-level union: only count trusted sources that contributed to High/Critical docs.
+    high_sev_top = (
+        (aggs.get("high_severity_sources") or {}).get("sources") or {}
+    ).get("buckets") or []
     all_trusted_sources = {
         str(source_bucket.get("key") or "")
-        for source_bucket in all_source_buckets
+        for source_bucket in high_sev_top
         if _is_high_confidence_source(source_bucket.get("key"))
     }
     trusted_source_union.update(all_trusted_sources)
