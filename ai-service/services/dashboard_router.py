@@ -4154,25 +4154,36 @@ def _build_threat_level_from_aggregations(
     top_sectors = []
     cii_present = False
     sector_count = 0
-    for bucket in ((aggs.get("sectors") or {}).get("buckets") or [])[:10]:
-        key = str(bucket.get("key") or "").strip()
-        if not key or key.lower() in {"none", "null", "unknown", "general/multiple"}:
+    # Aggregate raw sector keys into normalized display names (handles dirty data
+    # where same sector appears as both "technology" and "Information Technology...")
+    normalized_buckets: Dict[str, Dict[str, Any]] = {}
+    for bucket in ((aggs.get("sectors") or {}).get("buckets") or []):
+        raw_key = str(bucket.get("key") or "").strip()
+        if not raw_key or raw_key.lower() in {"none", "null", "unknown", "general/multiple"}:
             continue
-        sev_buckets = (bucket.get("severity") or {}).get("buckets") or []
+        display_name = _sector_display_name(raw_key) or raw_key
+        existing = normalized_buckets.setdefault(display_name, {"display_name": display_name, "raw_keys": [], "count": 0, "severity_buckets": []})
+        existing["raw_keys"].append(raw_key)
+        existing["count"] += int(bucket.get("doc_count") or 0)
+        existing["severity_buckets"].extend((bucket.get("severity") or {}).get("buckets") or [])
+    # Sort by count desc and process top 10
+    for normalized in sorted(normalized_buckets.values(), key=lambda v: v["count"], reverse=True)[:10]:
+        display_name = normalized["display_name"]
         has_high_crit = any(
             str(sb.get("key") or "").lower() in {"critical", "high"} and int(sb.get("doc_count") or 0) > 0
-            for sb in sev_buckets
+            for sb in normalized["severity_buckets"]
         )
         if has_high_crit:
             sector_count += 1
-            if key.lower().replace(" ", "_") in cii_sectors or key.lower() in cii_sectors:
+            lowered = display_name.lower()
+            if lowered.replace(" ", "_") in cii_sectors or lowered in cii_sectors or "technology" in lowered or "government" in lowered or "financial" in lowered or "infrastructure" in lowered:
                 cii_present = True
         if len(top_sectors) < 5:
             top_sectors.append({
-                "sector": key,
-                "sector_name": key,
-                "sector_name_th": key,
-                "count": int(bucket.get("doc_count") or 0),
+                "sector": display_name,
+                "sector_name": display_name,
+                "sector_name_th": display_name,
+                "count": normalized["count"],
             })
     weighted_sector_count = sector_count * (1.5 if cii_present else 1.0)
 
@@ -4306,7 +4317,8 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
         ][:4]
         trusted_source_union.update(trusted_sources)
         sector_bucket = next(iter((bucket.get("sectors") or {}).get("buckets") or []), None)
-        primary_sector = str((sector_bucket or {}).get("key") or "General/Multiple")
+        raw_sector = str((sector_bucket or {}).get("key") or "")
+        primary_sector = _sector_display_name(raw_sector) or "General/Multiple"
         origins.append(
             {
                 "country_code": _country_code_from_name(country),
@@ -5168,11 +5180,18 @@ def _build_threat_type_detail_payload_from_aggs(
         for b in ioc_type_buckets
     ]
 
-    # Sectors
+    # Sectors - normalize raw keys to canonical display names
     sector_buckets = (aggs.get("sectors") or {}).get("buckets") or []
+    sector_totals: Dict[str, int] = {}
+    for b in sector_buckets:
+        raw = str(b.get("key") or "").strip()
+        if not raw:
+            continue
+        display = _sector_display_name(raw) or raw
+        sector_totals[display] = sector_totals.get(display, 0) + int(b.get("doc_count") or 0)
     targeted_sectors = [
-        {"sector": str(b.get("key") or "General/Multiple"), "count": int(b.get("doc_count") or 0), "percentage": _percentage(int(b.get("doc_count") or 0), es_total)}
-        for b in sector_buckets[:10]
+        {"sector": k, "count": v, "percentage": _percentage(v, es_total)}
+        for k, v in sorted(sector_totals.items(), key=lambda kv: kv[1], reverse=True)[:10]
     ]
 
     # Actors / sources
@@ -5457,9 +5476,16 @@ def _build_threat_landscape_payload_from_aggs(
     actor_buckets = (warehouse_aggs.get("threat_actors") or {}).get("buckets") or []
     threat_actors_list = [{"label": str(b.get("key") or ""), "value": int(b.get("doc_count") or 0)} for b in actor_buckets[:10] if str(b.get("key") or "").strip()]
 
-    # Sectors
+    # Sectors - normalize display names to merge "technology" with "Information Technology..."
     sector_buckets = (warehouse_aggs.get("sectors") or {}).get("buckets") or []
-    sectors_list = [{"label": str(b.get("key") or "General/Multiple"), "value": int(b.get("doc_count") or 0)} for b in sector_buckets[:10]]
+    sector_totals: Dict[str, int] = {}
+    for b in sector_buckets:
+        raw = str(b.get("key") or "").strip()
+        if not raw:
+            continue
+        display = _sector_display_name(raw) or raw
+        sector_totals[display] = sector_totals.get(display, 0) + int(b.get("doc_count") or 0)
+    sectors_list = [{"label": k, "value": v} for k, v in sorted(sector_totals.items(), key=lambda kv: kv[1], reverse=True)[:10]]
 
     # Union sources (warehouse + datalake buckets)
     wh_source_buckets = (warehouse_aggs.get("sources") or {}).get("buckets") or []
