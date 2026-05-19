@@ -7129,18 +7129,30 @@ def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str,
         }
         for b in ioc_type_buckets
     ]
+    threat_type_buckets = (aggs.get("threat_types") or {}).get("buckets") or []
+    top_threat_types = [
+        {"label": str(b.get("key") or ""), "value": int(b.get("doc_count") or 0)}
+        for b in threat_type_buckets[:10]
+    ]
+
+    # Accurate distinct counts from cardinality aggs (not capped at top-N)
+    sources_count = int((aggs.get("source_count") or {}).get("value") or len(source_buckets))
+    threat_types_count = int((aggs.get("threat_type_cardinality") or {}).get("value") or len(threat_type_buckets))
 
     payload = {
         "summary": {
             "total_rows": es_total,
             "generated_for": f"{start_iso} to {end_iso}",
             "high_risk_count": high_risk_count,
+            "sources_count": sources_count,
+            "threat_types_count": threat_types_count,
         },
         "filters": request.model_dump(exclude_none=True),
         "charts": {
             "severity_distribution": _build_severity_distribution_from_counts(severity_counts),
             "top_sources": top_sources,
             "top_ioc_types": top_ioc_types,
+            "top_threat_types": top_threat_types,
         },
         "items": items,
     }
