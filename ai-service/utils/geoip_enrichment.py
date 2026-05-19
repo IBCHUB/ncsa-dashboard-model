@@ -155,8 +155,9 @@ def enrich_geo_country(
     Returns a NEW dict (no mutation). If the document already has a
     geo_country or is not an IP-type IOC, returns it unchanged.
     """
+    _INVALID_GEO = {"", "none", "null", "n/a", "unknown"}
     existing_country = str(doc.get(country_field) or "").strip()
-    if existing_country:
+    if existing_country and existing_country.lower() not in _INVALID_GEO:
         return doc
 
     ioc_type = str(doc.get(type_field, "")).strip().lower()
