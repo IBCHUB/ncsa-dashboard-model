@@ -3791,6 +3791,35 @@ def _build_aggregated_report_payload(
         ranking_items.append(item)
         visible_rank += 1
 
+    # Merge ranking items with the same display label.
+    # This happens when multiple raw field values map to the same display name
+    # (e.g. "education", "general", null all map to "Other" for sectors).
+    merged: Dict[str, Dict[str, Any]] = {}
+    for item in ranking_items:
+        label = item["label"]
+        if label in merged:
+            existing = merged[label]
+            existing["total_events"] += item["total_events"]
+            for sev in ("critical", "high", "medium", "low", "clean"):
+                existing["severity_distribution"][sev] += item["severity_distribution"].get(sev, 0)
+            # Keep the top_asset / main_threat_type from the larger bucket
+            if item["total_events"] > (existing.get("_largest_bucket", 0)):
+                existing["top_asset"] = item["top_asset"]
+                existing["main_threat_type"] = item["main_threat_type"]
+                existing["sample_iocs"] = _unique_list(
+                    (existing.get("sample_iocs") or []) + (item.get("sample_iocs") or []),
+                    limit=5,
+                )
+                existing["_largest_bucket"] = item["total_events"]
+            if item.get("last_seen") and (not existing.get("last_seen") or item["last_seen"] > existing["last_seen"]):
+                existing["last_seen"] = item["last_seen"]
+        else:
+            merged[label] = {**item, "_largest_bucket": item["total_events"]}
+    ranking_items = sorted(merged.values(), key=lambda x: x["total_events"], reverse=True)
+    for idx, item in enumerate(ranking_items, 1):
+        item["rank"] = idx
+        item.pop("_largest_bucket", None)
+
     if report_key == "attack-origins" and not ranking_items and total_events > 0:
         severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "clean": 0}
         for severity_bucket in ((aggs.get("severity_total") or {}).get("buckets") or []):
