@@ -22,6 +22,7 @@ AI_SERVICE_ROOT = Path(__file__).resolve().parents[2]
 if str(AI_SERVICE_ROOT) not in sys.path:
     sys.path.insert(0, str(AI_SERVICE_ROOT))
 
+from datalake_adapters import normalize_datalake_hit  # noqa: E402
 from elastic_client import ElasticClient  # noqa: E402
 from models.validation import REJECTED, VALIDATED  # noqa: E402
 from models.campaign_clusterer import cluster_iocs, build_cluster_summary  # noqa: E402
@@ -139,10 +140,23 @@ def load_documents(client: ElasticClient, date_from: Optional[str], date_to: Opt
 
     print(f"  Loading datalake documents via scroll API...")
     hits = client.scroll_search(client.datalake_index, body, page_size=2000)
-    loaded = [hit["_source"] | {"_id": hit["_id"]} for hit in hits]
+    raw_docs = [hit["_source"] | {"_id": hit["_id"]} for hit in hits]
     if limit > 0:
-        loaded = loaded[:limit]
-    print(f"  Loaded {len(loaded)} documents from datalake")
+        raw_docs = raw_docs[:limit]
+
+    # Normalize through adapter layer (same as main pipeline)
+    loaded = []
+    quarantined = 0
+    for raw in raw_docs:
+        try:
+            normalized = normalize_datalake_hit(raw)
+            if normalized and normalized.get("adapter_status") != "quarantined":
+                loaded.append(normalized | {"_id": raw["_id"]})
+            else:
+                quarantined += 1
+        except Exception:
+            quarantined += 1
+    print(f"  Loaded {len(raw_docs)} raw documents, normalized {len(loaded)}, quarantined {quarantined}")
     return loaded
 
 
