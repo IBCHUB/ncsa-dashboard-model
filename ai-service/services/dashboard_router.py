@@ -1353,7 +1353,24 @@ def _source_display_name(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
         return "Unknown"
-    return SOURCE_DISPLAY_NAMES.get(raw, raw.replace("_", " "))
+    if raw in SOURCE_DISPLAY_NAMES:
+        return SOURCE_DISPLAY_NAMES[raw]
+    lowered = raw.lower()
+    if lowered.startswith("cyberint_iocs-"):
+        return "Cyberint IOC Feed"
+    if lowered.startswith("tcti-feeds-sandbox"):
+        return "Sandbox Analysis"
+    if lowered.startswith("tcti-feeds-darkreading"):
+        return "DarkReading News"
+    if lowered.startswith("tcti-feeds-bleeping"):
+        return "BleepingComputer News"
+    if lowered.startswith("tcti-feeds-thehackernews"):
+        return "The Hacker News"
+    if lowered.startswith("tcti-feeds-zoneh"):
+        return "Zone-H Defacement Feed"
+    if lowered.startswith("misp_attributes"):
+        return "MISP Attribute Feed"
+    return raw.replace("_", " ")
 
 
 def _format_source_terms(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1408,10 +1425,16 @@ def _source_category(value: Any) -> str:
     source = str(value or "").strip().lower()
     if not source:
         return "other"
-    if source in {"cyberint_iocs", "sandbox"} or source.startswith("cyberint") or "cyble threat intelligence" in source:
+    if source in {"cyberint_iocs", "sandbox"} or source.startswith("cyberint") or "cyble threat intelligence" in source or source.startswith("misp"):
         return "trusted"
     if source in {"zone-h", "darkreading", "thehackernews", "the hacker news"} or "news" in source:
         return "news"
+    if "tcti-feeds-sandbox" in source or "tcti-feeds-cyberint" in source or "misp_attributes" in source:
+        return "trusted"
+    if "tcti-feeds-darkreading" in source or "tcti-feeds-bleeping" in source or "tcti-feeds-thehackernews" in source or "tcti-feeds-zoneh" in source:
+        return "news"
+    if source.startswith("cyberint_iocs-"):
+        return "trusted"
     return "other"
 
 
@@ -1934,7 +1957,7 @@ def _datalake_dashboard_aggs(
             }
         },
         "aggs": {
-            "sources": {"terms": {"field": "source_name", "size": 25, "missing": "unknown"}},
+            "sources": {"terms": {"field": "_index", "size": 50}},
             "ioc_types": {"terms": {"field": "ioc_type", "size": 25, "missing": "unknown"}},
             "threat_types": {"terms": {"field": "threat_type", "size": 25, "missing": "Other"}},
             "severity_counts": {"filters": {"filters": _severity_filters_config("severity")}},
@@ -1944,15 +1967,13 @@ def _datalake_dashboard_aggs(
                         "must": [
                             {"exists": {"field": "ioc_value"}},
                             {"exists": {"field": "ioc_type"}},
-                            {"exists": {"field": "source_name"}},
-                            {"exists": {"field": "severity"}},
                         ]
                     }
                 }
             },
             "import_timeline": {
                 "date_histogram": date_histogram,
-                "aggs": {"sources": {"terms": {"field": "source_name", "size": 25, "missing": "unknown"}}},
+                "aggs": {"sources": {"terms": {"field": "_index", "size": 50}}},
             },
         },
     }
@@ -5884,7 +5905,7 @@ def executive_dashboard(
     treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("threat_types") or [])
     sector_treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("sector_terms") or [])
     threat_level = _build_threat_level_from_aggregations(current_stats, current_aggs, now=now)
-    primary_sector = threat_level["top_sectors"][0] if threat_level["top_sectors"] else {"sector_name": "", "count": 0}
+    primary_sector = threat_level["top_sectors"][0] if threat_level["top_sectors"] else {"sector_name": None, "count": 0}
     attack_origin_map = _build_attack_origin_map_from_aggs(current_aggs)
     is_single_day = start_date == end_date
     today_bkk = _to_bangkok_date(datetime.now(UTC))
@@ -5921,7 +5942,7 @@ def executive_dashboard(
             "score": threat_level["score"],
             "delta_percent": round(threat_level["inputs"]["spike_ratio"] * 10, 2),
             "primary_sector": {
-                "name": primary_sector.get("sector_name", "Other"),
+                "name": primary_sector.get("sector_name") or None,
                 "value": primary_sector.get("count", 0),
             },
         },
@@ -6471,17 +6492,21 @@ def attack_time_report(
     quiet_time_range = "-"
     if cells and any(int(c.get("value") or 0) > 0 for c in cells):
         quiet_cell = min(cells, key=lambda c: int(c.get("value") or 0))
-        quiet_day = str(quiet_cell.get("y", "-"))
-        quiet_x = str(quiet_cell.get("x", "00:00"))
-        # x label may be "00:00" (day-hour mode) or already a range like "00:00 - 03:00"
-        if " - " in quiet_x:
-            quiet_time_range = quiet_x
-        else:
-            try:
-                start_hour = int(quiet_x.split(":")[0])
-                quiet_time_range = _hour_range_label((start_hour // 3) * 3, span=3)
-            except (ValueError, IndexError):
+        heatmap_mode = heatmap.get("mode", "day-hour")
+        if heatmap_mode == "day-hour":
+            quiet_day = str(quiet_cell.get("y", "-"))
+            quiet_x = str(quiet_cell.get("x", "00:00"))
+            if " - " in quiet_x:
                 quiet_time_range = quiet_x
+            else:
+                try:
+                    start_hour = int(quiet_x.split(":")[0])
+                    quiet_time_range = _hour_range_label((start_hour // 3) * 3, span=3)
+                except (ValueError, IndexError):
+                    quiet_time_range = quiet_x
+        else:
+            quiet_day = str(quiet_cell.get("x", "-"))
+            quiet_time_range = str(quiet_cell.get("y", "-"))
 
     # Paginated events - fetch only the current page from ES (unbounded pagination)
     page_result = _search_warehouse_docs(
