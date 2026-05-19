@@ -5107,6 +5107,85 @@ def _date_label_for_doc(doc: Dict[str, Any]) -> str:
     return event_time.astimezone(BANGKOK_TZ).date().isoformat()
 
 
+def _build_threat_type_detail_payload_from_aggs(
+    *,
+    threat_type: str,
+    aggs: Dict[str, Any],
+    page_docs: Sequence[Dict[str, Any]],
+    page: int,
+    page_size: int,
+    es_total: int,
+) -> Dict[str, Any]:
+    """Build threat type detail entirely from ES aggregations - accurate at any scale."""
+    severity_buckets = (aggs.get("severity_counts") or {}).get("buckets") or {}
+    severity_counts = {key: int((severity_buckets.get(key) or {}).get("doc_count") or 0) for key in ("critical", "high", "medium", "low", "clean")}
+
+    # IOC type distribution from ES terms agg
+    ioc_type_buckets = (aggs.get("ioc_types") or {}).get("buckets") or []
+    ioc_type_distribution = [
+        {
+            "ioc_type": str(b.get("key") or ""),
+            "label": IOC_TYPE_LABELS.get(str(b.get("key") or ""), str(b.get("key") or "").upper()),
+            "count": int(b.get("doc_count") or 0),
+            "percentage": _percentage(int(b.get("doc_count") or 0), es_total),
+        }
+        for b in ioc_type_buckets
+    ]
+
+    # Sectors
+    sector_buckets = (aggs.get("sectors") or {}).get("buckets") or []
+    targeted_sectors = [
+        {"sector": str(b.get("key") or "General/Multiple"), "count": int(b.get("doc_count") or 0), "percentage": _percentage(int(b.get("doc_count") or 0), es_total)}
+        for b in sector_buckets[:10]
+    ]
+
+    # Actors / sources
+    actor_buckets = (aggs.get("threat_actors") or {}).get("buckets") or []
+    related_attackers = [
+        {"actor": str(b.get("key") or ""), "count": int(b.get("doc_count") or 0), "percentage": _percentage(int(b.get("doc_count") or 0), es_total)}
+        for b in actor_buckets[:20] if str(b.get("key") or "").strip()
+    ]
+    source_buckets = (aggs.get("sources") or {}).get("buckets") or []
+    sources_list = [
+        {"source": str(b.get("key") or "unknown"), "count": int(b.get("doc_count") or 0), "percentage": _percentage(int(b.get("doc_count") or 0), es_total)}
+        for b in source_buckets[:20]
+    ]
+
+    # Trend from existing trend agg (if available)
+    trend_buckets = (aggs.get("trend") or {}).get("buckets") or []
+    trend = [
+        {"date": str(b.get("key_as_string") or ""), "count": int(b.get("doc_count") or 0)}
+        for b in trend_buckets if b.get("key_as_string")
+    ]
+
+    # Page items (paginated docs from separate ES query)
+    related_iocs = [_build_ioc_record(((page - 1) * page_size) + index + 1, doc) for index, doc in enumerate(page_docs)]
+
+    return {
+        "threat_type": threat_type,
+        "summary": {
+            "total_iocs": es_total,
+            "critical": severity_counts.get("critical", 0),
+            "high": severity_counts.get("high", 0),
+            "medium": severity_counts.get("medium", 0),
+            "low": severity_counts.get("low", 0),
+            "clean": severity_counts.get("clean", 0),
+        },
+        "ioc_type_distribution": ioc_type_distribution,
+        "trend": trend,
+        "targeted_sectors": targeted_sectors,
+        "related_attackers": related_attackers,
+        "related_mitre_techniques": [],  # MITRE techniques agg not added yet
+        "sources": sources_list,
+        "related_iocs": related_iocs,
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": es_total,
+        },
+    }
+
+
 def _build_threat_type_detail_payload(
     threat_type: str,
     docs: Sequence[Dict[str, Any]],
@@ -5854,7 +5933,22 @@ def threat_type_report_detail(
     normalized_threat_type = str(threat_type or "").strip()
     if not normalized_threat_type:
         raise HTTPException(status_code=400, detail="Threat type is required")
-    result = _search_warehouse_docs(
+
+    # Build distributions via ES aggregations - accurate even on 949K docs
+    aggs = _warehouse_dashboard_aggs(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=[normalized_threat_type],
+        severities=severities,
+        query=query,
+        include_trend=True,
+        time_mode=TIME_MODE_OBSERVED,
+    )
+    es_total = int(aggs.get("total") or 0)
+
+    # Paginated docs for "related_iocs" table
+    page_result = _search_warehouse_docs(
         query_text=query or "*",
         start_date=start_date,
         end_date=end_date,
@@ -5862,19 +5956,20 @@ def threat_type_report_detail(
         sources=sources,
         severities=severities,
         sort_by="risk",
-        limit=10000,
-        offset=0,
+        limit=page_size,
+        offset=max(page - 1, 0) * page_size,
         time_mode=TIME_MODE_OBSERVED,
     )
-    es_total = _search_total(result)
-    docs = _hits_to_docs(result)
-    docs = sorted(
-        docs,
-        key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
-        reverse=True,
-    )
-    display_total = max(es_total, len(docs))
-    return _success(_build_threat_type_detail_payload(normalized_threat_type, docs, page, page_size, es_total=display_total))
+    page_docs = _hits_to_docs(page_result)
+
+    return _success(_build_threat_type_detail_payload_from_aggs(
+        threat_type=normalized_threat_type,
+        aggs=aggs,
+        page_docs=page_docs,
+        page=page,
+        page_size=page_size,
+        es_total=es_total,
+    ))
 
 
 @router.get("/operations/reports/{report_key}", tags=["Operations"])
