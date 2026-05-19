@@ -54,6 +54,7 @@ def scroll_warehouse(
             "_source": [
                 "ioc_value", "ioc_type", "description",
                 "sources", "source_objects", "source_count",
+                "external_evidence_sources", "source_risk_score",
                 "ai_threat_types", "ai_threat_actors", "ai_mitre_techniques",
                 "ai_classification_confidence", "ai_risk_score", "ai_severity",
                 "domain_age_days", "ioc_age_days",
@@ -107,6 +108,19 @@ def rescore_doc(doc: Dict[str, Any]) -> Dict[str, Any] | None:
                 for n in raw_names
                 if isinstance(n, str) and n.strip()
             ]
+
+    # Merge enrichment sources (VirusTotal, MISP, etc.) that are stored
+    # in a separate field — the original pipeline counted these for
+    # cross_source scoring but rescore was missing them.
+    evidence_sources = src.get("external_evidence_sources") or []
+    existing_names = {o["name"] for o in source_objects}
+    source_risk_score = src.get("source_risk_score") or 0
+    for ev in evidence_sources:
+        if isinstance(ev, str) and ev.strip() and ev not in existing_names:
+            source_objects.append(
+                {"name": ev, "confidence": source_risk_score, "type": "source_evidence"}
+            )
+            existing_names.add(ev)
 
     threat_types = src.get("ai_threat_types") or []
     threat_actors = src.get("ai_threat_actors") or []
