@@ -1641,7 +1641,7 @@ def _build_attack_time_heatmap_from_aggs(
                 }
             }
         )
-    histogram_field = "last_seen" if time_mode == TIME_MODE_OBSERVED else "processed_at"
+    histogram_field = "event_time" if time_mode == TIME_MODE_OBSERVED else "processed_at"
     date_histogram: Dict[str, Any] = {
         "field": histogram_field,
         "fixed_interval": "3h",
@@ -1744,7 +1744,7 @@ def _warehouse_dashboard_aggs(
                 }
             }
         )
-    histogram_field = "last_seen" if time_mode == TIME_MODE_OBSERVED else "processed_at"
+    histogram_field = "event_time" if time_mode == TIME_MODE_OBSERVED else "processed_at"
     date_histogram: Dict[str, Any] = {
         "field": histogram_field,
         "calendar_interval": _aggregation_interval(start_date, end_date) if include_trend else "hour",
@@ -3691,7 +3691,7 @@ def _build_aggregated_report_payload(
     if dimension.get("missing") is not None:
         terms_config["missing"] = dimension["missing"]
 
-    report_time_field = "last_seen" if time_mode == TIME_MODE_OBSERVED else "processed_at"
+    report_time_field = "event_time" if time_mode == TIME_MODE_OBSERVED else "processed_at"
     timeline_histogram: Dict[str, Any] = {
         "field": report_time_field,
         "calendar_interval": interval,
