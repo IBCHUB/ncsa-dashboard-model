@@ -1135,8 +1135,9 @@ def _scroll_all_news_docs(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     sources: Optional[List[str]] = None,
+    limit: int = 10000,
 ) -> List[Dict[str, Any]]:
-    """Fetch ALL matching news documents via scroll (no size cap)."""
+    """Fetch up to `limit` matching news documents (most recent first)."""
     client = get_elastic_client()
     filters: List[Dict[str, Any]] = [
         {
@@ -1162,7 +1163,16 @@ def _scroll_all_news_docs(
     if date_filter:
         filters.append(date_filter)
     sort = [{"published_at": {"order": "desc", "missing": "_last", "unmapped_type": "date"}}]
-    return _scroll_all_documents(client.warehouse_index, filters=filters, sort=sort)
+    # Cap at `limit` most recent news docs to bound work
+    body = {
+        "size": min(limit, 10000),
+        "track_total_hits": False,
+        "query": {"bool": {"filter": filters}},
+        "sort": sort,
+    }
+    result = _safe_search(client.warehouse_index, body)
+    hits = (result.get("hits") or {}).get("hits") or []
+    return [{"_id": hit.get("_id"), **(hit.get("_source") or {})} for hit in hits]
 
 
 def _search_total(result: Dict[str, Any]) -> int:
@@ -1848,6 +1858,32 @@ def _datalake_search_filters(
     if date_filter:
         filters.append(date_filter)
     return filters
+
+
+def _terms_only_agg(
+    index_name: str,
+    field: str,
+    *,
+    size: int = 200,
+    missing: Optional[str] = None,
+    filters: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Lightweight ES terms aggregation - returns ONE terms bucket only.
+
+    Use this for /lookups/* endpoints to avoid the heavy 15-aggregation
+    cost of _warehouse_dashboard_aggs / _datalake_dashboard_aggs.
+    """
+    terms_agg: Dict[str, Any] = {"field": field, "size": size}
+    if missing is not None:
+        terms_agg["missing"] = missing
+    body = {
+        "size": 0,
+        "track_total_hits": False,
+        "query": {"bool": {"filter": filters or []}},
+        "aggs": {"items": {"terms": terms_agg}},
+    }
+    result = _safe_search(index_name, body)
+    return ((result.get("aggregations") or {}).get("items") or {}).get("buckets") or []
 
 
 def _datalake_dashboard_aggs(
@@ -5694,12 +5730,14 @@ def list_threat_types(active: bool = True, query: Optional[str] = None, current_
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    warehouse_aggs = _warehouse_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
-    datalake_aggs = _datalake_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
+    client = get_elastic_client()
+    # Lightweight terms-only aggregation (no other expensive aggs)
+    wh_buckets = _terms_only_agg(client.warehouse_index, "ai_threat_types", size=200)
+    dl_buckets = _terms_only_agg(client.datalake_index, "threat_type", size=200)
     counts = Counter()
-    for bucket in ((warehouse_aggs.get("threat_types") or {}).get("buckets") or []):
+    for bucket in wh_buckets:
         counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
-    for bucket in ((datalake_aggs.get("threat_types") or {}).get("buckets") or []):
+    for bucket in dl_buckets:
         counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
     items = _lookup_items_from_counts(counts)
     if query:
@@ -5725,12 +5763,14 @@ def list_sources(active: bool = True, query: Optional[str] = None, current_user:
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    warehouse_aggs = _warehouse_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
-    datalake_aggs = _datalake_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
+    client = get_elastic_client()
+    # Lightweight terms-only aggregation
+    wh_buckets = _terms_only_agg(client.warehouse_index, "source_name", size=200, missing="unknown")
+    dl_buckets = _terms_only_agg(client.datalake_index, "source_name", size=200, missing="unknown")
     counts = Counter()
-    for bucket in ((warehouse_aggs.get("sources") or {}).get("buckets") or []):
+    for bucket in wh_buckets:
         counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
-    for bucket in ((datalake_aggs.get("sources") or {}).get("buckets") or []):
+    for bucket in dl_buckets:
         counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
     items = _lookup_items_from_counts(counts)
     items = [{**item, "label": _source_display_name(item.get("label") or item.get("value"))} for item in items]
@@ -5745,9 +5785,11 @@ def list_sectors(active: bool = True, query: Optional[str] = None, current_user:
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    warehouse_aggs = _warehouse_dashboard_aggs(time_mode=TIME_MODE_OBSERVED)
+    client = get_elastic_client()
+    # Lightweight terms-only aggregation
+    buckets = _terms_only_agg(client.warehouse_index, "target_sector_name", size=200, missing="General/Multiple")
     items = []
-    for bucket in ((warehouse_aggs.get("sectors") or {}).get("buckets") or []):
+    for bucket in buckets:
         raw_label = str(bucket.get("key") or "").strip()
         label = _sector_display_name(raw_label)
         if not label:
@@ -6258,8 +6300,31 @@ def cve_intelligence_detail(cve_id: str, current_user: Dict[str, Any] = Depends(
     normalized_cve = str(cve_id or "").strip().upper()
     if not CVE_PATTERN.fullmatch(normalized_cve):
         raise HTTPException(status_code=400, detail="Invalid CVE identifier")
-    warehouse_docs = _hits_to_docs(_search_warehouse_docs(query_text=normalized_cve, sort_by="risk", limit=10000))
-    datalake_docs = _hits_to_docs(_search_datalake_docs(query_text=normalized_cve, limit=10000))
+    # Targeted ES filter for this specific CVE - much faster than text search
+    client = get_elastic_client()
+    cve_filter = {
+        "bool": {
+            "should": [
+                {"term": {"ioc_value": normalized_cve}},
+                {"match_phrase": {"description": normalized_cve}},
+                {"match_phrase": {"reference": normalized_cve}},
+            ],
+            "minimum_should_match": 1,
+        }
+    }
+    wh_body = {
+        "size": 500,
+        "track_total_hits": True,
+        "query": {"bool": {"filter": [cve_filter]}},
+        "sort": [{"ai_risk_score": {"order": "desc", "missing": "_last"}}],
+    }
+    dl_body = {
+        "size": 500,
+        "track_total_hits": True,
+        "query": {"bool": {"filter": [cve_filter]}},
+    }
+    warehouse_docs = _hits_to_docs(_safe_search(client.warehouse_index, wh_body))
+    datalake_docs = _hits_to_docs(_safe_search(client.datalake_index, dl_body))
     records = _build_cve_records(warehouse_docs, datalake_docs)
     record = next((item for item in records if item["cve_id"] == normalized_cve), None)
     if not record:
@@ -6382,22 +6447,23 @@ def attack_time_report(
             except (ValueError, IndexError):
                 quiet_time_range = quiet_x
 
-    # Get paginated events + accurate total (limit 10K for safety)
-    docs, es_total_events = _collect_ioc_docs(
-        query=query,
+    # Paginated events - fetch only the current page from ES (unbounded pagination)
+    page_result = _search_warehouse_docs(
+        query_text=query or "*",
         start_date=start_date,
         end_date=end_date,
         threat_types=threat_types,
         sources=sources,
         severities=severities,
         sort_by="time",
-        sort_order="desc",
-        return_es_total=True,
+        limit=page_size,
+        offset=max(page - 1, 0) * page_size,
         time_mode=TIME_MODE_OBSERVED,
     )
-    total_events = es_total_events
-    sorted_events = sorted(docs, key=lambda item: _pick_display_time_in_range(item, TIME_MODE_OBSERVED, start_date, end_date) or datetime.min.replace(tzinfo=UTC), reverse=True)
-    paged_items = [_attack_time_event_row(event, TIME_MODE_OBSERVED, start_date, end_date) for event in _page_slice(sorted_events, page, page_size)]
+    page_docs = _hits_to_docs(page_result)
+    total_events = _search_total(page_result)
+    paged_items = [_attack_time_event_row(event, TIME_MODE_OBSERVED, start_date, end_date) for event in page_docs]
+    docs = page_docs  # used by _average_events_per_day fallback
     payload = {
         "summary": {
             "peak_attack_time": {"day": peak_day, "time_range": peak_time_range},
@@ -6452,6 +6518,21 @@ def list_actions(
     cached = _cache_get(cache_key)
     if cached:
         return cached
+    # ES aggregations for accurate facet counts (not capped at 2K)
+    facet_aggs = _warehouse_dashboard_aggs(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        query=query,
+    )
+    es_facet_total = int(facet_aggs.get("total") or 0)
+    threat_buckets = (facet_aggs.get("threat_types") or {}).get("buckets") or []
+    source_buckets = (facet_aggs.get("sources") or {}).get("buckets") or []
+    severity_buckets = (facet_aggs.get("severity_counts") or {}).get("buckets") or {}
+
+    # Page docs - only fetch what's needed for the current page
     docs, es_total = _search_action_docs(
         query_text=query or "*",
         start_date=start_date,
@@ -6459,7 +6540,8 @@ def list_actions(
         threat_types=threat_types,
         sources=sources,
         severities=severities,
-        limit=2000,
+        limit=page_size,
+        offset=max(page - 1, 0) * page_size,
         return_es_total=True,
     )
     state = get_dashboard_state()
@@ -6467,13 +6549,17 @@ def list_actions(
     if status:
         requested_statuses = {item.strip().lower() for item in status if str(item).strip()}
         action_pairs = [(doc, item) for doc, item in action_pairs if item["status"] in requested_statuses]
-    filtered_docs = [doc for doc, _ in action_pairs]
     items = [item for _, item in action_pairs]
-    display_total = max(es_total, len(items))
+    display_total = max(es_total, es_facet_total)
     facets = {
-        "threat_types": [{"value": key, "label": key, "count": value} for key, value in Counter(threat for doc in filtered_docs for threat in (doc.get("ai_threat_types") or [])).most_common(10)],
-        "sources": [{"value": key, "label": key, "count": value} for key, value in Counter(source for doc in filtered_docs for source in _normalize_sources(doc)).most_common(10)],
-        "severities": [{"value": key, "label": _severity_label(key), "count": value} for key, value in Counter(_source_severity(doc) for doc in filtered_docs).most_common(5)],
+        "threat_types": [{"value": str(b.get("key") or ""), "label": str(b.get("key") or ""), "count": int(b.get("doc_count") or 0)} for b in threat_buckets[:10]],
+        "sources": [{"value": str(b.get("key") or ""), "label": str(b.get("key") or ""), "count": int(b.get("doc_count") or 0)} for b in source_buckets[:10]],
+        "severities": [
+            {"value": key, "label": _severity_label(key), "count": int((severity_buckets.get(key) or {}).get("doc_count") or 0)}
+            for key in ("critical", "high", "medium", "low", "clean")
+            if int((severity_buckets.get(key) or {}).get("doc_count") or 0) > 0
+        ],
+        # Status facet still from current page items (status depends on local state)
         "statuses": [{"value": key, "label": key.replace("_", " ").title(), "count": value} for key, value in Counter(item["status"] for item in items).most_common()],
     }
     summary = {
@@ -6482,8 +6568,7 @@ def list_actions(
         "in_progress": sum(1 for item in items if item["status"] == "in_progress"),
         "closed": sum(1 for item in items if item["status"] == "closed"),
     }
-    paged_items = _page_slice(items, page, page_size)
-    return _cache_set(cache_key, _paged({"summary": summary, "facets": facets, "items": paged_items}, page=page, page_size=page_size, total=display_total))
+    return _cache_set(cache_key, _paged({"summary": summary, "facets": facets, "items": items}, page=page, page_size=page_size, total=display_total))
 
 
 @router.post("/reports/actions/preview", tags=["Reports"])
