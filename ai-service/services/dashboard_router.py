@@ -1957,7 +1957,7 @@ def _datalake_dashboard_aggs(
             }
         },
         "aggs": {
-            "sources": {"terms": {"field": "_index", "size": 50}},
+            "sources": {"terms": {"field": "_index", "size": 200}},
             "ioc_types": {"terms": {"field": "ioc_type", "size": 25, "missing": "unknown"}},
             "threat_types": {"terms": {"field": "threat_type", "size": 25, "missing": "Other"}},
             "severity_counts": {"filters": {"filters": _severity_filters_config("severity")}},
@@ -1973,7 +1973,7 @@ def _datalake_dashboard_aggs(
             },
             "import_timeline": {
                 "date_histogram": date_histogram,
-                "aggs": {"sources": {"terms": {"field": "_index", "size": 50}}},
+                "aggs": {"sources": {"terms": {"field": "_index", "size": 200}}},
             },
         },
     }
@@ -7075,12 +7075,24 @@ def ioc_analytics(
             row["value"] += bucket_total
             source_buckets = ((bucket.get("sources") or {}).get("buckets") or [])
             source_total = 0
+            cat_totals: Dict[str, int] = {"trusted": 0, "news": 0, "other": 0}
             for source_bucket in source_buckets:
                 value = int(source_bucket.get("doc_count") or 0)
                 source_total += value
-                row[_source_category(source_bucket.get("key"))] += value
-            if not source_buckets or source_total < bucket_total:
-                row["other"] += max(0, bucket_total - source_total)
+                cat = _source_category(source_bucket.get("key"))
+                row[cat] += value
+                cat_totals[cat] += value
+            # When terms agg doesn't cover all docs (sum_other_doc_count > 0),
+            # distribute the gap proportionally across existing categories
+            # instead of blindly dumping to "other".
+            gap = max(0, bucket_total - source_total)
+            if gap > 0:
+                if source_total > 0:
+                    for cat in ("trusted", "news", "other"):
+                        share = round(gap * cat_totals[cat] / source_total)
+                        row[cat] += share
+                else:
+                    row["other"] += gap
         timeline_points = [
             {"timestamp": timestamp, **values}
             for timestamp, values in sorted(timeline_counts.items())
