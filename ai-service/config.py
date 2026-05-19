@@ -60,21 +60,23 @@ THREAT_LABELS = list(LABEL_MAPPING.keys())
 # Natural-language hypotheses for the zero-shot model — run in the same
 # inference pass as THREAT_LABELS with multi_label=True.
 SECTOR_LABELS = [
-    "targeting financial services or banking",
-    "targeting government or public sector",
-    "targeting healthcare or hospitals",
-    "targeting education or universities",
-    "targeting critical infrastructure or energy",
-    "targeting technology companies",
+    "targeting banking or financial services",
+    "targeting government or public services",
+    "targeting healthcare or public health",
+    "targeting national security or defense",
+    "targeting energy or public utilities",
+    "targeting technology or telecommunications",
+    "targeting transportation or logistics",
 ]
 
 SECTOR_LABEL_MAPPING = {
-    "targeting financial services or banking": "financial",
-    "targeting government or public sector": "government",
-    "targeting healthcare or hospitals": "healthcare",
-    "targeting education or universities": "education",
-    "targeting critical infrastructure or energy": "critical_infrastructure",
-    "targeting technology companies": "technology",
+    "targeting banking or financial services": "financial",
+    "targeting government or public services": "government",
+    "targeting healthcare or public health": "healthcare",
+    "targeting national security or defense": "government",
+    "targeting energy or public utilities": "critical_infrastructure",
+    "targeting technology or telecommunications": "technology",
+    "targeting transportation or logistics": "critical_infrastructure",
 }
 
 SECTOR_CONFIDENCE_THRESHOLD = 0.35
@@ -250,8 +252,8 @@ CONFIDENCE_THRESHOLDS = {
 
 SECTORS = {
     "financial": {
-        "name": "Financial Services",
-        "name_th": "ภาคการเงิน",
+        "name": "Banking and Finance",
+        "name_th": "ด้านการเงินการธนาคาร",
         "icon": "🏦",
         "weight": 1.3,  # Higher impact multiplier
         "keywords": [
@@ -265,8 +267,8 @@ SECTORS = {
                           "Qakbot", "TrickBot", "IcedID", "Emotet"]
     },
     "government": {
-        "name": "Government",
-        "name_th": "ภาครัฐ",
+        "name": "Substantive Public Services",
+        "name_th": "ด้านบริการภาครัฐที่สำคัญ",
         "icon": "🏛️",
         "weight": 1.4,  # Highest impact multiplier
         "keywords": [
@@ -280,8 +282,8 @@ SECTORS = {
                           "Equation Group", "Charming Kitten", "MuddyWater", "OilRig"]
     },
     "healthcare": {
-        "name": "Healthcare",
-        "name_th": "ภาคสาธารณสุข",
+        "name": "Public Health",
+        "name_th": "ด้านสาธารณสุข",
         "icon": "🏥",
         "weight": 1.3,
         "keywords": [
@@ -307,8 +309,8 @@ SECTORS = {
         "threat_actors": ["Charming Kitten"]  # Known to target academics
     },
     "critical_infrastructure": {
-        "name": "Critical Infrastructure",
-        "name_th": "โครงสร้างพื้นฐาน",
+        "name": "Energy and Public Utilities",
+        "name_th": "ด้านพลังงานและสาธารณูปโภค",
         "icon": "⚡",
         "weight": 1.5,  # Highest impact
         "keywords": [
@@ -321,8 +323,8 @@ SECTORS = {
         "threat_actors": ["Sandworm", "Xenotime", "Triton", "Havex"]
     },
     "technology": {
-        "name": "Technology",
-        "name_th": "ภาคเทคโนโลยี",
+        "name": "Information Technology and Telecommunications",
+        "name_th": "ด้านเทคโนโลยีสารสนเทศและโทรคมนาคม",
         "icon": "💻",
         "weight": 1.1,
         "keywords": [
@@ -334,8 +336,8 @@ SECTORS = {
         "threat_actors": ["APT41", "Winnti", "Barium"]
     },
     "general": {
-        "name": "General/Multiple",
-        "name_th": "ทั่วไป",
+        "name": "Other",
+        "name_th": "อื่นๆ",
         "icon": "🌐",
         "weight": 1.0,
         "keywords": [],

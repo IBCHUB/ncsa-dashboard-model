@@ -589,23 +589,25 @@ SECTOR_DISPLAY_NAMES = {
     "security": "National Security",
     "ความมั่นคงของรัฐ": "National Security",
     "ด้านความมั่นคงของรัฐ": "National Security",
-    "government": "Essential Government Services",
-    "public service": "Essential Government Services",
-    "public services": "Essential Government Services",
-    "essential government services": "Essential Government Services",
-    "ภาครัฐ": "Essential Government Services",
-    "บริการภาครัฐ": "Essential Government Services",
-    "บริการภาครัฐที่สำคัญ": "Essential Government Services",
-    "ด้านบริการภาครัฐที่สำคัญ": "Essential Government Services",
-    "finance": "Finance and Banking",
-    "financial": "Finance and Banking",
-    "financial services": "Finance and Banking",
-    "banking": "Finance and Banking",
-    "finance and banking": "Finance and Banking",
-    "ภาคการเงิน": "Finance and Banking",
-    "การเงิน": "Finance and Banking",
-    "การเงินการธนาคาร": "Finance and Banking",
-    "ด้านการเงินการธนาคาร": "Finance and Banking",
+    "government": "Substantive Public Services",
+    "public service": "Substantive Public Services",
+    "public services": "Substantive Public Services",
+    "essential government services": "Substantive Public Services",
+    "substantive public services": "Substantive Public Services",
+    "ภาครัฐ": "Substantive Public Services",
+    "บริการภาครัฐ": "Substantive Public Services",
+    "บริการภาครัฐที่สำคัญ": "Substantive Public Services",
+    "ด้านบริการภาครัฐที่สำคัญ": "Substantive Public Services",
+    "finance": "Banking and Finance",
+    "financial": "Banking and Finance",
+    "financial services": "Banking and Finance",
+    "banking": "Banking and Finance",
+    "banking and finance": "Banking and Finance",
+    "finance and banking": "Banking and Finance",
+    "ภาคการเงิน": "Banking and Finance",
+    "การเงิน": "Banking and Finance",
+    "การเงินการธนาคาร": "Banking and Finance",
+    "ด้านการเงินการธนาคาร": "Banking and Finance",
     "technology": "Information Technology and Telecommunications",
     "telecom": "Information Technology and Telecommunications",
     "telecommunications": "Information Technology and Telecommunications",
@@ -635,12 +637,22 @@ SECTOR_DISPLAY_NAMES = {
     "public health": "Public Health",
     "สาธารณสุข": "Public Health",
     "ด้านสาธารณสุข": "Public Health",
-    "critical infrastructure": "Other Designated CII",
-    "โครงสร้างพื้นฐาน": "Other Designated CII",
-    "โครงสร้างพื้นฐานสำคัญ": "Other Designated CII",
-    "other": "Other Designated CII",
-    "อื่นๆ": "Other Designated CII",
-    "อื่น ๆ": "Other Designated CII",
+    "critical infrastructure": "Other",
+    "โครงสร้างพื้นฐาน": "Other",
+    "โครงสร้างพื้นฐานสำคัญ": "Other",
+    "other": "Other",
+    "other designated cii": "Other",
+    "อื่นๆ": "Other",
+    "อื่น ๆ": "Other",
+    "general": "Other",
+    "general/multiple": "Other",
+    "ทั่วไป": "Other",
+    "education": "Other",
+    "ภาคการศึกษา": "Other",
+    "การศึกษา": "Other",
+    "manufacturing": "Other",
+    "retail": "Other",
+    "private sector": "Other",
 }
 
 
@@ -650,10 +662,8 @@ def _sector_display_name(value: Any) -> Optional[str]:
         return None
     lowered = raw.lower()
     if lowered in {"none", "null", "unknown", "n/a", "-", "ไม่ระบุ"}:
-        return None
-    if lowered in {"general/multiple", "ทั่วไป"}:
-        return "General/Multiple"
-    return SECTOR_DISPLAY_NAMES.get(lowered) or SECTOR_DISPLAY_NAMES.get(raw) or raw
+        return "Other"
+    return SECTOR_DISPLAY_NAMES.get(lowered) or SECTOR_DISPLAY_NAMES.get(raw) or "Other"
 
 
 def _sector_info(doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -1238,7 +1248,7 @@ def _warehouse_summary_stats(start_date: Optional[str], end_date: Optional[str],
                 "aggs": {"severity": {"terms": {"field": "severity", "size": 5, "missing": "low"}}},
             },
             "sectors": {
-                "terms": {"field": "target_sector_name", "size": 12, "missing": "General/Multiple"},
+                "terms": {"field": "target_sector_name", "size": 12, "missing": "Other"},
                 "aggs": {"severity": {"terms": {"field": "severity", "size": 5, "missing": "low"}}},
             },
         },
@@ -1375,7 +1385,7 @@ def _format_source_terms(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]
 def _format_sector_terms(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     grouped: Dict[str, Dict[str, Any]] = {}
     for item in items:
-        label = _sector_display_name(item.get("label") or item.get("key")) or "General/Multiple"
+        label = _sector_display_name(item.get("label") or item.get("key")) or "Other"
         value = int(item.get("value") or item.get("count") or 0)
         current = grouped.setdefault(
             label,
@@ -1790,11 +1800,11 @@ def _warehouse_dashboard_aggs(
             "aggs": {
                 "severity": {"filters": {"filters": _severity_filters_config("severity")}},
                 "sources": {"terms": {"field": "source_name", "size": 10}},
-                "sectors": {"terms": {"field": "target_sector_name", "size": 5, "missing": "General/Multiple"}},
+                "sectors": {"terms": {"field": "target_sector_name", "size": 5, "missing": "Other"}},
             },
         },
         "sectors": {
-            "terms": {"field": "target_sector_name", "size": 25, "missing": "General/Multiple"},
+            "terms": {"field": "target_sector_name", "size": 25, "missing": "Other"},
             "aggs": {"severity": {"terms": {"field": "severity", "size": 5, "missing": "low"}}},
         },
         "severity_by_source": {
@@ -2943,7 +2953,7 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
                 "severity": display_severity,
                 "critical_count": int(severity_counts.get("critical", 0)),
                 "high_count": int(severity_counts.get("high", 0)),
-                "primary_sector": sector_counts.most_common(1)[0][0] if sector_counts else "General/Multiple",
+                "primary_sector": sector_counts.most_common(1)[0][0] if sector_counts else "Other",
                 "high_confidence_sources": len(trusted_sources),
                 "trusted_sources": trusted_sources,
             }
@@ -3498,7 +3508,7 @@ AGGREGATABLE_REPORT_DIMENSIONS = {
     "intelligence-sources": {"field": "source_name", "missing": "unknown", "chart_title": "Top 5 Sources"},
     "threat-types": {"field": "ai_threat_types", "missing": "Unknown", "chart_title": "Top 5 Threat Types"},
     "attack-origins": {"field": "geo_country", "missing": "Unknown", "chart_title": "Top 5 Countries"},
-    "target-sectors": {"field": "target_sector_name", "missing": "General/Multiple", "chart_title": "Top 5 Sectors"},
+    "target-sectors": {"field": "target_sector_name", "missing": "Other", "chart_title": "Top 5 Sectors"},
 }
 
 
@@ -4318,7 +4328,7 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
         trusted_source_union.update(trusted_sources)
         sector_bucket = next(iter((bucket.get("sectors") or {}).get("buckets") or []), None)
         raw_sector = str((sector_bucket or {}).get("key") or "")
-        primary_sector = _sector_display_name(raw_sector) or "General/Multiple"
+        primary_sector = _sector_display_name(raw_sector) or "Other"
         origins.append(
             {
                 "country_code": _country_code_from_name(country),
@@ -5361,7 +5371,7 @@ def _build_trend_event_rows(
             continue
         hour_bucket = _start_bangkok_hour(display_time)
         sector = _sector_info(doc)
-        sector_name = str(sector.get("sector_name") or "General/Multiple").strip() or "General/Multiple"
+        sector_name = str(sector.get("sector_name") or "Other").strip() or "Other"
         threat_type = _primary_threat_type(doc) or "Other"
         key = (hour_bucket.isoformat(), sector_name, threat_type)
         row = grouped.setdefault(
@@ -5813,7 +5823,7 @@ def list_sectors(active: bool = True, query: Optional[str] = None, current_user:
         return cached
     client = get_elastic_client()
     # Lightweight terms-only aggregation
-    buckets = _terms_only_agg(client.warehouse_index, "target_sector_name", size=200, missing="General/Multiple")
+    buckets = _terms_only_agg(client.warehouse_index, "target_sector_name", size=200, missing="Other")
     items = []
     for bucket in buckets:
         raw_label = str(bucket.get("key") or "").strip()
@@ -5911,7 +5921,7 @@ def executive_dashboard(
             "score": threat_level["score"],
             "delta_percent": round(threat_level["inputs"]["spike_ratio"] * 10, 2),
             "primary_sector": {
-                "name": primary_sector.get("sector_name", "General/Multiple"),
+                "name": primary_sector.get("sector_name", "Other"),
                 "value": primary_sector.get("count", 0),
             },
         },
