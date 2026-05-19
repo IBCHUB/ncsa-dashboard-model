@@ -3070,8 +3070,12 @@ def _collect_ioc_docs(
     sort_order: str = "desc",
     return_es_total: bool = False,
     time_mode: str = TIME_MODE_PROCESSED,
+    limit: int = 10000,
 ) -> "List[Dict[str, Any]] | tuple[List[Dict[str, Any]], int]":
-    docs = _scroll_all_warehouse_docs(
+    """Collect IOC docs using ES pagination instead of scroll-all."""
+    min_risk = 80 if high_risk_only else None
+    result = _search_warehouse_docs(
+        query_text=query or "*",
         start_date=start_date,
         end_date=end_date,
         sources=list(sources or []) or None,
@@ -3079,21 +3083,14 @@ def _collect_ioc_docs(
         severities=list(severities or []) or None,
         ioc_types=list(ioc_types or []) or None,
         risk_levels=list(risk_levels or []) or None,
+        min_risk_score=min_risk,
         sort_by=sort_by,
+        limit=limit,
+        offset=0,
         time_mode=time_mode,
     )
-    es_total = len(docs)
-    docs = _filter_warehouse_docs(
-        docs,
-        query=query,
-        threat_types=threat_types,
-        sources=sources,
-        severities=list(severities or []) or None,
-        risk_levels=list(risk_levels or []) or None,
-    )
-    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date, time_mode=time_mode)]
-    if high_risk_only:
-        docs = [doc for doc in docs if int(doc.get("ai_risk_score") or 0) >= 80]
+    es_total = _search_total(result)
+    docs = _hits_to_docs(result)
     docs = sorted(
         docs,
         key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
@@ -4016,25 +4013,31 @@ def _build_executive_attack_volume_trend(
     day_span = max(0, (end_day - start_day).days)
 
     if day_span == 0:
-        trend_training_docs = _scroll_all_warehouse_docs(
+        # Use ES date_histogram aggregation instead of scroll-all
+        hourly_aggs = _warehouse_dashboard_aggs(
             start_date=(now - timedelta(hours=72)).isoformat(),
             end_date=now.isoformat(),
-            sort_by="time",
+            include_trend=True,
             time_mode=TIME_MODE_OBSERVED,
         )
-        trend_datalake_docs = _fetch_datalake_by_indicators(
-            [(doc.get("ioc_type", ""), doc.get("ioc_value", "")) for doc in trend_training_docs],
-        )
-        trend = _build_trend_analytics(trend_training_docs, trend_datalake_docs, now=now)
+        hourly_buckets = (hourly_aggs.get("trend") or {}).get("buckets") or []
+        historical_points = []
+        for bucket in hourly_buckets:
+            ts = bucket.get("key_as_string") or ""
+            severity_buckets = (bucket.get("severity") or {}).get("buckets") or {}
+            historical_points.append({
+                "hour": ts,
+                "timestamp": ts,
+                "count": int(bucket.get("doc_count") or 0),
+                "point_type": "historical",
+                "critical": int((severity_buckets.get("critical") or {}).get("doc_count") or 0),
+                "high": int((severity_buckets.get("high") or {}).get("doc_count") or 0),
+                "medium": int((severity_buckets.get("medium") or {}).get("doc_count") or 0),
+                "low": int((severity_buckets.get("low") or {}).get("doc_count") or 0),
+            })
         return {
-            "points": [
-                {**point, "timestamp": point["hour"], "point_type": "historical"}
-                for point in trend["attack_volume_trend"]["historical"]
-            ] + [
-                {**point, "timestamp": point["hour"], "point_type": "forecast"}
-                for point in trend["attack_volume_trend"]["forecast"]
-            ],
-            "forecast_start_index": len(trend["attack_volume_trend"]["historical"]),
+            "points": historical_points,
+            "forecast_start_index": len(historical_points),
         }
 
     buckets: Dict[str, Dict[str, Any]] = {}
@@ -5707,26 +5710,30 @@ def executive_dashboard(
     today_bkk = _to_bangkok_date(datetime.now(UTC))
     include_forecast = is_single_day and end_date >= today_bkk
     if is_single_day:
-        trend_training_docs = _scroll_all_warehouse_docs(
+        # Use ES date_histogram aggregation instead of scroll-all for hourly trend
+        hourly_aggs = _warehouse_dashboard_aggs(
             start_date=(now - timedelta(hours=72)).isoformat(),
             end_date=now.isoformat(),
-            sort_by="time",
+            include_trend=True,
             time_mode=TIME_MODE_OBSERVED,
         )
-        trend_datalake_docs = _fetch_datalake_by_indicators(
-            [(doc.get("ioc_type", ""), doc.get("ioc_value", "")) for doc in trend_training_docs],
-        )
-        trend = _build_trend_analytics(trend_training_docs, trend_datalake_docs, now=now)
-        forecast_points = trend["attack_volume_trend"]["forecast"] if include_forecast else []
-        historical_points = [
-            {**point, "timestamp": point["hour"], "point_type": "historical"}
-            for point in trend["attack_volume_trend"]["historical"]
-        ]
+        hourly_buckets = (hourly_aggs.get("trend") or {}).get("buckets") or []
+        historical_points = []
+        for bucket in hourly_buckets:
+            ts = bucket.get("key_as_string") or ""
+            severity_buckets = (bucket.get("severity") or {}).get("buckets") or {}
+            historical_points.append({
+                "hour": ts,
+                "timestamp": ts,
+                "count": int(bucket.get("doc_count") or 0),
+                "point_type": "historical",
+                "critical": int((severity_buckets.get("critical") or {}).get("doc_count") or 0),
+                "high": int((severity_buckets.get("high") or {}).get("doc_count") or 0),
+                "medium": int((severity_buckets.get("medium") or {}).get("doc_count") or 0),
+                "low": int((severity_buckets.get("low") or {}).get("doc_count") or 0),
+            })
         attack_volume_trend = {
-            "points": historical_points + [
-                {**point, "timestamp": point["hour"], "point_type": "forecast"}
-                for point in forecast_points
-            ],
+            "points": historical_points,
             "forecast_start_index": len(historical_points),
         }
         threat_volume_trend = attack_volume_trend
@@ -5835,24 +5842,20 @@ def threat_type_report_detail(
     normalized_threat_type = str(threat_type or "").strip()
     if not normalized_threat_type:
         raise HTTPException(status_code=400, detail="Threat type is required")
-    docs = _scroll_all_warehouse_docs(
+    result = _search_warehouse_docs(
+        query_text=query or "*",
         start_date=start_date,
         end_date=end_date,
         threat_types=[normalized_threat_type],
         sources=sources,
         severities=severities,
         sort_by="risk",
+        limit=10000,
+        offset=0,
         time_mode=TIME_MODE_OBSERVED,
     )
-    docs = _filter_warehouse_docs(
-        docs,
-        query=query,
-        threat_types=[normalized_threat_type],
-        sources=sources,
-        severities=severities,
-    )
-    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED)]
-    es_total = len(docs)
+    es_total = _search_total(result)
+    docs = _hits_to_docs(result)
     docs = sorted(
         docs,
         key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
@@ -6068,10 +6071,20 @@ def cve_intelligence(
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    warehouse_docs = _scroll_all_warehouse_docs(start_date=start_date, end_date=end_date, sources=sources, severities=severities, sort_by="risk", time_mode=TIME_MODE_PUBLISHED)
-    warehouse_docs = [doc for doc in warehouse_docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date, time_mode=TIME_MODE_PUBLISHED)]
+    wh_result = _search_warehouse_docs(
+        query_text=query or "*",
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        severities=severities,
+        sort_by="risk",
+        limit=10000,
+        offset=0,
+        time_mode=TIME_MODE_PUBLISHED,
+    )
+    warehouse_docs = _hits_to_docs(wh_result)
     datalake_docs = _scroll_all_datalake_docs(start_date=start_date, end_date=end_date, sources=sources, severities=severities, time_mode=TIME_MODE_PUBLISHED)
-    es_total_warehouse = len(warehouse_docs)
+    es_total_warehouse = _search_total(wh_result)
     es_total_datalake = len(datalake_docs)
     records = _build_cve_records(warehouse_docs, datalake_docs)
     if query and not CVE_PATTERN.search(query):
