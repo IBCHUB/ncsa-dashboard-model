@@ -3654,39 +3654,54 @@ def _build_aggregated_trend(
     report_key: str,
     interval: str,
 ) -> Dict[str, Any]:
-    group_buckets = []
+    # First pass: group raw ES buckets by their *display label* so that
+    # multiple raw values mapping to the same name (e.g. "cyberint_iocs"
+    # and "tcti-feeds" both → "Cyberint IOC Feed") merge into one series.
+    merged_by_label: Dict[str, Dict[str, Any]] = {}
     for bucket in (groups_bucket.get("buckets") or []):
         label = _report_dimension_label(report_key, bucket.get("key"))
         if not label:
             continue
-        group_buckets.append((bucket, label))
-        if len(group_buckets) >= 5:
-            break
-    ordered_bucket_keys: List[int] = []
-    labels_by_key: Dict[int, str] = {}
-    series_by_label: List[Dict[str, Any]] = []
-
-    for bucket, _label in group_buckets:
+        entry = merged_by_label.setdefault(
+            label,
+            {"label": label, "timeline": {}, "total": 0, "label_meta": {}},
+        )
+        entry["total"] += int(bucket.get("doc_count") or 0)
         for point in ((bucket.get("timeline") or {}).get("buckets") or []):
             key = int(point.get("key") or 0)
-            if key not in labels_by_key:
-                ordered_bucket_keys.append(key)
-                labels_by_key[key] = _format_trend_bucket_label(point.get("key_as_string"), interval)
+            entry["timeline"][key] = entry["timeline"].get(key, 0) + int(
+                point.get("doc_count") or 0
+            )
+            if key not in entry["label_meta"]:
+                entry["label_meta"][key] = _format_trend_bucket_label(
+                    point.get("key_as_string"), interval
+                )
 
+    # Pick top 5 merged labels by total count, descending.
+    top_groups = sorted(
+        merged_by_label.values(), key=lambda x: x["total"], reverse=True
+    )[:5]
+
+    # Collect the union of timeline bucket keys across the top groups.
+    ordered_bucket_keys: List[int] = []
+    labels_by_key: Dict[int, str] = {}
+    for entry in top_groups:
+        for key, label_text in entry["label_meta"].items():
+            if key not in labels_by_key:
+                labels_by_key[key] = label_text
+                ordered_bucket_keys.append(key)
     ordered_bucket_keys.sort()
-    for bucket, label in group_buckets:
-        timeline = {
-            int(point.get("key") or 0): int(point.get("doc_count") or 0)
-            for point in ((bucket.get("timeline") or {}).get("buckets") or [])
-        }
-        points = [timeline.get(key, 0) for key in ordered_bucket_keys]
+
+    series_by_label: List[Dict[str, Any]] = []
+    for entry in top_groups:
+        points = [entry["timeline"].get(key, 0) for key in ordered_bucket_keys]
         direction, change_percent = _calculate_change(points)
         series_by_label.append(
             {
-                "key": label,
-                "label": label,
+                "key": entry["label"],
+                "label": entry["label"],
                 "points": points,
-                "total": int(bucket.get("doc_count") or 0),
+                "total": entry["total"],
                 "direction": direction,
                 "change_percent": round(change_percent, 2),
             }
