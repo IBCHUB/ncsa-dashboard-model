@@ -2861,6 +2861,15 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
             _source_severity(doc)
             for doc in docs
         )
+        display_severity = _origin_display_severity(severity_counts)
+        # Filter out countries where the highest severity is "clean"
+        if display_severity == "clean":
+            continue
+        # Exclude clean count from the total value
+        clean_count = int(severity_counts.get("clean", 0))
+        value_without_clean = max(value - clean_count, 0)
+        if value_without_clean == 0:
+            continue
         sector_counts = Counter(
             _sector_info(doc)["sector_name"]
             for doc in docs
@@ -2889,10 +2898,10 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
             {
                 "country_code": _country_code_from_name(country),
                 "country_name": _country_name_from_code_or_raw(country),
-                "value": value,
+                "value": value_without_clean,
                 "latitude": latitude,
                 "longitude": longitude,
-                "severity": _origin_display_severity(severity_counts),
+                "severity": display_severity,
                 "critical_count": int(severity_counts.get("critical", 0)),
                 "high_count": int(severity_counts.get("high", 0)),
                 "primary_sector": sector_counts.most_common(1)[0][0] if sector_counts else "General/Multiple",
@@ -4290,6 +4299,16 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
         if not country or country.lower() in {"none", "null", "unknown", "-"}:
             continue
         severity_counts = _severity_counts_from_filter_agg(bucket.get("severity") or {})
+        display_severity = _origin_display_severity(Counter(severity_counts))
+        # Filter out countries where the highest severity is "clean"
+        if display_severity == "clean":
+            continue
+        # Exclude clean count from the total value
+        clean_count = int(severity_counts.get("clean") or 0)
+        total_count = int(bucket.get("doc_count") or 0)
+        value_without_clean = max(total_count - clean_count, 0)
+        if value_without_clean == 0:
+            continue
         source_buckets = (bucket.get("sources") or {}).get("buckets") or []
         trusted_sources = [
             str(source_bucket.get("key") or "")
@@ -4304,10 +4323,10 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
             {
                 "country_code": _country_code_from_name(country),
                 "country_name": _country_name_from_code_or_raw(country),
-                "value": int(bucket.get("doc_count") or 0),
+                "value": value_without_clean,
                 "latitude": None,
                 "longitude": None,
-                "severity": _origin_display_severity(Counter(severity_counts)),
+                "severity": display_severity,
                 "critical_count": int(severity_counts.get("critical") or 0),
                 "high_count": int(severity_counts.get("high") or 0),
                 "primary_sector": primary_sector,
