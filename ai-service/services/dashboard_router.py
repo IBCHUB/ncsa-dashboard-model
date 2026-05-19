@@ -3072,7 +3072,15 @@ def _collect_ioc_docs(
     time_mode: str = TIME_MODE_PROCESSED,
     limit: int = 10000,
 ) -> "List[Dict[str, Any]] | tuple[List[Dict[str, Any]], int]":
-    """Collect IOC docs using ES pagination instead of scroll-all."""
+    """Collect IOC docs using ES pagination + defensive Python post-filter.
+
+    ES does the heavy lifting (filtering + pagination on indexed fields).
+    The Python post-filter is kept as a defensive net for:
+      - legacy docs with only `observation_date`
+      - range-overlap semantics on first_seen/last_seen
+      - multi-source comma values / fallback threat_type field
+      - substring search semantics
+    """
     min_risk = 80 if high_risk_only else None
     result = _search_warehouse_docs(
         query_text=query or "*",
@@ -3091,6 +3099,18 @@ def _collect_ioc_docs(
     )
     es_total = _search_total(result)
     docs = _hits_to_docs(result)
+    # Defensive Python post-filter (handles edge cases ES filter may miss)
+    docs = _filter_warehouse_docs(
+        docs,
+        query=query,
+        threat_types=threat_types,
+        sources=sources,
+        severities=list(severities or []) or None,
+        risk_levels=list(risk_levels or []) or None,
+    )
+    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date, time_mode=time_mode)]
+    if high_risk_only:
+        docs = [doc for doc in docs if int(doc.get("ai_risk_score") or 0) >= 80]
     docs = sorted(
         docs,
         key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
@@ -3999,80 +4019,6 @@ def _build_trend_analytics(
             "historical": historical,
             "forecast": forecast,
         },
-    }
-
-
-def _build_executive_attack_volume_trend(
-    docs: List[Dict[str, Any]],
-    now: datetime,
-    start_date: str,
-    end_date: str,
-) -> Dict[str, Any]:
-    start_day = datetime.strptime(start_date, "%Y-%m-%d").date()
-    end_day = datetime.strptime(end_date, "%Y-%m-%d").date()
-    day_span = max(0, (end_day - start_day).days)
-
-    if day_span == 0:
-        # Use ES date_histogram aggregation instead of scroll-all
-        hourly_aggs = _warehouse_dashboard_aggs(
-            start_date=(now - timedelta(hours=72)).isoformat(),
-            end_date=now.isoformat(),
-            include_trend=True,
-            time_mode=TIME_MODE_OBSERVED,
-        )
-        hourly_buckets = (hourly_aggs.get("trend") or {}).get("buckets") or []
-        historical_points = []
-        for bucket in hourly_buckets:
-            ts = bucket.get("key_as_string") or ""
-            severity_buckets = (bucket.get("severity") or {}).get("buckets") or {}
-            historical_points.append({
-                "hour": ts,
-                "timestamp": ts,
-                "count": int(bucket.get("doc_count") or 0),
-                "point_type": "historical",
-                "critical": int((severity_buckets.get("critical") or {}).get("doc_count") or 0),
-                "high": int((severity_buckets.get("high") or {}).get("doc_count") or 0),
-                "medium": int((severity_buckets.get("medium") or {}).get("doc_count") or 0),
-                "low": int((severity_buckets.get("low") or {}).get("doc_count") or 0),
-            })
-        return {
-            "points": historical_points,
-            "forecast_start_index": len(historical_points),
-        }
-
-    buckets: Dict[str, Dict[str, Any]] = {}
-    current_day = start_day
-    while current_day <= end_day:
-        key = current_day.strftime("%Y-%m-%d")
-        buckets[key] = {
-            "timestamp": f"{key}T00:00:00+07:00",
-            "label": current_day.strftime("%d-%m-%y"),
-            "total": 0,
-            "critical": 0,
-            "high": 0,
-            "point_type": "historical",
-        }
-        current_day += timedelta(days=1)
-
-    for doc in docs:
-        event_time = _pick_event_time(doc)
-        if not event_time:
-            continue
-        day_key = _to_bangkok_date(event_time)
-        bucket = buckets.get(day_key)
-        if not bucket:
-            continue
-        severity = _source_severity(doc)
-        bucket["total"] += 1
-        if severity == "critical":
-            bucket["critical"] += 1
-        if severity in {"critical", "high"}:
-            bucket["high"] += 1
-
-    points = [buckets[key] for key in sorted(buckets.keys())]
-    return {
-        "points": points,
-        "forecast_start_index": len(points),
     }
 
 
@@ -5710,33 +5656,22 @@ def executive_dashboard(
     today_bkk = _to_bangkok_date(datetime.now(UTC))
     include_forecast = is_single_day and end_date >= today_bkk
     if is_single_day:
-        # Use ES date_histogram aggregation instead of scroll-all for hourly trend
+        # Use ES date_histogram aggregation across last 72h (hourly buckets).
+        # Pass YYYY-MM-DD date strings so _resolve_date_bounds parses correctly.
+        lookback_start = _to_bangkok_date(now - timedelta(hours=72))
+        lookback_end = _to_bangkok_date(now)
         hourly_aggs = _warehouse_dashboard_aggs(
-            start_date=(now - timedelta(hours=72)).isoformat(),
-            end_date=now.isoformat(),
+            start_date=lookback_start,
+            end_date=lookback_end,
             include_trend=True,
             time_mode=TIME_MODE_OBSERVED,
         )
-        hourly_buckets = (hourly_aggs.get("trend") or {}).get("buckets") or []
-        historical_points = []
-        for bucket in hourly_buckets:
-            ts = bucket.get("key_as_string") or ""
-            severity_buckets = (bucket.get("severity") or {}).get("buckets") or {}
-            historical_points.append({
-                "hour": ts,
-                "timestamp": ts,
-                "count": int(bucket.get("doc_count") or 0),
-                "point_type": "historical",
-                "critical": int((severity_buckets.get("critical") or {}).get("doc_count") or 0),
-                "high": int((severity_buckets.get("high") or {}).get("doc_count") or 0),
-                "medium": int((severity_buckets.get("medium") or {}).get("doc_count") or 0),
-                "low": int((severity_buckets.get("low") or {}).get("doc_count") or 0),
-            })
-        attack_volume_trend = {
-            "points": historical_points,
-            "forecast_start_index": len(historical_points),
-        }
-        threat_volume_trend = attack_volume_trend
+        forecast_days = 1 if include_forecast else 0
+        threat_volume_trend = _build_executive_attack_volume_trend_from_buckets(
+            (hourly_aggs.get("trend") or {}).get("buckets") or [],
+            forecast_days=forecast_days,
+        )
+        attack_volume_trend = threat_volume_trend
     else:
         forecast_days = 7 if end_date >= today_bkk else 0
         threat_volume_trend = _build_executive_attack_volume_trend_from_buckets(
@@ -6828,8 +6763,8 @@ def ioc_report_export(
     http_request: Request,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    docs = _collect_ioc_docs(
-        query=request.query,
+    # Exports need ALL matching docs (async job, file output) - use scroll-all
+    docs = _scroll_all_warehouse_docs(
         start_date=request.start_date.isoformat(),
         end_date=request.end_date.isoformat(),
         threat_types=request.threat_types or None,
@@ -6837,8 +6772,24 @@ def ioc_report_export(
         risk_levels=request.risk_levels or None,
         ioc_types=request.ioc_types or None,
         severities=request.severities or None,
-        high_risk_only=request.high_risk_only,
+        sort_by="risk",
         time_mode=TIME_MODE_OBSERVED,
+    )
+    docs = _filter_warehouse_docs(
+        docs,
+        query=request.query,
+        threat_types=request.threat_types or None,
+        sources=request.sources or None,
+        severities=request.severities or None,
+        risk_levels=request.risk_levels or None,
+    )
+    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=request.start_date.isoformat(), end_date=request.end_date.isoformat(), time_mode=TIME_MODE_OBSERVED)]
+    if request.high_risk_only:
+        docs = [doc for doc in docs if int(doc.get("ai_risk_score") or 0) >= 80]
+    docs = sorted(
+        docs,
+        key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
+        reverse=True,
     )
     items = [_build_ioc_record(index + 1, doc) for index, doc in enumerate(docs)]
     selected_format, file_content, media_type = _build_ioc_export_artifact(items, request.export_format)
