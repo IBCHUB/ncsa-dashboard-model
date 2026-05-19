@@ -349,6 +349,48 @@ def calculate_decay_factor(ioc_age_days: Optional[int]) -> Dict[str, Any]:
 # NEW: AI CLASSIFICATION SCORING FUNCTIONS
 # ============================================
 
+_THREAT_TYPE_ALIASES: Dict[str, str] = {
+    "malware_payload": "Malware",
+    "malware": "Malware",
+    "command_and_control": "C2",
+    "cnc_server": "C2",
+    "c2": "C2",
+    "c&c": "C2",
+    "phishing": "Phishing",
+    "phishing_website": "Phishing",
+    "ransomware": "Ransomware",
+    "botnet": "Botnet",
+    "trojan": "Trojan",
+    "backdoor": "Backdoor",
+    "exploit": "Exploit",
+    "ddos": "DDoS",
+    "spam": "Spam",
+    "scanning": "Scanning",
+    "vulnerability": "Vulnerability",
+    "defacement": "Defacement",
+    "data_breach": "Data Breach",
+    "credential_theft": "Credential Theft",
+    "credential_stealing": "Credential Theft",
+    "apt": "APT",
+    "wiper": "Wiper",
+    "supply_chain_attack": "Supply Chain Attack",
+    "zero_day": "Zero-day Exploit",
+    "remote_code_execution": "Remote Code Execution",
+    "rce": "Remote Code Execution",
+    "exploited_vulnerability": "Exploited Vulnerability",
+    "infecting_url": "Malware",
+    "infected_machine": "Malware",
+    "infection_source": "Malware",
+    "payload_delivery": "Malware",
+    "anonymization": "Other",
+}
+
+
+def _normalize_threat_type(raw: str) -> str:
+    key = raw.strip().lower().replace("-", "_").replace(" ", "_")
+    return _THREAT_TYPE_ALIASES.get(key, raw)
+
+
 def calculate_threat_type_score(threat_types: List[str], threat_details: Optional[List[Dict]] = None) -> Dict[str, Any]:
     """
     Calculate score based on AI-detected threat types.
@@ -379,7 +421,8 @@ def calculate_threat_type_score(threat_types: List[str], threat_details: Optiona
             conf_map[item.get("type")] = float(item.get("confidence", 1.0))
 
     for threat_type in threat_types:
-        severity_info = THREAT_TYPE_SEVERITY.get(threat_type)
+        normalized = _normalize_threat_type(threat_type)
+        severity_info = THREAT_TYPE_SEVERITY.get(normalized)
         confidence = conf_map.get(threat_type, 1.0) if threat_details else 1.0
         
         if severity_info:

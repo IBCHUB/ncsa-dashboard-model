@@ -413,8 +413,8 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
 
         severity_values.append(str(doc.get("severity", "")).strip().lower())
 
-        geo_country = str(doc.get("geo_country", "")).strip()
-        if geo_country:
+        geo_country = str(doc.get("geo_country") or "").strip()
+        if geo_country and geo_country.lower() not in ("none", "null", "unknown", "n/a"):
             geo_countries.append(geo_country)
 
         source_url = str(doc.get("source_url", "")).strip()
@@ -544,12 +544,13 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "source_name": ", ".join(source_names) if source_names else "unknown",
         "source_type": "multi" if len(source_types) > 1 else (source_types[0] if source_types else "unknown"),
         "sources": sources,
+        "source_objects": list(source_objects),
         "source_types": source_types,
         "source_count": len(scoring_source_names) if scoring_source_names else len(sources),
         "source_urls": source_urls,
         "description": merged_description,
         "threat_type": sorted(set(source_threat_types)),
-        "severity": pick_highest_severity(severity_values),
+        "severity": score_result.get("severity", "low"),
         "tags": sanitized_tags,
         "reference": "\n".join(sanitized_references),
         "collect_time": last_seen,
@@ -557,7 +558,7 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "first_seen": first_seen,
         "last_seen": last_seen,
         "ioc_age_days": ioc_age_days,
-        "geo_country": geo_countries[0] if geo_countries else primary.get("geo_country"),
+        "geo_country": geo_countries[0] if geo_countries else None,
         "target_sector": target_sector.get("sector"),
         "target_sector_name": target_sector.get("sector_name"),
         "target_sector_name_th": target_sector.get("sector_name_th"),

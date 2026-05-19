@@ -53,8 +53,18 @@ THREAT_TYPE_RULE_MAP = {
     "rce": "Remote Code Execution",
     "vulnerability": "Exploited Vulnerability",
     "defacement": "Defacement",
+    "compromised_website": "Defacement",
     "anonymization": "Other",
     "parked": "Other",
+    "malicious": "Malware",
+    "ransomware": "Ransomware",
+    "command_and_control": "C2",
+    "wiper": "Wiper",
+    "supply_chain_attack": "Supply Chain Attack",
+    "zero_day": "Zero-day Exploit",
+    "zero-day": "Zero-day Exploit",
+    "spam": "Spam",
+    "scanning": "Scanning",
 }
 
 GENERIC_FEED_PATTERNS = (

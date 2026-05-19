@@ -561,6 +561,57 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
             grouped_iocs.setdefault(key, []).append(ioc)
             normalized += 1
 
+        # Pre-merge: fetch existing warehouse docs for these IOC keys so we
+        # can merge their source_objects into the new batch.  This is how
+        # cross-batch / cross-index source deduplication works.
+        warehouse_doc_ids = {}
+        for key, ioc_docs_for_key in grouped_iocs.items():
+            sample = ioc_docs_for_key[0]
+            doc_id = ElasticClient._build_warehouse_doc_id(sample)
+            warehouse_doc_ids[key] = doc_id
+
+        existing_warehouse = es_client.bulk_get_warehouse_documents(
+            list(warehouse_doc_ids.values())
+        ) if warehouse_doc_ids else {}
+        id_to_key = {v: k for k, v in warehouse_doc_ids.items()}
+
+        for key, ioc_docs_for_key in grouped_iocs.items():
+            doc_id = warehouse_doc_ids.get(key)
+            existing = existing_warehouse.get(doc_id) if doc_id else None
+            if existing:
+                existing_source_objs = existing.get("source_objects") or []
+                if not existing_source_objs:
+                    raw_names = existing.get("sources") or []
+                    if isinstance(raw_names, list):
+                        existing_source_objs = [
+                            {"name": n, "confidence": 0, "type": "unknown"}
+                            for n in raw_names
+                            if isinstance(n, str) and n.strip()
+                        ]
+                if isinstance(existing_source_objs, list):
+                    new_source_names = {
+                        str(d.get("source_name", "")).strip()
+                        for d in ioc_docs_for_key
+                        if d.get("source_name")
+                    }
+                    for src_obj in existing_source_objs:
+                        src_name = str(src_obj.get("name", "")).strip()
+                        if src_name and src_name not in new_source_names:
+                            ioc_docs_for_key.append({
+                                "source_name": src_name,
+                                "confidence": src_obj.get("confidence", 0),
+                                "source_type": src_obj.get("type", "unknown"),
+                                "ioc_value": ioc_docs_for_key[0].get("ioc_value"),
+                                "ioc_type": ioc_docs_for_key[0].get("ioc_type"),
+                                "description": "",
+                                "severity": "",
+                                "threat_type": [],
+                                "tags": [],
+                                "event_time": existing.get("first_seen"),
+                                "collect_time": existing.get("last_seen"),
+                                "_synthetic_from_warehouse": True,
+                            })
+
         processed = 0
         rejected = 0
         failed = 0

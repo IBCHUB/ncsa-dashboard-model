@@ -476,7 +476,7 @@ def _source_severity(doc: Dict[str, Any]) -> str:
 
 
 def _ai_severity(doc: Dict[str, Any]) -> str:
-    return _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
+    return _normalize_severity(doc.get("severity"))
 
 
 def _severity_label(value: str) -> str:
@@ -998,7 +998,7 @@ def _warehouse_search_filters(
     if severities:
         filters.append({"terms": {"severity": [_normalize_severity(item) for item in severities]}})
     if risk_levels:
-        filters.append({"terms": {"ai_severity": [_normalize_severity(item) for item in risk_levels]}})
+        filters.append({"terms": {"severity": [_normalize_severity(item) for item in risk_levels]}})
     if sources:
         filters.append({"terms": {"source_name": sources}})
     if threat_types:
@@ -1739,7 +1739,7 @@ def _warehouse_dashboard_aggs(
         "active_iocs": {"cardinality": {"field": "canonical_ioc_key.keyword", "precision_threshold": 40000}},
         "source_count": {"cardinality": {"field": "source_name", "precision_threshold": 40000}},
         "severity_counts": {"filters": {"filters": _severity_filters_config("severity")}},
-        "risk_level_counts": {"filters": {"filters": _severity_filters_config("ai_severity")}},
+        "risk_level_counts": {"filters": {"filters": _severity_filters_config("severity")}},
         "critical_active": {
             "filter": {"term": {"severity": "critical"}},
             "aggs": {
@@ -2975,7 +2975,7 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
     }
 
 
-def _severity_breakdown_counts(docs: Sequence[Dict[str, Any]], severity_field: str = "ai_severity") -> Dict[str, int]:
+def _severity_breakdown_counts(docs: Sequence[Dict[str, Any]], severity_field: str = "severity") -> Dict[str, int]:
     counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "clean": 0}
     for doc in docs:
         severity = _normalize_severity(doc.get(severity_field) or doc.get("severity"))

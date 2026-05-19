@@ -34,7 +34,7 @@ def test_source_quality_uses_doc_weights_and_confidence_bonus():
     result = calculate_source_score([
         {"name": "VirusTotal", "confidence": 50},
         {"name": "BleepingComputer", "confidence": 0},
-        {"name": "Zone-H", "confidence": 10},
+        {"name": "Unknown Feed", "confidence": 10},
     ])
 
     assert result["trusted"] == 1

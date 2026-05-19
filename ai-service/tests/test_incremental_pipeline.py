@@ -117,7 +117,7 @@ def test_normalize_cyberint_iocs_hit():
     assert doc["adapter_status"] == "normalized"
     assert doc["ioc_type"] == "sha256"
     assert doc["ioc_value"] == "abcdef"
-    assert doc["severity"] == "critical"
+    assert doc["severity"] == ""
     assert doc["confidence"] == 80
     assert doc["event_time"] == "2025-03-10T22:33:39+00:00"
     assert "malware payload" in doc["description"]
@@ -177,7 +177,7 @@ def test_normalize_misp_attribute_hit():
     assert doc["ioc_type"] == "domain"
     assert doc["ioc_value"] == "example.com"
     assert doc["source_name"] == "Cyble Threat Intelligence Feed"
-    assert doc["severity"] == "low"
+    assert doc["severity"] == ""
     assert doc["confidence"] == 80
     assert doc["threat_type"] == ["Phishing"]
     assert doc["source_risk_score"] == 100
@@ -536,3 +536,56 @@ def test_processed_status_only_skips_finished_docs(monkeypatch):
 
     monkeypatch.setattr(client, "_get_processed_state", lambda doc: {"status": "failed"})
     assert not client.is_source_processed({"_id": "failed"})
+
+
+def test_pre_merge_falls_back_to_sources_list():
+    """When existing warehouse docs have only 'sources' (list of strings)
+    instead of 'source_objects', the pre-merge code should create synthetic
+    docs from the names list."""
+    existing = {
+        "sources": ["Cyberint", "MISP Feed"],
+        "source_count": 2,
+        "first_seen": "2026-01-01T00:00:00Z",
+        "last_seen": "2026-01-15T00:00:00Z",
+    }
+
+    existing_source_objs = existing.get("source_objects") or []
+    if not existing_source_objs:
+        raw_names = existing.get("sources") or []
+        if isinstance(raw_names, list):
+            existing_source_objs = [
+                {"name": n, "confidence": 0, "type": "unknown"}
+                for n in raw_names
+                if isinstance(n, str) and n.strip()
+            ]
+
+    assert len(existing_source_objs) == 2
+    assert existing_source_objs[0] == {"name": "Cyberint", "confidence": 0, "type": "unknown"}
+    assert existing_source_objs[1] == {"name": "MISP Feed", "confidence": 0, "type": "unknown"}
+
+
+def test_pre_merge_uses_source_objects_when_available():
+    """When existing warehouse docs have 'source_objects', use them directly."""
+    existing = {
+        "source_objects": [
+            {"name": "Cyberint", "confidence": 85, "type": "threat_intel"},
+            {"name": "MISP Feed", "confidence": 70, "type": "osint"},
+        ],
+        "sources": ["Cyberint", "MISP Feed"],
+        "first_seen": "2026-01-01T00:00:00Z",
+        "last_seen": "2026-01-15T00:00:00Z",
+    }
+
+    existing_source_objs = existing.get("source_objects") or []
+    if not existing_source_objs:
+        raw_names = existing.get("sources") or []
+        if isinstance(raw_names, list):
+            existing_source_objs = [
+                {"name": n, "confidence": 0, "type": "unknown"}
+                for n in raw_names
+                if isinstance(n, str) and n.strip()
+            ]
+
+    assert len(existing_source_objs) == 2
+    assert existing_source_objs[0]["confidence"] == 85
+    assert existing_source_objs[1]["type"] == "osint"

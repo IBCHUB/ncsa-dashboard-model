@@ -1376,6 +1376,38 @@ class ElasticClient:
             logger.error(f"Review queue search failed: {e}")
             return {"total": 0, "data": [], "error": "Search failed"}
 
+    def bulk_get_warehouse_documents(self, doc_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        ids = [str(d) for d in doc_ids if d]
+        if not ids:
+            return {}
+        try:
+            client = self._get_client(self.warehouse_index)
+            if ES_CLIENT_AVAILABLE and client:
+                result = client.mget(index=self.warehouse_index, ids=ids)
+                return {
+                    str(item.get("_id")): item.get("_source", {})
+                    for item in result.get("docs", []) or []
+                    if item.get("found")
+                }
+
+            if httpx is None:
+                return {}
+            response = httpx.post(
+                f"{self.warehouse_url}/{self.warehouse_index}/_mget",
+                json={"ids": ids},
+                timeout=30,
+                headers=self._get_headers(self.warehouse_index),
+            )
+            response.raise_for_status()
+            return {
+                str(item.get("_id")): item.get("_source", {})
+                for item in response.json().get("docs", []) or []
+                if item.get("found")
+            }
+        except Exception as e:
+            logger.warning("Failed to bulk-read warehouse documents: %s", e)
+            return {}
+
     def get_warehouse_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
         try:
             return self._get_document(self.warehouse_index, doc_id)

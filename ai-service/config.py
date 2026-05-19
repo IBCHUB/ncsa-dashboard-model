@@ -228,12 +228,16 @@ TRUSTED_SOURCES = [
     "VirusTotal", "AbuseIPDB", "MITRE", "AlienVault",
     "ThreatFox", "URLhaus", "MalwareBazaar", "PhishTank",
     "Suricata", "Snort", "Zeek", "YARA", "Cyberint", "Recorded Future",
-    "Sandbox"  # Internal malware analysis platform
+    "Sandbox",  # Internal malware analysis platform
+    "Cyble",    # Cyble Threat Intelligence Feed
+    "Zone-H",   # Defacement archive
+    "MISP",
+    "Cyble Threat Intelligence Feed",
 ]
 
 # News Sources (lower weight)
 NEWS_SOURCES = [
-    "BleepingComputer", "DarkReading", "TheHackerNews",
+    "BleepingComputer", "DarkReading", "TheHackerNews", "The Hacker News",
     "Cyber News", "SecurityWeek", "KrebsOnSecurity"
 ]
 

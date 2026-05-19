@@ -46,20 +46,6 @@ def _epoch_to_iso(value: Any) -> Optional[str]:
         return None
 
 
-def _normalize_severity(value: Any) -> str:
-    text = _as_text(value).lower()
-    if text in {"critical", "high", "medium", "low", "clean"}:
-        return text
-    score = _parse_int(value, default=-1)
-    if score >= 90:
-        return "critical"
-    if score >= 70:
-        return "high"
-    if score >= 40:
-        return "medium"
-    if score >= 0:
-        return "low"
-    return "low"
 
 
 def _tag_names(raw: Dict[str, Any]) -> List[str]:
@@ -552,7 +538,7 @@ def _existing_canonical_adapter(hit: Dict[str, Any], normalize_type, normalize_v
         source_type=source_type,
         description=raw.get("description") or "",
         threat_type=raw_threat_types,
-        severity=raw.get("severity") or _normalize_severity(raw.get("severity_score")),
+        severity="",
         tags=_unique(_as_list(raw.get("tags")) + ([detected_activity] if detected_activity else [])),
         reference=raw.get("reference") or raw.get("ref_doc_id") or raw.get("doc_hash") or "",
         collect_time=raw.get("collect_time") or raw.get("@timestamp") or raw.get("processed_at"),
@@ -586,7 +572,7 @@ def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value)
         source_type="customer-datalake",
         description="\n".join(context_parts),
         threat_type=[activity] if activity else [],
-        severity=_normalize_severity(raw.get("severity_score")),
+        severity="",
         tags=[activity] if activity else [],
         reference=raw.get("id") or hit.get("_id") or "",
         collect_time=raw.get("@timestamp"),
@@ -629,7 +615,7 @@ def _misp_attribute_adapter(hit: Dict[str, Any], normalize_type, normalize_value
         source_type="misp",
         description=description,
         threat_type=evidence.get("source_threat_types") or _extract_threats_from_tags(tags),
-        severity=_normalize_severity(threat_level.get("name")),
+        severity="",
         tags=tags,
         reference=raw.get("uuid") or event.get("uuid") or hit.get("_id") or "",
         collect_time=collect_time,
@@ -685,7 +671,7 @@ def _legacy_external_adapter(hit: Dict[str, Any], normalize_type, normalize_valu
         source_type=source_type,
         description="\n".join(part for part in [title, description] if part),
         threat_type=_unique(_as_list(raw.get("threat_type")) + _as_list(evidence.get("source_threat_types"))),
-        severity=raw.get("severity") or "low",
+        severity="",
         tags=raw.get("tags") or first_source.get("tags") or [],
         reference=first_source.get("url") or raw.get("reference") or raw.get("ref_doc_id") or raw.get("doc_hash") or "",
         collect_time=first_source.get("collect_time") or raw.get("@timestamp") or raw.get("processed_at"),
