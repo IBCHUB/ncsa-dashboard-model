@@ -6072,8 +6072,8 @@ def threat_landscape(
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    warehouse_docs = _collect_ioc_docs(
-        query=query,
+    # Threat landscape summary needs accurate total - use scroll-all
+    warehouse_docs = _scroll_all_warehouse_docs(
         start_date=start_date,
         end_date=end_date,
         sources=sources,
@@ -6082,6 +6082,14 @@ def threat_landscape(
         sort_by="risk",
         time_mode=TIME_MODE_OBSERVED,
     )
+    warehouse_docs = _filter_warehouse_docs(
+        warehouse_docs,
+        query=query,
+        threat_types=threat_types,
+        sources=sources,
+        severities=severities,
+    )
+    warehouse_docs = [doc for doc in warehouse_docs if _ioc_doc_matches_date_range(doc, start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED)]
     datalake_docs = _scroll_all_datalake_docs(start_date=start_date, end_date=end_date, sources=sources, threat_types=threat_types, severities=severities, time_mode=TIME_MODE_OBSERVED)
     payload = _build_threat_landscape_payload(warehouse_docs, datalake_docs)
     payload["filters"] = {
@@ -6701,14 +6709,28 @@ def ioc_analytics(
 
 @router.post("/reports/ioc/preview", tags=["Reports"])
 def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    docs = _collect_ioc_docs(
+    # Report preview shows accurate Total IOCs count - need ALL matching docs
+    docs = _scroll_all_warehouse_docs(
         start_date=request.start_date.isoformat(),
         end_date=request.end_date.isoformat(),
         threat_types=request.threat_types or None,
         sources=request.sources or None,
         ioc_types=request.ioc_types or None,
         severities=request.severities or None,
+        sort_by="risk",
         time_mode=TIME_MODE_OBSERVED,
+    )
+    docs = _filter_warehouse_docs(
+        docs,
+        threat_types=request.threat_types or None,
+        sources=request.sources or None,
+        severities=request.severities or None,
+    )
+    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=request.start_date.isoformat(), end_date=request.end_date.isoformat(), time_mode=TIME_MODE_OBSERVED)]
+    docs = sorted(
+        docs,
+        key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
+        reverse=True,
     )
     use_page_pagination = "page" in request.model_fields_set or "page_size" in request.model_fields_set
     if use_page_pagination:
