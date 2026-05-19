@@ -112,30 +112,37 @@ def group_iocs(documents: List[Dict[str, Any]]) -> Dict[Tuple[str, str], List[Di
 
 
 def load_documents(client: ElasticClient, date_from: Optional[str], date_to: Optional[str], limit: int) -> List[Dict[str, Any]]:
-    batch_size = min(limit, 500) if limit > 0 else 500
-    offset = 0
-    loaded: List[Dict[str, Any]] = []
+    # Use scroll API for large datasets (ES max_result_window = 10,000)
+    filters: List[Dict[str, Any]] = []
+    if date_from or date_to:
+        range_query: Dict[str, Any] = {}
+        if date_from:
+            range_query["gte"] = date_from
+        if date_to:
+            range_query["lte"] = date_to
+        filters.append({
+            "bool": {
+                "should": [
+                    {"range": {"event_time": range_query}},
+                    {"range": {"collect_time": range_query}},
+                ],
+                "minimum_should_match": 1,
+            }
+        })
 
-    while True:
-        remaining = limit - len(loaded)
-        if limit > 0 and remaining <= 0:
-            break
+    body = {
+        "query": {"bool": {"filter": filters}} if filters else {"match_all": {}},
+        "sort": [
+            {"event_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}},
+        ],
+    }
 
-        page_size = batch_size if limit <= 0 else min(batch_size, remaining)
-        page = client.search_datalake_documents(
-            date_from=date_from,
-            date_to=date_to,
-            limit=page_size,
-            offset=offset
-        )
-        if not page:
-            break
-
-        loaded.extend(page)
-        offset += len(page)
-        if len(page) < page_size:
-            break
-
+    print(f"  Loading datalake documents via scroll API...")
+    hits = client.scroll_search(client.datalake_index, body, page_size=2000)
+    loaded = [hit["_source"] | {"_id": hit["_id"]} for hit in hits]
+    if limit > 0:
+        loaded = loaded[:limit]
+    print(f"  Loaded {len(loaded)} documents from datalake")
     return loaded
 
 
