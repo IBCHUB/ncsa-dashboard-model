@@ -2926,6 +2926,10 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
     origins: List[Dict[str, Any]] = []
     trusted_source_union = set()
     for country, value in country_counts.most_common(10):
+        # Exclude Thailand (target country) from attack origins — a country
+        # should not appear as attacking itself.
+        if country.lower() in {"thailand", "th"}:
+            continue
         docs = origin_docs[country]
         severity_counts = Counter(
             _source_severity(doc)
@@ -2974,7 +2978,7 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
                 "severity": display_severity,
                 "critical_count": int(severity_counts.get("critical", 0)),
                 "high_count": int(severity_counts.get("high", 0)),
-                "primary_sector": sector_counts.most_common(1)[0][0] if sector_counts else "Other",
+                "primary_sector": next((s for s, _ in sector_counts.most_common() if s and s.lower() != "other"), "Other"),
                 "high_confidence_sources": len(trusted_sources),
                 "trusted_sources": trusted_sources,
             }
@@ -4190,7 +4194,7 @@ def _build_threat_level_from_aggregations(
     normalized_buckets: Dict[str, Dict[str, Any]] = {}
     for bucket in ((aggs.get("sectors") or {}).get("buckets") or []):
         raw_key = str(bucket.get("key") or "").strip()
-        if not raw_key or raw_key.lower() in {"none", "null", "unknown", "general/multiple"}:
+        if not raw_key or raw_key.lower() in {"none", "null", "unknown", "general/multiple", "other"}:
             continue
         display_name = _sector_display_name(raw_key) or raw_key
         existing = normalized_buckets.setdefault(display_name, {"display_name": display_name, "raw_keys": [], "count": 0, "severity_buckets": []})
@@ -4328,6 +4332,11 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
         country = str(bucket.get("key") or "").strip()
         if not country or country.lower() in {"none", "null", "unknown", "-"}:
             continue
+        # Exclude Thailand (target country) from attack origins — a country
+        # should not appear as attacking itself.
+        country_lower = country.lower()
+        if country_lower in {"thailand", "th"}:
+            continue
         severity_counts = _severity_counts_from_filter_agg(bucket.get("severity") or {})
         display_severity = _origin_display_severity(Counter(severity_counts))
         # Filter out countries where the highest severity is "clean"
@@ -4347,9 +4356,14 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
             or int(source_bucket.get("doc_count") or 0) >= 5
         ][:4]
         trusted_source_union.update(trusted_sources)
-        sector_bucket = next(iter((bucket.get("sectors") or {}).get("buckets") or []), None)
-        raw_sector = str((sector_bucket or {}).get("key") or "")
-        primary_sector = _sector_display_name(raw_sector) or "Other"
+        sector_buckets = (bucket.get("sectors") or {}).get("buckets") or []
+        primary_sector = "Other"
+        for sb in sector_buckets:
+            raw_sector = str(sb.get("key") or "")
+            mapped = _sector_display_name(raw_sector) or ""
+            if mapped and mapped.lower() != "other":
+                primary_sector = mapped
+                break
         origins.append(
             {
                 "country_code": _country_code_from_name(country),
@@ -5529,7 +5543,7 @@ def _build_threat_landscape_payload_from_aggs(
 
     # Countries (warehouse aggs only - datalake countries agg may not exist)
     country_buckets = (warehouse_aggs.get("countries") or {}).get("buckets") or []
-    countries_list = [{"label": str(b.get("key") or "unknown"), "value": int(b.get("doc_count") or 0)} for b in country_buckets[:10] if str(b.get("key") or "").lower() not in {"unknown", ""}]
+    countries_list = [{"label": str(b.get("key") or "unknown"), "value": int(b.get("doc_count") or 0)} for b in country_buckets[:10] if str(b.get("key") or "").lower() not in {"unknown", "", "thailand", "th"}]
 
     # IOC types
     ioc_type_buckets = (warehouse_aggs.get("ioc_types") or {}).get("buckets") or []
