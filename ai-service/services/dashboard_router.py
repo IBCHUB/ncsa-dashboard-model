@@ -1765,6 +1765,7 @@ def _warehouse_dashboard_aggs(
     threat_types: Optional[List[str]] = None,
     severities: Optional[List[str]] = None,
     risk_levels: Optional[List[str]] = None,
+    ioc_types: Optional[List[str]] = None,
     query: Optional[str] = None,
     min_risk_score: Optional[int] = None,
     include_heatmap: bool = False,
@@ -1779,6 +1780,7 @@ def _warehouse_dashboard_aggs(
         threat_types=threat_types,
         severities=severities,
         risk_levels=risk_levels,
+        ioc_types=ioc_types,
         min_risk_score=min_risk_score,
         time_mode=time_mode,
     )
@@ -7249,6 +7251,7 @@ def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str,
         threat_types=request.threat_types or None,
         sources=request.sources or None,
         severities=request.severities or None,
+        ioc_types=request.ioc_types or None,
         time_mode=TIME_MODE_OBSERVED,
     )
     es_total = int(aggs.get("total") or 0)
