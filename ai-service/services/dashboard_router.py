@@ -6112,19 +6112,32 @@ def attack_time_report(
     severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    docs, es_total_events = _collect_ioc_docs(
-        query=query,
-        start_date=start_date,
-        end_date=end_date,
-        threat_types=threat_types,
-        sources=sources,
-        severities=severities,
-        sort_by="risk",
-        sort_order="desc",
-        return_es_total=True,
-        time_mode=TIME_MODE_OBSERVED,
-    )
-    heatmap = _build_heatmap(docs, time_mode=TIME_MODE_OBSERVED, start_date=start_date, end_date=end_date)
+    # Build heatmap from ES aggregation directly - no doc loading needed for accurate counts
+    mode = _attack_time_heatmap_mode(start_date, end_date)
+    if mode == "day-hour":
+        # day-hour heatmap uses hourly date_histogram from _warehouse_dashboard_aggs
+        heatmap_aggs = _warehouse_dashboard_aggs(
+            start_date=start_date,
+            end_date=end_date,
+            sources=sources,
+            threat_types=threat_types,
+            severities=severities,
+            query=query,
+            include_heatmap=True,
+            time_mode=TIME_MODE_OBSERVED,
+        )
+        heatmap_buckets = (heatmap_aggs.get("heatmap") or {}).get("buckets") or []
+        heatmap = _build_heatmap_from_histogram(heatmap_buckets)
+    else:
+        heatmap = _build_attack_time_heatmap_from_aggs(
+            start_date=start_date,
+            end_date=end_date,
+            sources=sources,
+            threat_types=threat_types,
+            severities=severities,
+            query=query,
+            time_mode=TIME_MODE_OBSERVED,
+        )
     heatmap_peak = heatmap.get("peak") or {}
     if heatmap_peak and heatmap_peak.get("value", 0) > 0:
         peak_day = heatmap_peak.get("day") or heatmap_peak.get("label", "Monday")
@@ -6134,22 +6147,45 @@ def attack_time_report(
     else:
         peak_day = "-"
         peak_time_range = "-"
-    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    by_day_hour: Dict[tuple, int] = {(day, hour): 0 for day in day_names for hour in range(24)}
-    for doc in docs:
-        event_time = _pick_display_time_in_range(doc, TIME_MODE_OBSERVED, start_date, end_date)
-        if not event_time:
-            continue
-        local = event_time.astimezone(BANGKOK_TZ)
-        by_day_hour[(local.strftime("%A"), local.hour)] = by_day_hour.get((local.strftime("%A"), local.hour), 0) + 1
-    quiet = min(by_day_hour.items(), key=lambda item: item[1])[0] if any(v > 0 for v in by_day_hour.values()) else ("-", 0)
-    total_events = max(es_total_events, len(docs))
+
+    # Compute quiet period from heatmap cells (already accurate via ES aggregation)
+    cells = heatmap.get("cells") or []
+    quiet_day = "-"
+    quiet_time_range = "-"
+    if cells and any(int(c.get("value") or 0) > 0 for c in cells):
+        quiet_cell = min(cells, key=lambda c: int(c.get("value") or 0))
+        quiet_day = str(quiet_cell.get("y", "-"))
+        quiet_x = str(quiet_cell.get("x", "00:00"))
+        # x label may be "00:00" (day-hour mode) or already a range like "00:00 - 03:00"
+        if " - " in quiet_x:
+            quiet_time_range = quiet_x
+        else:
+            try:
+                start_hour = int(quiet_x.split(":")[0])
+                quiet_time_range = _hour_range_label((start_hour // 3) * 3, span=3)
+            except (ValueError, IndexError):
+                quiet_time_range = quiet_x
+
+    # Get paginated events + accurate total (limit 10K for safety)
+    docs, es_total_events = _collect_ioc_docs(
+        query=query,
+        start_date=start_date,
+        end_date=end_date,
+        threat_types=threat_types,
+        sources=sources,
+        severities=severities,
+        sort_by="time",
+        sort_order="desc",
+        return_es_total=True,
+        time_mode=TIME_MODE_OBSERVED,
+    )
+    total_events = es_total_events
     sorted_events = sorted(docs, key=lambda item: _pick_display_time_in_range(item, TIME_MODE_OBSERVED, start_date, end_date) or datetime.min.replace(tzinfo=UTC), reverse=True)
     paged_items = [_attack_time_event_row(event, TIME_MODE_OBSERVED, start_date, end_date) for event in _page_slice(sorted_events, page, page_size)]
     payload = {
         "summary": {
             "peak_attack_time": {"day": peak_day, "time_range": peak_time_range},
-            "quietest_period": {"day": quiet[0], "time_range": "-" if quiet[0] == "-" else _hour_range_label((quiet[1] // 3) * 3, span=3)},
+            "quietest_period": {"day": quiet_day, "time_range": quiet_time_range},
             "avg_attack_rate": _average_events_per_day(total_events, docs, start_date, end_date, TIME_MODE_OBSERVED),
             "highest_day": peak_day,
             "total_events": total_events,
