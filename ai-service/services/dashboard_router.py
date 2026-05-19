@@ -2791,7 +2791,7 @@ def _attack_time_event_row(
         "ioc_value": doc.get("ioc_value") or doc.get("value"),
         "source_attacker": doc.get("source_ip") or _country_from_doc(doc),
         "target_victim": _target_victim_from_doc(doc),
-        "source_name": sources[0] if sources else None,
+        "source_name": _source_display_name(sources[0]) if sources else None,
         "description": doc.get("description") or doc.get("reference"),
     }
 
