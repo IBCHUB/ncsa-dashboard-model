@@ -25,3 +25,6 @@ requests==2.32.3
 
 # Elasticsearch
 elasticsearch==8.15.1
+
+# GeoIP Enrichment (MaxMind GeoLite2-Country)
+geoip2==4.8.1

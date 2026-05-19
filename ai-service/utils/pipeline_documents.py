@@ -18,6 +18,7 @@ from models.classifier import (
     extract_threat_actors,
 )
 from models.actions import derive_action_metadata
+from utils.geoip_enrichment import enrich_geo_country
 from elastic_client import ElasticClient
 from models.scorer import calculate_risk_score
 from models.validation import evaluate_validation_status
@@ -598,6 +599,9 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "cluster_probability": None,
     }
     document.update(derive_action_metadata(document))
+
+    # GeoIP fallback: enrich geo_country from IP IOC value if still empty
+    document = enrich_geo_country(document)
 
     return {
         "document": document,

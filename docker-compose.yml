@@ -64,6 +64,8 @@ services:
     volumes:
       # Cache HuggingFace models to avoid re-downloading
       - ai-model-cache:/root/.cache/huggingface
+      # GeoIP database (MaxMind GeoLite2-Country.mmdb)
+      - ./ai-service/data:/app/data
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 30s

@@ -26,6 +26,7 @@ services:
       - AI_SERVICE_API_KEYS=${AI_SERVICE_API_KEYS:?Set AI_SERVICE_API_KEYS in deployment environment}
     volumes:
       - ai-model-cache:/root/.cache/huggingface
+      - ./ai-service/data:/app/data
     networks:
       - tcti-network
 

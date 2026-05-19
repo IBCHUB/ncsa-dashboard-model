@@ -14,6 +14,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from utils.geoip_enrichment import enrich_geo_country
+
 
 def _as_text(value: Any) -> str:
     return str(value or "").strip()
@@ -723,5 +725,7 @@ def normalize_datalake_hit(hit: Dict[str, Any], normalize_type, normalize_value)
         doc = adapter(hit, normalize_type, normalize_value)
         if doc:
             doc["adapter_status"] = "normalized"
+            # GeoIP fallback: enrich geo_country from IP IOC value if still empty
+            doc = enrich_geo_country(doc)
             return doc
     return quarantine_document(hit, "unsupported_datalake_schema")
