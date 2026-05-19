@@ -1429,7 +1429,7 @@ def _source_category(value: Any) -> str:
         return "trusted"
     if source in {"zone-h", "darkreading", "thehackernews", "the hacker news"} or "news" in source:
         return "news"
-    if "tcti-feeds-sandbox" in source or "tcti-feeds-cyberint" in source or "misp_attributes" in source:
+    if "tcti-feeds-sandbox" in source or "tcti-feeds-cyberint" in source or "misp_attributes" in source or source == "tcti-feeds":
         return "trusted"
     if "tcti-feeds-darkreading" in source or "tcti-feeds-bleeping" in source or "tcti-feeds-thehackernews" in source or "tcti-feeds-zoneh" in source:
         return "news"
