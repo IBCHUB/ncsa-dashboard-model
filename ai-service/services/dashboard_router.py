@@ -1349,28 +1349,76 @@ SOURCE_DISPLAY_NAMES = {
 }
 
 
-def _source_display_name(value: Any) -> str:
-    raw = str(value or "").strip()
+def _source_display_name_single(raw: str) -> str:
+    """Map a single (non-joined) source_name value to its display name."""
     if not raw:
         return "Unknown"
     if raw in SOURCE_DISPLAY_NAMES:
         return SOURCE_DISPLAY_NAMES[raw]
     lowered = raw.lower()
-    if lowered.startswith("cyberint_iocs-"):
+    if lowered in SOURCE_DISPLAY_NAMES:
+        return SOURCE_DISPLAY_NAMES[lowered]
+    # Case-insensitive lookup against keys
+    for key, val in SOURCE_DISPLAY_NAMES.items():
+        if key.lower() == lowered:
+            return val
+    if lowered.startswith("cyberint_iocs") or lowered.startswith("cyberint iocs") or lowered == "cyberint":
         return "Cyberint IOC Feed"
-    if lowered.startswith("tcti-feeds-sandbox"):
+    if lowered.startswith("tcti-feeds-sandbox") or lowered == "sandbox":
         return "Sandbox Analysis"
-    if lowered.startswith("tcti-feeds-darkreading"):
+    if lowered.startswith("tcti-feeds-darkreading") or lowered == "darkreading":
         return "DarkReading News"
-    if lowered.startswith("tcti-feeds-bleeping"):
+    if lowered.startswith("tcti-feeds-bleeping") or "bleeping" in lowered:
         return "BleepingComputer News"
-    if lowered.startswith("tcti-feeds-thehackernews"):
+    if lowered.startswith("tcti-feeds-thehackernews") or "hacker news" in lowered or lowered == "thehackernews":
         return "The Hacker News"
-    if lowered.startswith("tcti-feeds-zoneh"):
+    if lowered.startswith("tcti-feeds-zoneh") or lowered == "zone-h":
         return "Zone-H Defacement Feed"
-    if lowered.startswith("misp_attributes"):
+    if lowered.startswith("misp"):
         return "MISP Attribute Feed"
+    if lowered == "tcti-feeds":
+        return "Cyberint IOC Feed"
     return raw.replace("_", " ")
+
+
+# Priority ordering used to pick the most meaningful display name when a
+# document's source_name field contains multiple comma-joined values
+# (e.g. "The Hacker News, tcti-feeds"). Lower number = higher priority.
+# Specific named feeds win over the generic "Cyberint IOC Feed" alias,
+# which is the fallback applied to any doc lacking an explicit source.
+_SOURCE_PRIORITY = {
+    "The Hacker News": 1,
+    "BleepingComputer News": 1,
+    "DarkReading News": 1,
+    "Zone-H Defacement Feed": 1,
+    "Sandbox Analysis": 2,
+    "MISP Attribute Feed": 3,
+    "MISP Intelligence": 3,
+    "Cyberint IOC Feed": 4,
+}
+
+
+def _source_display_name(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "Unknown"
+    # Handle comma-joined source_name values produced by the pipeline when
+    # multiple feeds contribute to the same canonical IOC.
+    if "," in raw:
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        mapped = []
+        seen = set()
+        for part in parts:
+            name = _source_display_name_single(part)
+            if name and name != "Unknown" and name not in seen:
+                seen.add(name)
+                mapped.append(name)
+        if not mapped:
+            return "Unknown"
+        # Pick the highest-priority recognised source; fall back to first.
+        mapped.sort(key=lambda n: _SOURCE_PRIORITY.get(n, 99))
+        return mapped[0]
+    return _source_display_name_single(raw)
 
 
 def _format_source_terms(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
