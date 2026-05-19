@@ -176,7 +176,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if args.write and (not args.date_from or not args.date_to):
+    if args.write and not args.skip_validation and (not args.date_from or not args.date_to):
         parser.error("--write requires both --date-from and --date-to for safe scoped backfill")
 
     mode = "write" if args.write else "dry-run"
