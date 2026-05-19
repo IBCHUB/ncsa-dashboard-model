@@ -32,8 +32,8 @@ from models.sector_classifier import classify_sector as classify_sector_keywords
 
 logger = logging.getLogger(__name__)
 
-SCORE_MODEL_VERSION = os.getenv("SCORE_MODEL_VERSION", "scoring-v2.0.0")
-SCORE_CONFIG_VERSION = os.getenv("SCORE_CONFIG_VERSION", "weights-v1")
+SCORE_MODEL_VERSION = os.getenv("SCORE_MODEL_VERSION", "scoring-v3.0.0")
+SCORE_CONFIG_VERSION = os.getenv("SCORE_CONFIG_VERSION", "weights-v2-ioc-aware")
 
 # Mapping between breakdown factors and configurable scoring weights.
 WEIGHT_KEY_BY_FACTOR = {
@@ -46,6 +46,80 @@ WEIGHT_KEY_BY_FACTOR = {
     "threat_actor": "threat_actor",
     "mitre_techniques": "mitre_techniques"
 }
+
+# IOC types where domain_age and entropy factors are NOT applicable.
+_NON_DOMAIN_IOC_TYPES = frozenset({
+    "hash", "sha256", "sha1", "md5", "ip", "ipv4", "ipv6",
+    "email", "filename", "filepath", "registry", "mutex",
+    "certificate", "ja3", "jarm", "ssdeep",
+})
+
+# Patterns in description that imply malware for hash IOCs from trusted sources.
+_MALICIOUS_INDICATORS = re.compile(
+    r"malicious|malware|trojan|ransomware|backdoor|exploit|botnet|"
+    r"payload|infect|weaponized|dropper|stealer|keylogger|rat\b|"
+    r"remote.access|command.and.control|c2\b|cnc",
+    re.IGNORECASE,
+)
+
+
+def _effective_weights(ioc_type: str) -> Dict[str, float]:
+    """Return scoring weights adjusted for IOC type.
+
+    For non-domain IOC types (hash, IP, etc.), domain_age and entropy
+    weights are redistributed proportionally to the remaining factors.
+    This ensures hash IOCs are not penalized for inapplicable factors.
+    """
+    base = dict(SCORING_WEIGHTS)
+    ioc_lower = (ioc_type or "").strip().lower().replace("-", "").replace("_", "")
+
+    if ioc_lower in _NON_DOMAIN_IOC_TYPES:
+        # Collect weight from inapplicable factors
+        reclaimed = base.pop("domain_age", 0.0) + base.pop("entropy", 0.0)
+        if reclaimed > 0:
+            remaining_sum = sum(base.values())
+            if remaining_sum > 0:
+                scale = (remaining_sum + reclaimed) / remaining_sum
+                base = {k: round(v * scale, 4) for k, v in base.items()}
+    return base
+
+
+def _infer_threat_types_for_hash(
+    ioc_type: str,
+    description: str,
+    sources: List[Any],
+    existing_types: List[str],
+) -> List[str]:
+    """Infer threat types for hash IOCs from trusted sources.
+
+    When a trusted source (e.g. Cyberint) marks a hash as malicious but
+    the NLP classifier couldn't extract specific threat types, we infer
+    "Malware" automatically.  This prevents hash IOCs from scoring 0 on
+    the threat_type factor just because the description is sparse.
+    """
+    if existing_types:
+        return existing_types  # Already has types from classifier
+
+    ioc_lower = (ioc_type or "").strip().lower().replace("-", "").replace("_", "")
+    if ioc_lower not in {"hash", "sha256", "sha1", "md5", "ssdeep"}:
+        return existing_types
+
+    # Check if any source is trusted
+    has_trusted = False
+    for s in (sources or []):
+        name = str(s.get("name", s) if isinstance(s, dict) else s).upper()
+        if any(t.upper() in name for t in TRUSTED_SOURCES):
+            has_trusted = True
+            break
+
+    if not has_trusted:
+        return existing_types
+
+    # Check description for malicious indicators
+    if _MALICIOUS_INDICATORS.search(description or ""):
+        return ["Malware"]
+
+    return existing_types
 
 
 def _raw_to_score100(raw_score: float, raw_max: float) -> float:
@@ -61,15 +135,24 @@ def _raw_to_score100(raw_score: float, raw_max: float) -> float:
     return (clamped / float(raw_max)) * 100.0
 
 
-def _weighted_points(factor: str, raw_score: float, max_score: float) -> float:
+def _weighted_points(
+    factor: str,
+    raw_score: float,
+    max_score: float,
+    weights: Optional[Dict[str, float]] = None,
+) -> float:
     """
-    Convert raw factor score into weighted contribution using SCORING_WEIGHTS.
+    Convert raw factor score into weighted contribution.
+
+    When *weights* is provided (IOC-type-aware effective weights), those
+    values are used instead of the global SCORING_WEIGHTS.
     """
     if max_score <= 0:
         return 0.0
     normalized = min(max(raw_score, 0.0), max_score) / max_score
+    w = weights if weights is not None else SCORING_WEIGHTS
     weight_key = WEIGHT_KEY_BY_FACTOR.get(factor)
-    weight = SCORING_WEIGHTS.get(weight_key, 0.0) if weight_key else 0.0
+    weight = w.get(weight_key, 0.0) if weight_key else 0.0
     return round(normalized * weight * 100, 3)
 
 
@@ -679,11 +762,13 @@ def calculate_risk_score(
     sources = sources or []
     threat_classification = threat_classification or {}
     breakdown = {}
-    
-    # ==========================================
-    # TRADITIONAL FACTORS
-    # ==========================================
-    
+
+    # IOC-type-aware weight redistribution:
+    # For hash/IP/email IOCs, domain_age and entropy weights are
+    # redistributed proportionally to the remaining applicable factors.
+    eff_weights = _effective_weights(ioc_type)
+    is_redistributed = eff_weights != dict(SCORING_WEIGHTS)
+
     # ==========================================
     # TRADITIONAL FACTORS
     # ==========================================
@@ -714,7 +799,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(cross_source_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("cross_source", cross_source_score, 100),
+        "weighted_score": _weighted_points("cross_source", cross_source_score, 100, eff_weights),
         "count": source_count,
         "source_diversity": source_diversity,
         "independence_factor": independence_factor,
@@ -759,7 +844,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(source_quality_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("source_quality", source_quality_score, 100),
+        "weighted_score": _weighted_points("source_quality", source_quality_score, 100, eff_weights),
         "trusted_sources": trusted_list,
         "news_sources": news_list,
         "other_sources": other_list,
@@ -782,7 +867,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(keyword_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("keywords", keyword_score, 100),
+        "weighted_score": _weighted_points("keywords", keyword_score, 100, eff_weights),
         "description": f"พบ {len(matched_keywords)} คำสำคัญ",
         "reason": f"พบคำสำคัญ: {', '.join(matched_keywords)}" if matched_keywords else "ไม่พบคำสำคัญที่น่าสงสัย",
         "reasonEn": f"Keywords found: {', '.join(matched_keywords)}" if matched_keywords else "No high-risk keywords found",
@@ -819,7 +904,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(entropy_norm, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("entropy", entropy_norm, 100),
+        "weighted_score": _weighted_points("entropy", entropy_norm, 100, eff_weights),
         "description": entropy_description,
         "reason": entropy_reason,
         "reasonEn": f"Entropy value = {entropy:.2f}" if ioc_type in ["domain", "url", "hostname"] else "Not analyzed (not a domain/URL)",
@@ -863,7 +948,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(domain_age_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("domain_age", domain_age_score, 100),
+        "weighted_score": _weighted_points("domain_age", domain_age_score, 100, eff_weights),
         "reason": age_reason,
         "reasonEn": f"Domain age: {domain_age_days} days" if domain_age_days else "Domain age unknown",
         "methodology": "วิเคราะห์อายุโดเมนจาก WHOIS โดเมนใหม่มากมีความเสี่ยงสูงกว่า",
@@ -881,7 +966,13 @@ def calculate_risk_score(
     # 7. Threat Type Severity
     threat_types = threat_classification.get("threat_types", [])
     threat_details = threat_classification.get("threat_details", [])
-    
+
+    # For hash IOCs from trusted sources, infer "Malware" if no threat type
+    # was extracted by the NLP classifier (prevents 0-score on this factor).
+    threat_types = _infer_threat_types_for_hash(
+        ioc_type, description, sources, threat_types,
+    )
+
     threat_type_result = calculate_threat_type_score(threat_types, threat_details)
     
     if threat_type_result.get("using_granular_confidence"):
@@ -916,7 +1007,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(threat_type_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("threat_type_severity", threat_type_score, 100),
+        "weighted_score": _weighted_points("threat_type_severity", threat_type_score, 100, eff_weights),
         "confidence_used": ai_confidence,
         "description": f"ตรวจพบ {len(threat_types)} ประเภทภัยคุกคาม",
         "reason": reason_str,
@@ -941,7 +1032,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(threat_actor_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("threat_actor", threat_actor_score, 100),
+        "weighted_score": _weighted_points("threat_actor", threat_actor_score, 100, eff_weights),
         "confidence_used": ai_confidence,
         "actors_found": actor_names,
         "description": f"กลุ่มผู้โจมตี: {', '.join(actor_names) if actor_names else 'ไม่ระบุ'} (Conf: {int(ai_confidence*100)}%)",
@@ -966,7 +1057,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(mitre_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("mitre_techniques", mitre_score, 100),
+        "weighted_score": _weighted_points("mitre_techniques", mitre_score, 100, eff_weights),
         "confidence_used": ai_confidence,
         "techniques_found": mitre_techniques,
         "description": f"MITRE tactics: {mitre_result['sophistication']} (Conf: {int(ai_confidence*100)}%)",
@@ -1010,9 +1101,12 @@ def calculate_risk_score(
         "model_version": SCORE_MODEL_VERSION,
         "config_version": SCORE_CONFIG_VERSION,
         "weights": SCORING_WEIGHTS,
+        "effective_weights": eff_weights,
+        "weights_redistributed": is_redistributed,
+        "ioc_type": ioc_type,
         "weighted_total_before_decay": weighted_total,
         "credibility_score": credibility_score,
-        "impact_score": impact_score
+        "impact_score": impact_score,
     }
 
     # Apply decay factor for older IOCs

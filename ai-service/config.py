@@ -87,12 +87,15 @@ SECTOR_CONFIDENCE_THRESHOLD = 0.35
 
 # Risk Scoring Weights (sum = 1.0)
 # NOTE: geo_risk removed - data source not auditable
+# These are the DEFAULT weights for domain/URL IOCs.
+# For hash/IP IOCs, inapplicable factors (domain_age, entropy) are
+# automatically redistributed — see scorer.py _effective_weights().
 SCORING_WEIGHTS = {
     "cross_source": 0.25,      # พบจากหลายแหล่ง
     "threat_intel_source": 0.15,  # แหล่งน่าเชื่อถือ
     "high_risk_keywords": 0.10,   # คำสำคัญอันตราย
-    "domain_age": 0.10,        # อายุโดเมน
-    "entropy": 0.05,           # ความสุ่ม (DGA)
+    "domain_age": 0.10,        # อายุโดเมน (domain/URL เท่านั้น)
+    "entropy": 0.05,           # ความสุ่ม DGA (domain/URL เท่านั้น)
     "threat_type_severity": 0.20,  # AI: ประเภทภัยคุกคาม
     "threat_actor": 0.10,          # AI: กลุ่มผู้โจมตี
     "mitre_techniques": 0.05       # AI: MITRE ATT&CK
