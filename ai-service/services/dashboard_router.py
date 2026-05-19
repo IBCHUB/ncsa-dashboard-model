@@ -1345,7 +1345,7 @@ SOURCE_DISPLAY_NAMES = {
     "DarkReading": "DarkReading News",
     "BleepingComputer News": "BleepingComputer News",
     "TheHackerNews": "The Hacker News",
-    "tcti-feeds": "TCTI Feed",
+    "tcti-feeds": "Cyberint IOC Feed",
 }
 
 

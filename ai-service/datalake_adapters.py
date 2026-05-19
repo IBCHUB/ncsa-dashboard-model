@@ -482,6 +482,41 @@ def _raw_fingerprint(raw: Dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _source_name_from_index(index_name: str) -> Optional[str]:
+    """Derive a meaningful source_name from an ES index name.
+
+    Index patterns:
+      cyberint-feeds-2025.04  → cyberint_iocs
+      tcti-feeds-sandbox-*    → tcti-feeds-sandbox
+      tcti-feeds-darkreading-*→ tcti-feeds-darkreading
+      tcti-feeds-thehackernews-* → tcti-feeds-thehackernews
+      tcti-feeds-bleepingcomputer-* → tcti-feeds-bleeping
+      tcti-feeds-zoneh-*      → tcti-feeds-zoneh
+      misp-*                  → misp_attributes
+    Falls back to None if the index name is unrecognised.
+    """
+    if not index_name:
+        return None
+    idx = index_name.lower()
+    if idx.startswith("cyberint"):
+        return "cyberint_iocs"
+    if idx.startswith("tcti-feeds-sandbox"):
+        return "tcti-feeds-sandbox"
+    if idx.startswith("tcti-feeds-darkreading"):
+        return "tcti-feeds-darkreading"
+    if idx.startswith("tcti-feeds-thehackernews") or idx.startswith("tcti-feeds-hackernews"):
+        return "tcti-feeds-thehackernews"
+    if idx.startswith("tcti-feeds-bleeping"):
+        return "tcti-feeds-bleeping"
+    if idx.startswith("tcti-feeds-zoneh"):
+        return "tcti-feeds-zoneh"
+    if idx.startswith("misp"):
+        return "misp_attributes"
+    if idx.startswith("tcti-feeds"):
+        return "cyberint_iocs"
+    return None
+
+
 def _base_doc(hit: Dict[str, Any], adapter_name: str, raw: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "_id": hit.get("_id"),
@@ -534,7 +569,7 @@ def _existing_canonical_adapter(hit: Dict[str, Any], normalize_type, normalize_v
         original_value,
         normalize_type,
         normalize_value,
-        source_name=raw.get("source_name") or raw.get("ref_doc_index") or "tcti-feeds",
+        source_name=raw.get("source_name") or raw.get("ref_doc_index") or _source_name_from_index(hit.get("_index")) or "cyberint_iocs",
         source_type=source_type,
         description=raw.get("description") or "",
         threat_type=raw_threat_types,
@@ -647,7 +682,7 @@ def _legacy_external_adapter(hit: Dict[str, Any], normalize_type, normalize_valu
     geo_ip = enrichment.get("geo_ip") if isinstance(enrichment.get("geo_ip"), dict) else {}
     title = _as_text(first_source.get("title") or raw.get("title"))
     description = _as_text(first_source.get("description") or raw.get("description"))
-    source_name = first_source.get("name") or raw.get("source_name") or raw.get("ref_doc_index") or "tcti-feeds"
+    source_name = first_source.get("name") or raw.get("source_name") or raw.get("ref_doc_index") or _source_name_from_index(hit.get("_index")) or "cyberint_iocs"
     source_type = _infer_external_source_type(raw, _as_text(source_name), _as_text(hit.get("_index")))
     evidence = _merge_evidence(
         extract_virustotal_evidence(enrichment),
