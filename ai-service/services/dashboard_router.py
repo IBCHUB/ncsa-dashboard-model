@@ -3830,6 +3830,7 @@ def _build_aggregated_report_payload(
     bounds = _date_histogram_bounds(start_date, end_date)
     if bounds:
         timeline_histogram["hard_bounds"] = bounds
+        timeline_histogram["extended_bounds"] = {"min": bounds["min"], "max": bounds["max"]}
 
     body: Dict[str, Any] = {
         "size": 0,
