@@ -2396,6 +2396,15 @@ def _get_warehouse_doc_by_indicator(ioc_type: str, ioc_value: str) -> Optional[D
     normalized_value = str(ioc_value or "").strip()
     if not normalized_type or not normalized_value:
         return None
+
+    refanged = _refang_indicator_value(normalized_value)
+    candidates = list(dict.fromkeys([normalized_value, refanged]))
+
+    value_clauses: list = []
+    for val in candidates:
+        value_clauses.append({"term": {"ioc_value.keyword": val}})
+        value_clauses.append({"term": {"ioc_value": val}})
+
     client = get_elastic_client()
     result = _safe_search(
         client.warehouse_index,
@@ -2404,8 +2413,10 @@ def _get_warehouse_doc_by_indicator(ioc_type: str, ioc_value: str) -> Optional[D
                 "bool": {
                     "filter": [
                         {"term": {"ioc_type": normalized_type}},
-                        {"term": {"ioc_value": normalized_value}},
-                    ]
+                    ],
+                    "must": [
+                        {"bool": {"should": value_clauses, "minimum_should_match": 1}},
+                    ],
                 }
             },
             "sort": [
