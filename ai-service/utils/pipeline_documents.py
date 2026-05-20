@@ -440,6 +440,22 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
     sanitized_tags = _unique_non_empty(sanitization_result["tags"])
     sanitization_summary = sanitization_result["summary"]
 
+    # Extract TLP marking from all collected tags across observations.
+    # Sources may tag IOCs with tlp:white / tlp:green / tlp:amber / tlp:red / tlp:clear.
+    # When multiple TLP levels appear (e.g. one doc says amber, another says red),
+    # keep the most restrictive one so we never under-classify sensitivity.
+    _TLP_PRIORITY: Dict[str, int] = {
+        "red": 4, "amber+strict": 3, "amber": 3, "green": 2, "white": 1, "clear": 1
+    }
+    tlp_value: Optional[str] = None
+    for _tag in raw_tags:
+        _tag_lower = _tag.strip().lower()
+        if _tag_lower.startswith("tlp:"):
+            _marking = _tag_lower.split(":", 1)[1].strip()
+            if _marking in _TLP_PRIORITY:
+                if tlp_value is None or _TLP_PRIORITY[_marking] > _TLP_PRIORITY.get(tlp_value, 0):
+                    tlp_value = _marking
+
     merged_description = "\n".join(sanitized_descriptions) if sanitized_descriptions else ""
     sources = source_names if source_names else ["unknown"]
     evidence_source_names = _unique_non_empty(external_evidence_sources)
@@ -581,6 +597,12 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "threat_type": sorted(set(source_threat_types)),
         "severity": score_result.get("severity", "low"),
         "tags": sanitized_tags,
+        # Only set tlp when we extracted a real value from source tags.
+        # When absent, _prepare_warehouse_document() in elastic_client.py
+        # applies its own default ("amber"). Setting None here would
+        # override that default because dict.get(key, default) only fires
+        # when the key is entirely missing — not when it is None.
+        **({"tlp": tlp_value} if tlp_value else {}),
         "reference": "\n".join(sanitized_references),
         "collect_time": last_seen,
         "event_time": first_seen,
@@ -623,6 +645,26 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "validation_status": validation["validation_status"],
         "validation_reasons": validation["validation_reasons"],
         "warehouse_eligible": validation["warehouse_eligible"],
+        # review_required: derived from validation reasons that signal human review is needed.
+        # _prepare_warehouse_document() in elastic_client.py defaults this to False — but that
+        # means docs flagged by validation (private IP, policy gate, single-source) never appear
+        # in SOC Action Center review queues.  We set it here so the signal is not lost.
+        "review_required": any(
+            r in validation["validation_reasons"]
+            for r in (
+                "private_ip_indicator_requires_review",
+                "policy_gate_triggered",
+                "missing_trusted_source_corroboration",
+            )
+        ),
+        "review_state": "pending_review" if any(
+            r in validation["validation_reasons"]
+            for r in (
+                "private_ip_indicator_requires_review",
+                "policy_gate_triggered",
+                "missing_trusted_source_corroboration",
+            )
+        ) else "not_required",
         "cleaning_flags": sanitization_summary.get("flags", []),
         "sanitization_summary": sanitization_summary,
         "cluster_label": None,

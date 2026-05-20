@@ -1045,8 +1045,18 @@ class ElasticClient:
         if DATALAKE_QUERY_MODE == "all":
             return self._get_unprocessed_iocs_from_readonly_feed(limit)
         else:
+            # Match docs where ai_processed does not exist (old-style) OR is explicitly false
+            # (new docs indexed via bulk_index_datalake which sets ai_processed=False by default).
             query = {
-                "query": {"bool": {"must_not": [{"exists": {"field": "ai_processed"}}]}},
+                "query": {
+                    "bool": {
+                        "should": [
+                            {"bool": {"must_not": [{"exists": {"field": "ai_processed"}}]}},
+                            {"term": {"ai_processed": False}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                },
                 "sort": [
                     {"event_time": {"order": "asc", "missing": "_last"}},
                     {"collect_time": {"order": "asc", "missing": "_last"}}
@@ -1305,41 +1315,27 @@ class ElasticClient:
             return {"success": 0, "failed": len(failed_ids), "failed_ids": failed_ids}
 
     def bulk_index_datalake(self, documents: List[Dict]) -> Dict[str, int]:
-        success = 0
-        failed = 0
-        
-        client = self._get_client(self.datalake_index)
-        
+        if not documents:
+            return {"success": 0, "failed": 0}
+
         now = datetime.now(timezone.utc).isoformat()
+        operations: List[Dict[str, Any]] = []
         for original_doc in documents:
             doc = copy.deepcopy(original_doc)
             doc.setdefault("ai_processed", False)
             doc.setdefault("created_at", now)
-            try:
-                ioc_id = self._build_datalake_doc_id(doc)
-                if ES_CLIENT_AVAILABLE and client:
-                    client.index(
-                        index=self.datalake_index,
-                        body=doc,
-                        id=ioc_id
-                    )
-                    success += 1
-                else:
-                    resp = httpx.put(
-                        f"{self.datalake_url}/{self.datalake_index}/_doc/{quote(ioc_id, safe='')}",
-                        json=doc,
-                        timeout=10,
-                        headers=self._get_headers(self.datalake_index)
-                    )
-                    if resp.status_code in (200, 201):
-                        success += 1
-                    else:
-                        failed += 1
-            except Exception as e:
-                logger.error(f"Failed to index document: {e}")
-                failed += 1
-        
-        return {"success": success, "failed": failed}
+            ioc_id = self._build_datalake_doc_id(doc)
+            operations.append({
+                "action": {"index": {"_index": self.datalake_index, "_id": ioc_id}},
+                "source": doc,
+            })
+
+        try:
+            result = self._bulk_request_chunked(self.datalake_index, operations)
+            return {"success": int(result.get("success", 0)), "failed": int(result.get("failed", 0))}
+        except Exception as e:
+            logger.error("bulk_index_datalake failed: %s", e)
+            return {"success": 0, "failed": len(documents)}
 
     def search_review_documents(
         self,

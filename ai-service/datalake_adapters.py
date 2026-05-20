@@ -314,13 +314,45 @@ def extract_cyberint_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(source_indicators, list):
         source_indicators = []
     risk = cyberint.get("risk")
+
+    # `risk` has two shapes depending on the source format:
+    #   - Plain int/string  (legacy): risk = 80
+    #   - Dict (Zone-H enrichment):   risk = {"malicious_score": 100, "detected_activities": [...]}
+    risk_score: Optional[int] = None
+    threat_types: List[str] = []
+    threat_actors: List[str] = []
+
+    if isinstance(risk, dict):
+        # Zone-H enrichment format — extract malicious_score, activity types, and linked threat actors
+        raw_score = _parse_int(risk.get("malicious_score"), 0)
+        risk_score = raw_score if raw_score > 0 else None
+        for activity in _as_list(risk.get("detected_activities")):
+            if not isinstance(activity, dict):
+                continue
+            # "type" is the activity label (e.g. "cnc_server", "payload_delivery")
+            act_type = _as_text(activity.get("type") or activity.get("activity"))
+            if act_type:
+                threat_types.append(act_type)
+            # related_entities holds the linked threat actor groups
+            for entity in _as_list(activity.get("related_entities")):
+                if isinstance(entity, dict):
+                    name = _first_text(entity.get("entity_name"), entity.get("name"))
+                    if name:
+                        threat_actors.append(name)
+    elif risk is not None:
+        # Legacy plain numeric score
+        raw_score = _parse_int(risk, 0)
+        risk_score = raw_score if raw_score > 0 else None
+
     evidence = {
         "evidence_type": "cyberint_enrichment",
         "external_evidence_sources": ["Cyberint"] if risk is not None else [],
-        "source_risk_score": _parse_int(risk, 0) if risk is not None else None,
-        "source_confidence": _parse_int(risk, 0) if risk is not None else None,
+        "source_risk_score": risk_score,
+        "source_confidence": risk_score,
         "cyberint_ref": cyberint.get("ref"),
         "cyberint_source_indicator_count": len(source_indicators),
+        "source_threat_types": _unique(threat_types),
+        "source_threat_actors": _unique(threat_actors),
     }
     return _compact_evidence(evidence)
 
@@ -645,7 +677,11 @@ def _misp_attribute_adapter(hit: Dict[str, Any], normalize_type, normalize_value
     event = raw.get("Event") if isinstance(raw.get("Event"), dict) else {}
     orgc = event.get("Orgc") if isinstance(event.get("Orgc"), dict) else {}
     threat_level = event.get("ThreatLevel") if isinstance(event.get("ThreatLevel"), dict) else {}
-    tags = _tag_names(raw)
+    # Merge attribute-level and event-level tags — galaxy tags (threat-actor, sector,
+    # target-information) are typically set at the event level, not the attribute level.
+    attr_tags = _tag_names(raw)
+    event_tags = _tag_names(event)
+    tags = _unique(attr_tags + event_tags)
     event_info = _as_text(event.get("info"))
     comment = _as_text(raw.get("comment"))
     description = "\n".join(part for part in [event_info, comment] if part)

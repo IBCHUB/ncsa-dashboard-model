@@ -30,6 +30,7 @@ from services.dashboard_router import router as dashboard_router
 from services.external_sharing_router import router as external_sharing_router
 from utils.pipeline_documents import build_enriched_ioc_document
 from utils.sanitizer import sanitize_text
+from models.campaign_clusterer import cluster_iocs
 from utils.cors import build_cors_origins
 
 # Configure logging
@@ -228,7 +229,7 @@ async def classify_endpoint(request: ClassifyRequest, api_key: str = Depends(ver
         start = time.time()
 
         sanitized_text = sanitize_text(request.text)["text"]
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, lambda: classify_threat(sanitized_text, threshold=request.threshold))
         actors = await loop.run_in_executor(None, lambda: extract_threat_actors(sanitized_text))
         mitre = await loop.run_in_executor(None, lambda: extract_mitre_techniques(sanitized_text))
@@ -258,7 +259,7 @@ async def score_endpoint(request: ScoreRequest, api_key: str = Depends(verify_ap
         start = time.time()
 
         sanitized_description = sanitize_text(request.description)["text"]
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, lambda: calculate_risk_score(
 
             ioc_value=request.ioc_value,
@@ -295,7 +296,7 @@ async def enrich_endpoint(request: EnrichRequest, api_key: str = Depends(verify_
         full_text = sanitize_text(f"{request.title} {request.description}".strip())["text"]
         
         # 1. Classify threat
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         classification = await loop.run_in_executor(None, lambda: classify_threat(full_text))
         actors = await loop.run_in_executor(None, lambda: extract_threat_actors(full_text))
         mitre = await loop.run_in_executor(None, lambda: extract_mitre_techniques(full_text))
@@ -375,18 +376,17 @@ async def batch_enrich_endpoint(request: BatchEnrichRequest, api_key: str = Depe
                 "ai_threat_types": [],
                 "ai_threat_actors": [],
                 "ai_mitre_techniques": [],
-                "ai_classification_confidence": 0,
+                "ai_classification_confidence": 0.0,
                 "ai_risk_score": 0,
-                "ai_operational_risk_score": 0,
-                "ai_credibility_score": 0,
-                "ai_impact_score": 0,
+                "ai_operational_risk_score": None,
+                "ai_credibility_score": None,
+                "ai_impact_score": None,
                 "ai_severity": "unknown",
                 "ai_score_model_version": None,
                 "ai_score_config_version": None,
                 "ai_score_breakdown": {},
                 "ai_top_factors": [],
                 "processing_time_ms": 0,
-                "error": str(e)
             })
     
     total_elapsed = int((time.time() - start) * 1000)
@@ -462,6 +462,7 @@ class PipelineRunResponse(BaseModel):
     vt_evidence_count: int = 0
     misp_risk_score_count: int = 0
     correlation_evidence_count: int = 0
+    clustered_count: int = 0
     avg_ms_per_ioc: float = 0.0
     observations_updated: int
     processing_time_ms: int
@@ -696,6 +697,35 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 if not es_client.mark_as_processed(doc_id):
                     failed += 1
 
+        # --- Campaign Clustering (incremental) ---
+        # Run HDBSCAN clustering on this batch so cluster_label is populated for
+        # every doc ingested via the live pipeline — not only during full rebuilds.
+        # Minimum cluster size (5) means small batches mostly produce noise (-1),
+        # but larger batches will correctly group related IOCs into campaigns.
+        # Note: we cluster even when some docs failed — the batch_docs filter below
+        # already excludes failed_warehouse_doc_ids individually.
+        clustered_count = 0
+        if warehouse_items:
+            try:
+                batch_docs = [
+                    item["document"] for item in warehouse_items
+                    if item.get("doc_id") not in failed_warehouse_doc_ids
+                ]
+                cluster_results = cluster_iocs(batch_docs)
+                cluster_lookup = {r["ioc_value"]: r for r in cluster_results}
+                for item in warehouse_items:
+                    doc = item["document"]
+                    cr = cluster_lookup.get(doc.get("ioc_value"))
+                    if cr and cr["cluster_label"] >= 0:
+                        update_body = {
+                            "cluster_label": cr["cluster_label"],
+                            "cluster_probability": round(cr["cluster_probability"], 4),
+                        }
+                        if es_client.update_warehouse_document(item["doc_id"], update_body):
+                            clustered_count += 1
+            except Exception as _cluster_exc:
+                logger.warning(f"Incremental clustering failed (non-fatal): {_cluster_exc}")
+
         elapsed = int((time.time() - start) * 1000)
         classified_iocs = ml_classified + rule_classified + ml_skipped
         avg_ms_per_ioc = round(elapsed / classified_iocs, 2) if classified_iocs else 0.0
@@ -714,6 +744,7 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
             "vt_evidence_count": vt_evidence_count,
             "misp_risk_score_count": misp_risk_score_count,
             "correlation_evidence_count": correlation_evidence_count,
+            "clustered_count": clustered_count,
             "avg_ms_per_ioc": avg_ms_per_ioc,
             "observations_updated": processed_observations,
             "processing_time_ms": elapsed,
@@ -724,6 +755,7 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 f"ML={ml_classified}, rule={rule_classified}, skipped={ml_skipped}, "
                 f"evidence={evidence_enriched}, vt={vt_evidence_count}, "
                 f"source_risk={misp_risk_score_count}, correlations={correlation_evidence_count}, "
+                f"clustered={clustered_count}, "
                 f"{quarantined} quarantined, {failed} failed"
             )
         }

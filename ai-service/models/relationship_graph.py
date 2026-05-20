@@ -123,28 +123,43 @@ def _extract_malware_links(
     nodes_by_id: Dict[str, Dict[str, Any]],
     links_index: Dict[Tuple[str, str, str], float],
 ) -> None:
-    """Create malware nodes and hosts links from enrichment.related_entities."""
+    """Create malware nodes and hosts links from enrichment.related_entities and source_malware_family."""
     enrichment = doc.get("enrichment")
-    if not isinstance(enrichment, dict):
-        return
-
-    related_entities = _safe_list(enrichment.get("related_entities"))
-    for entity in related_entities:
-        if not isinstance(entity, dict):
-            continue
-        entity_type = _safe_str(entity.get("entity_type")).lower()
-        if "malware" in entity_type:
-            name = _safe_str(entity.get("name") or entity.get("value"))
-            if not name:
+    if isinstance(enrichment, dict):
+        related_entities = _safe_list(enrichment.get("related_entities"))
+        for entity in related_entities:
+            if not isinstance(entity, dict):
                 continue
-            malware_id = _make_node_id("malware", name)
-            _add_node(nodes_by_id, malware_id, "malware", name)
+            entity_type = _safe_str(entity.get("entity_type")).lower()
+            if "malware" in entity_type:
+                name = _safe_str(entity.get("name") or entity.get("value"))
+                if not name:
+                    continue
+                malware_id = _make_node_id("malware", name)
+                _add_node(nodes_by_id, malware_id, "malware", name)
+                _add_link(links_index, indicator_id, malware_id, "hosts")
+
+        # enrichment.malware_family (may be set by some enrichment providers)
+        malware_family = _safe_str(enrichment.get("malware_family"))
+        if malware_family:
+            malware_id = _make_node_id("malware", malware_family)
+            _add_node(nodes_by_id, malware_id, "malware", malware_family)
             _add_link(links_index, indicator_id, malware_id, "hosts")
 
-    malware_family = _safe_str(enrichment.get("malware_family"))
-    if malware_family:
-        malware_id = _make_node_id("malware", malware_family)
-        _add_node(nodes_by_id, malware_id, "malware", malware_family)
+    # source_malware_family is the flat field set by pipeline_documents.py from
+    # source evidence (e.g. cyberint.malware.name) — this is the primary path for
+    # malware intelligence from the datalake adapters.
+    source_malware = _safe_list(doc.get("source_malware_family"))
+    if not source_malware:
+        raw = doc.get("source_malware_family")
+        if isinstance(raw, str) and raw.strip():
+            source_malware = [raw.strip()]
+    for malware_name in source_malware:
+        name = _safe_str(malware_name)
+        if not name:
+            continue
+        malware_id = _make_node_id("malware", name)
+        _add_node(nodes_by_id, malware_id, "malware", name)
         _add_link(links_index, indicator_id, malware_id, "hosts")
 
 
@@ -280,10 +295,11 @@ def _build_suggested_actor_links(
     to Actor-Z.
     """
     # Build a lookup: ioc_id -> set of actors already linked
+    # Include both "uses" (non-CVE) and "exploits" (CVE) link types
     ioc_actors: Dict[str, set] = {}
     for (src, tgt, lt) in links_index:
-        if lt == "uses":
-            # actor -> ioc
+        if lt in ("uses", "exploits"):
+            # actor -> ioc (both link types have actor as source, ioc as target)
             ioc_actors.setdefault(tgt, set()).add(src)
 
     for _cluster_label, member_ids in campaign_members.items():
