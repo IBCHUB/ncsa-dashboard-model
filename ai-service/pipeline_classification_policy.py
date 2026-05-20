@@ -276,13 +276,25 @@ def detect_context_rule_threat_types(text: str) -> List[str]:
     return _unique(detected)
 
 
-def has_rule_signal(source_types: Sequence[str], adapter_names: Sequence[str], threat_types_raw: Sequence[str]) -> bool:
+HASH_IOC_TYPES = {"file/sha256", "file/sha1", "file/md5", "sha256", "sha1", "md5", "hash"}
+
+
+def has_rule_signal(
+    source_types: Sequence[str],
+    adapter_names: Sequence[str],
+    threat_types_raw: Sequence[str],
+    ioc_type: str = "",
+) -> bool:
     rule_source_types = _env_csv("PIPELINE_RULE_SOURCE_TYPES", DEFAULT_RULE_SOURCE_TYPES)
     normalized_source_types = {str(source_type or "").strip().lower() for source_type in source_types}
     normalized_adapters = {str(adapter_name or "").strip().lower() for adapter_name in adapter_names}
+    normalized_ioc_type = str(ioc_type or "").strip().lower()
+    # For hash IOCs, ML can't infer sector/target from the hash alone, so keep them on rules.
+    # For url/domain/ipv4 IOCs, allow ML to run (it can read WHOIS/ASN/path tokens in context).
+    is_hash_ioc = normalized_ioc_type in HASH_IOC_TYPES
     if normalized_source_types & rule_source_types:
         return True
-    if normalized_adapters & {"cyberint_iocs", "misp_attribute"}:
+    if normalized_adapters & {"cyberint_iocs", "misp_attribute"} and (is_hash_ioc or not normalized_ioc_type):
         return True
     return any(str(threat or "").strip() for threat in threat_types_raw)
 
@@ -293,13 +305,16 @@ def decide_classification_mode(
     adapter_names: Sequence[str],
     threat_types_raw: Sequence[str],
     classifier_input: str,
+    ioc_type: str = "",
 ) -> ClassificationDecision:
     configured_mode = os.getenv("PIPELINE_CLASSIFICATION_MODE", "auto").strip().lower()
     input_chars = len(classifier_input or "")
     min_context_chars = _env_int("PIPELINE_ML_MIN_CONTEXT_CHARS", DEFAULT_ML_MIN_CONTEXT_CHARS)
     ml_source_types = _env_csv("PIPELINE_ML_SOURCE_TYPES", DEFAULT_ML_SOURCE_TYPES)
     normalized_source_types = {str(source_type or "").strip().lower() for source_type in source_types}
-    rule_signal = has_rule_signal(source_types, adapter_names, threat_types_raw)
+    normalized_ioc_type = str(ioc_type or "").strip().lower()
+    is_hash_ioc = normalized_ioc_type in HASH_IOC_TYPES
+    rule_signal = has_rule_signal(source_types, adapter_names, threat_types_raw, ioc_type=ioc_type)
 
     if configured_mode == "ml_all":
         return ClassificationDecision("ml", "mode_override_ml_all", input_chars)
@@ -313,6 +328,16 @@ def decide_classification_mode(
         if is_non_incident_news_context(classifier_input):
             return ClassificationDecision("skipped", "non_incident_news_content", input_chars)
         return ClassificationDecision("ml", "ml_source_type", input_chars)
+
+    # For non-hash IOCs (url/domain/ip) with rich-enough context, prefer ML over rule
+    # so we can extract sector/target_org from WHOIS, ASN, path tokens, etc.
+    if (
+        not is_hash_ioc
+        and normalized_ioc_type
+        and input_chars >= min_context_chars
+        and not is_generic_feed_context(classifier_input)
+    ):
+        return ClassificationDecision("ml", "non_hash_ioc_context_rich", input_chars)
 
     if rule_signal:
         return ClassificationDecision("source_rule", "rule_source_or_threat_metadata", input_chars)
@@ -396,6 +421,76 @@ def source_confidence(ioc_docs: Sequence[Dict[str, Any]]) -> float:
     return min(max(confidences), 0.85)
 
 
+def _extract_sectors_from_ioc_docs(ioc_docs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Extract sector signals from rule-mode IOC docs.
+
+    Sources (in priority order):
+      1. MISP galaxy tags with `sector:*` or `misp-galaxy:sector="X"` namespace
+         (captured by datalake_adapters.extract_misp_evidence via A2 fix).
+      2. Cyberint `source_sectors` evidence field.
+      3. Tags array entries that look like sector labels.
+
+    Returns list of {sector, confidence, source} dicts compatible with the
+    downstream scorer's `sector_classifications` consumer.
+    """
+    import re as _re
+
+    sectors: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    sector_galaxy_re = _re.compile(
+        r'(?:misp-galaxy:)?sector\s*[:=]\s*"?([^"\|]+?)"?(?:\s*[,;]|$)',
+        flags=_re.IGNORECASE,
+    )
+
+    def _add(label: str, source: str, confidence: float = 0.85) -> None:
+        cleaned = str(label or "").strip().lower()
+        if not cleaned or cleaned in seen:
+            return
+        seen.add(cleaned)
+        sectors.append({
+            "sector": cleaned,
+            "confidence": round(confidence, 3),
+            "source": source,
+        })
+
+    for doc in ioc_docs or []:
+        if not isinstance(doc, dict):
+            continue
+        # 1a. MISP galaxy tags (event-level or attribute-level)
+        for tag in doc.get("tags") or []:
+            match = sector_galaxy_re.search(str(tag))
+            if match:
+                _add(match.group(1), "misp_galaxy", 0.90)
+        # 1b. Cyberint / merged evidence
+        evidence = doc.get("source_evidence")
+        evidence_items = evidence if isinstance(evidence, list) else [evidence] if isinstance(evidence, dict) else []
+        for item in evidence_items:
+            if not isinstance(item, dict):
+                continue
+            for raw_sector in item.get("source_sectors") or []:
+                _add(raw_sector, "feed_evidence", 0.80)
+            raw_evidence = item.get("raw_evidence")
+            if isinstance(raw_evidence, list):
+                for entry in raw_evidence:
+                    if isinstance(entry, dict):
+                        for raw_sector in entry.get("source_sectors") or []:
+                            _add(raw_sector, "feed_evidence", 0.80)
+        # 1c. Top-level source_sectors flattened by datalake_adapters
+        for raw_sector in doc.get("source_sectors") or []:
+            _add(raw_sector, "feed_evidence", 0.80)
+        # 1d. Tag entries that look like plain sector hints
+        for tag in doc.get("tags") or []:
+            text = str(tag).strip().lower()
+            if text in {"government", "finance", "financial", "healthcare", "energy",
+                       "telecom", "telecommunications", "education", "defense",
+                       "transportation", "technology", "critical_infrastructure"}:
+                _add(text, "tag_keyword", 0.70)
+
+    return sectors
+
+
 def build_rule_classification(
     *,
     threat_types_raw: Sequence[str],
@@ -403,6 +498,7 @@ def build_rule_classification(
 ) -> Dict[str, Any]:
     threat_types = map_rule_threat_types(threat_types_raw)
     confidence = source_confidence(ioc_docs)
+    sector_classifications = _extract_sectors_from_ioc_docs(ioc_docs)
     return {
         "labels": threat_types,
         "scores": [confidence for _ in threat_types],
@@ -412,7 +508,7 @@ def build_rule_classification(
             for threat_type in threat_types
         ],
         "confidence": confidence,
-        "sector_classifications": [],
+        "sector_classifications": sector_classifications,
         "model_used": "source_rule",
     }
 

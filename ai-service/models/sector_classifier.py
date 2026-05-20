@@ -12,11 +12,67 @@ Classifies IOCs into target sectors based on:
 """
 
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse
 import logging
+import re
 
 from config import SECTORS, SECTOR_RISK_BONUS
 
 logger = logging.getLogger(__name__)
+
+
+# Thai TLD heuristics: registrable suffix → sector
+# These run before keyword matching so government-domain IOCs always classify.
+TLD_SECTOR_HINTS = (
+    (".go.th", "government", "tld_go_th"),
+    (".gov.th", "government", "tld_gov_th"),
+    (".mil.th", "defense", "tld_mil_th"),
+    (".ac.th", "education", "tld_ac_th"),
+    (".edu", "education", "tld_edu"),
+    (".gov", "government", "tld_gov"),
+    (".mil", "defense", "tld_mil"),
+    (".bank", "financial", "tld_bank"),
+)
+
+
+def _extract_url_components(ioc_value: str, ioc_type: str) -> tuple[str, str]:
+    """
+    Return (hostname_lower, path_lower) for a URL or domain IOC.
+    Empty strings if ioc_type doesn't match or parsing fails.
+    """
+    cleaned = (ioc_value or "").strip()
+    if not cleaned:
+        return "", ""
+    ioc_type_l = (ioc_type or "").lower()
+    if ioc_type_l in ("url", "uri"):
+        try:
+            # Ensure parseable URL — add scheme if missing
+            parsed = urlparse(cleaned if "://" in cleaned else "http://" + cleaned)
+            return (parsed.hostname or "").lower(), (parsed.path or "").lower()
+        except Exception:
+            return cleaned.lower(), ""
+    if ioc_type_l in ("domain", "hostname", "fqdn"):
+        # Strip any leading scheme/path the upstream feed may have leaked in
+        if "://" in cleaned:
+            try:
+                parsed = urlparse(cleaned)
+                return (parsed.hostname or "").lower(), (parsed.path or "").lower()
+            except Exception:
+                pass
+        # Strip trailing slash/path manually for bare domains
+        return cleaned.lower().split("/", 1)[0], ""
+    return "", ""
+
+
+def _tld_sector_hint(hostname: str) -> Optional[tuple[str, str]]:
+    """Return (sector_key, matched_pattern) if hostname matches a TLD heuristic."""
+    if not hostname:
+        return None
+    host = hostname.lower().rstrip(".")
+    for suffix, sector, pattern in TLD_SECTOR_HINTS:
+        if host.endswith(suffix):
+            return sector, pattern
+    return None
 
 
 def classify_sector(
@@ -52,39 +108,61 @@ def classify_sector(
     """
     threat_actors = threat_actors or []
     tags = tags or []
-    
-    # Combine all text for analysis
-    combined_text = f"{title} {description} {' '.join(tags)}".lower()
-    
+
+    # Parse URL/domain into hostname + path so we can match keywords on path tokens
+    hostname, url_path = _extract_url_components(ioc_value, ioc_type)
+    path_tokens = " ".join(re.split(r"[/_\-.?=&]+", url_path)) if url_path else ""
+
+    # TLD-based shortcut for high-confidence government / .ac.th / .mil / .bank domains
+    tld_hint = _tld_sector_hint(hostname)
+    if tld_hint:
+        forced_sector, forced_pattern = tld_hint
+        sector_config = SECTORS.get(forced_sector, SECTORS["general"])
+        return {
+            "sector": forced_sector,
+            "sector_name": sector_config["name"],
+            "sector_name_th": sector_config["name_th"],
+            "icon": sector_config["icon"],
+            "confidence": 0.85,
+            "matched_keywords": [forced_pattern],
+            "matched_actors": [],
+            "matched_domains": [forced_pattern],
+            "risk_bonus": SECTOR_RISK_BONUS.get(forced_sector, 0),
+            "weight": sector_config["weight"],
+        }
+
+    # Combine all text for analysis — include URL path tokens so e.g.
+    # https://attacker/bank/login matches the financial sector keywords.
+    combined_text = f"{title} {description} {' '.join(tags)} {hostname} {path_tokens}".lower()
+
     sector_scores: Dict[str, Dict[str, Any]] = {}
-    
+
     for sector_key, sector_config in SECTORS.items():
         if sector_key == "general":
             continue  # Skip general, use as fallback
-            
+
         score = 0.0
         matched_keywords: List[str] = []
         matched_actors: List[str] = []
         matched_domains: List[str] = []
-        
+
         # 1. Keyword matching (weight: 0.4)
         for keyword in sector_config["keywords"]:
             if keyword.lower() in combined_text:
                 matched_keywords.append(keyword)
                 score += 0.1  # Each keyword adds 0.1
-        
+
         # Cap keyword contribution
         keyword_score = min(len(matched_keywords) * 0.1, 0.4)
         score = keyword_score
-        
+
         # 2. Domain pattern matching (weight: 0.3)
-        if ioc_type in ["domain", "url", "hostname"]:
-            ioc_lower = ioc_value.lower()
+        if ioc_type in ["domain", "url", "hostname", "fqdn", "uri"] and hostname:
             for pattern in sector_config["domains"]:
-                if pattern.lower() in ioc_lower:
+                if pattern.lower() in hostname:
                     matched_domains.append(pattern)
                     score += 0.15
-        
+
         # Cap domain contribution
         domain_score = min(len(matched_domains) * 0.15, 0.3)
         score = keyword_score + domain_score

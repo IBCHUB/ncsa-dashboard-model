@@ -402,20 +402,24 @@ def calculate_decay_factor(ioc_age_days: Optional[int]) -> Dict[str, Any]:
         description = "IOC ใหม่ (<=7 วัน) - คะแนนเต็ม"
     elif ioc_age_days <= 30:
         # Recent IOC - slight reduction
-        multiplier = 0.90
-        description = "IOC ล่าสุด (8-30 วัน) - ลด 10%"
+        multiplier = 0.95
+        description = "IOC ล่าสุด (8-30 วัน) - ลด 5%"
     elif ioc_age_days <= 90:
         # Older IOC - moderate reduction
-        multiplier = 0.75
-        description = "IOC เก่า (31-90 วัน) - ลด 25%"
+        multiplier = 0.85
+        description = "IOC เก่า (31-90 วัน) - ลด 15%"
     elif ioc_age_days <= 180:
         # Old IOC - significant reduction
-        multiplier = 0.60
-        description = "IOC เก่ามาก (91-180 วัน) - ลด 40%"
+        multiplier = 0.78
+        description = "IOC เก่ามาก (91-180 วัน) - ลด 22%"
+    elif ioc_age_days <= 365:
+        multiplier = 0.72
+        description = "IOC เก่ามากกว่า 6 เดือน (181-365 วัน) - ลด 28%"
     else:
-        # Very old IOC - major reduction
-        multiplier = 0.50
-        description = "IOC เก่ามากกว่า 6 เดือน - ลด 50%"
+        # Very old IOC - floor at 0.65 (was 0.50) — datalake holds historical
+        # IOCs intentionally; a 1-year-old C2 server is still actionable.
+        multiplier = 0.65
+        description = "IOC เก่ามากกว่า 1 ปี - ลด 35% (floor)"
     
     reduction_percent = int((1 - multiplier) * 100)
     

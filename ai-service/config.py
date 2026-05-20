@@ -91,14 +91,20 @@ SECTOR_CONFIDENCE_THRESHOLD = 0.35
 # For hash/IP IOCs, inapplicable factors (domain_age, entropy) are
 # automatically redistributed — see scorer.py _effective_weights().
 SCORING_WEIGHTS = {
-    "cross_source": 0.25,      # พบจากหลายแหล่ง
-    "threat_intel_source": 0.15,  # แหล่งน่าเชื่อถือ
+    # Reduced from 0.25 — 99.99% of cyberint IOCs are single-source so a heavy
+    # weight on cross-source corroboration penalises legitimate trusted-feed data.
+    "cross_source": 0.15,         # พบจากหลายแหล่ง
+    # Raised from 0.15 — trusted source quality should carry more weight when
+    # cross-source corroboration is structurally limited.
+    "threat_intel_source": 0.20,  # แหล่งน่าเชื่อถือ
     "high_risk_keywords": 0.10,   # คำสำคัญอันตราย
-    "domain_age": 0.10,        # อายุโดเมน (domain/URL เท่านั้น)
-    "entropy": 0.05,           # ความสุ่ม DGA (domain/URL เท่านั้น)
-    "threat_type_severity": 0.20,  # AI: ประเภทภัยคุกคาม
-    "threat_actor": 0.10,          # AI: กลุ่มผู้โจมตี
-    "mitre_techniques": 0.05       # AI: MITRE ATT&CK
+    "domain_age": 0.10,           # อายุโดเมน (domain/URL เท่านั้น)
+    "entropy": 0.05,              # ความสุ่ม DGA (domain/URL เท่านั้น)
+    # Raised from 0.20 — threat type is the strongest signal we have on bare
+    # hash IOCs (Malware/C2/Ransomware are derivable from feed metadata).
+    "threat_type_severity": 0.25, # AI: ประเภทภัยคุกคาม
+    "threat_actor": 0.10,         # AI: กลุ่มผู้โจมตี
+    "mitre_techniques": 0.05      # AI: MITRE ATT&CK
 }
 
 # Threat Type Severity Levels

@@ -65,10 +65,14 @@ def test_mitre_score_is_twenty_points_per_unique_technique():
 
 
 def test_decay_factor_uses_document_bands():
+    # Decay floors tuned 2026-05-20: less aggressive penalty on older IOCs
+    # because the datalake holds intentionally historical data.
     assert calculate_decay_factor(3)["multiplier"] == 1.0
-    assert calculate_decay_factor(20)["multiplier"] == 0.9
-    assert calculate_decay_factor(45)["multiplier"] == 0.75
-    assert calculate_decay_factor(240)["multiplier"] == 0.5
+    assert calculate_decay_factor(20)["multiplier"] == 0.95
+    assert calculate_decay_factor(45)["multiplier"] == 0.85
+    assert calculate_decay_factor(150)["multiplier"] == 0.78
+    assert calculate_decay_factor(240)["multiplier"] == 0.72
+    assert calculate_decay_factor(400)["multiplier"] == 0.65
 
 
 def test_reliability_gate_caps_untrusted_news_to_medium():
@@ -177,5 +181,7 @@ def test_output_contains_doc_aligned_governance_fields():
 
     assert result["score_model_version"]
     assert result["score_config_version"]
-    assert result["breakdown"]["score_governance"]["weights"]["threat_type_severity"] == 0.20
+    # Weight tuned 2026-05-20: threat_type carries more weight because single-source
+    # cyberint IOCs make cross_source corroboration structurally hard to score.
+    assert result["breakdown"]["score_governance"]["weights"]["threat_type_severity"] == 0.25
     assert 0 <= result["risk_score"] <= 100

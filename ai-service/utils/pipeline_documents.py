@@ -239,6 +239,7 @@ def classify_pipeline_context(
     adapter_names: Sequence[str],
     threat_types_raw: Sequence[str],
     ioc_docs: Sequence[Dict[str, Any]],
+    ioc_type: str = "",
 ) -> Dict[str, Any]:
     """Classify an IOC using ML only when the policy says it is useful."""
     start = time.time()
@@ -247,11 +248,16 @@ def classify_pipeline_context(
     effective_threat_types_raw = _unique_non_empty(
         list(threat_types_raw) + context_rule_threat_types
     )
+    # Derive ioc_type from primary doc if not supplied (back-compat for callers).
+    if not ioc_type and ioc_docs:
+        primary = ioc_docs[0] if isinstance(ioc_docs[0], dict) else {}
+        ioc_type = str(primary.get("ioc_type") or "").strip().lower()
     decision = decide_classification_mode(
         source_types=source_types,
         adapter_names=adapter_names,
         threat_types_raw=effective_threat_types_raw,
         classifier_input=classifier_input,
+        ioc_type=ioc_type,
     )
 
     if context_rule_threat_types:
