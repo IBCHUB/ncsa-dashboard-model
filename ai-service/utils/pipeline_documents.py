@@ -516,6 +516,35 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         },
     )
 
+    # When the AI score is lower than the source-provided risk score (e.g. cyberint
+    # severity_score=100 but AI only sees a hash with no text context → score≈12),
+    # use the source score as a floor so we don't under-report known-bad IOCs.
+    if max_source_risk_score is not None:
+        ai_score = int(score_result.get("risk_score", 0))
+        if ai_score < max_source_risk_score:
+            floor_score = max_source_risk_score
+            if floor_score >= 75:
+                floor_severity = "critical"
+                floor_severity_th = "วิกฤต"
+            elif floor_score >= 50:
+                floor_severity = "high"
+                floor_severity_th = "สูง"
+            elif floor_score >= 25:
+                floor_severity = "medium"
+                floor_severity_th = "ปานกลาง"
+            elif floor_score > 0:
+                floor_severity = "low"
+                floor_severity_th = "ต่ำ"
+            else:
+                floor_severity = "clean"
+                floor_severity_th = "ปลอดภัย"
+            score_result = {
+                **score_result,
+                "risk_score": floor_score,
+                "severity": floor_severity,
+                "severity_th": floor_severity_th,
+            }
+
     validation = evaluate_validation_status(
         ioc_value=ioc_value,
         ioc_type=ioc_type,

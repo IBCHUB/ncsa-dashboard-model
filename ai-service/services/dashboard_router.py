@@ -468,6 +468,18 @@ def _normalize_severity(value: Optional[str]) -> str:
         return "medium"
     if text in {"clean", "info"}:
         return "clean"
+    # Handle numeric severity scores (e.g. cyberint sends "100", "80", "20", "0")
+    if text.isdigit():
+        score = int(text)
+        if score >= 80:
+            return "critical"
+        if score >= 60:
+            return "high"
+        if score >= 40:
+            return "medium"
+        if score == 0:
+            return "clean"
+        return "low"
     return "low"
 
 
@@ -476,7 +488,8 @@ def _source_severity(doc: Dict[str, Any]) -> str:
 
 
 def _ai_severity(doc: Dict[str, Any]) -> str:
-    return _normalize_severity(doc.get("severity"))
+    # Use ai_severity field (AI-computed) — fall back to severity if absent
+    return _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
 
 
 def _severity_label(value: str) -> str:
@@ -1854,7 +1867,7 @@ def _warehouse_dashboard_aggs(
         "active_iocs": {"cardinality": {"field": "canonical_ioc_key.keyword", "precision_threshold": 40000}},
         "source_count": {"cardinality": {"field": "source_name", "precision_threshold": 40000}},
         "severity_counts": {"filters": {"filters": _severity_filters_config("severity")}},
-        "risk_level_counts": {"filters": {"filters": _severity_filters_config("severity")}},
+        "risk_level_counts": {"filters": {"filters": _severity_filters_config("ai_severity")}},
         "critical_active": {
             "filter": {"term": {"severity": "critical"}},
             "aggs": {
@@ -6099,10 +6112,10 @@ def executive_dashboard(
     if not start_date:
         start_date = _to_bangkok_date(now - timedelta(hours=24))
 
-    current_stats = _warehouse_summary_stats(start_date, end_date, time_mode=TIME_MODE_OBSERVED)
-    current_aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_trend=True, time_mode=TIME_MODE_OBSERVED)
+    current_stats = _warehouse_summary_stats(start_date, end_date, time_mode=TIME_MODE_PROCESSED)
+    current_aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_trend=True, time_mode=TIME_MODE_PROCESSED)
     previous_start_date, previous_end_date = _previous_date_window(start_date, end_date)
-    previous_stats = _warehouse_summary_stats(previous_start_date, previous_end_date, time_mode=TIME_MODE_OBSERVED) if previous_start_date and previous_end_date else None
+    previous_stats = _warehouse_summary_stats(previous_start_date, previous_end_date, time_mode=TIME_MODE_PROCESSED) if previous_start_date and previous_end_date else None
     severity_distribution = _build_severity_distribution_from_counts(current_stats.get("severity_counts") or {})
     treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("threat_types") or [])
     sector_treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("sector_terms") or [])
@@ -6121,7 +6134,7 @@ def executive_dashboard(
             start_date=lookback_start,
             end_date=lookback_end,
             include_trend=True,
-            time_mode=TIME_MODE_OBSERVED,
+            time_mode=TIME_MODE_PROCESSED,
         )
         forecast_days = 1 if include_forecast else 0
         threat_volume_trend = _build_executive_attack_volume_trend_from_buckets(
@@ -6203,14 +6216,14 @@ def operations_dashboard(
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
     anchor_end = _resolve_anchor_end(end_date) if end_date else None
-    aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED)
+    aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_PROCESSED)
     recent_start = _to_bangkok_date((anchor_end or datetime.now(UTC)) - timedelta(days=1))
     recent_end = _to_bangkok_date(anchor_end or datetime.now(UTC))
-    recent_stats = _warehouse_summary_stats(recent_start, recent_end, time_mode=TIME_MODE_OBSERVED)
+    recent_stats = _warehouse_summary_stats(recent_start, recent_end, time_mode=TIME_MODE_PROCESSED)
     payload = {
         "overview": _operations_overview_from_aggs(aggs, recent_stats=recent_stats),
         "incident_by_severity": _build_severity_distribution_from_counts(_severity_counts_from_filter_agg(aggs.get("severity_counts") or {})),
-        "attack_time_heatmap": _build_attack_time_heatmap_from_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED),
+        "attack_time_heatmap": _build_attack_time_heatmap_from_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_PROCESSED),
         "top_intelligence_sources": _format_source_terms(_terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=aggs.get("total"), limit=25))[:5],
         "top_threat_types": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], limit=5),
         "top_attack_origins": _terms_items_from_buckets((aggs.get("countries") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),

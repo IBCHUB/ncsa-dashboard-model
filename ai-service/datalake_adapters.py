@@ -595,6 +595,21 @@ def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value)
     activity = _as_text(raw.get("detected_activity"))
     description = _as_text(raw.get("description"))
     context_parts = [part for part in [activity.replace("_", " "), description] if part]
+
+    # Capture cyberint's own severity_score (0-100 string) and confidence as source evidence
+    # so the scoring pipeline can use them as a baseline when AI confidence is low.
+    _sev_str = raw.get("severity_score")
+    severity_score_raw: Optional[int] = _parse_int(_sev_str) if _sev_str is not None else None
+    confidence_raw = _parse_int(raw.get("confidence"), 0)
+    source_evidence = _compact_evidence({
+        "evidence_type": "cyberint",
+        "external_evidence_sources": ["cyberint_iocs"],
+        "source_risk_score": severity_score_raw,
+        "source_actionable": severity_score_raw is not None and severity_score_raw >= 60,
+        "source_confidence": confidence_raw,
+        "source_threat_types": [activity] if activity else [],
+    })
+
     return _finalize(
         hit,
         raw,
@@ -613,11 +628,12 @@ def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value)
         collect_time=raw.get("@timestamp"),
         event_time=raw.get("observation_date") or raw.get("@timestamp"),
         geo_country=_extract_geo_country(raw),
-        confidence=_parse_int(raw.get("confidence"), 0),
+        confidence=confidence_raw,
         source_url="",
         source_id=raw.get("id") or hit.get("_id"),
         enrichment={},
         domain_age_days=None,
+        source_evidence=source_evidence,
     )
 
 
