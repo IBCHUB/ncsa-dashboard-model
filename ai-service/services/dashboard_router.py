@@ -1257,7 +1257,7 @@ def _warehouse_summary_stats(start_date: Optional[str], end_date: Optional[str],
     terms_aggs = terms_result.get("aggregations") or {}
 
     def _terms_with_severity(agg_key: str) -> List[Dict[str, Any]]:
-        return [
+        rows = [
             {
                 "label": str(bucket.get("key") or "Other"),
                 "value": int(bucket.get("doc_count") or 0),
@@ -1265,6 +1265,27 @@ def _warehouse_summary_stats(start_date: Optional[str], end_date: Optional[str],
             }
             for bucket in (terms_aggs.get(agg_key) or {}).get("buckets", [])
         ]
+        # Normalize sector labels through the official NCSA 8-sector taxonomy
+        # so raw values like "General/Multiple", "general", "education",
+        # "manufacturing" all collapse into "Other". Group by display label
+        # and pick the highest severity from the merged buckets.
+        if agg_key == "sectors":
+            merged: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                label = _sector_display_name(row["label"]) or "Other"
+                existing = merged.get(label)
+                if existing is None:
+                    merged[label] = {
+                        "label": label,
+                        "value": row["value"],
+                        "severity": row["severity"],
+                    }
+                else:
+                    existing["value"] += row["value"]
+                    if SEVERITY_ORDER.get(row["severity"], 0) > SEVERITY_ORDER.get(existing["severity"], 0):
+                        existing["severity"] = row["severity"]
+            rows = sorted(merged.values(), key=lambda x: x["value"], reverse=True)
+        return rows
 
     threat_types = _terms_with_severity("threat_types")
     sector_terms = _terms_with_severity("sectors")
