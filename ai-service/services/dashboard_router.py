@@ -1421,6 +1421,27 @@ def _source_display_name(value: Any) -> str:
     return _source_display_name_single(raw)
 
 
+def _display_sources(sources: Sequence[str]) -> List[str]:
+    """Convert a list of raw source_name values into deduped display names.
+
+    Used everywhere a `sources` array is emitted in API responses so the
+    frontend never sees raw values like "tcti-feeds" or "cyberint iocs,
+    tcti-feeds" — they always come through normalized to display names
+    like "Cyberint IOC Feed".
+    """
+    seen: set[str] = set()
+    out: List[str] = []
+    for raw in sources or []:
+        name = _source_display_name(raw)
+        if not name or name.lower() in {"unknown", "none", "null", "n/a", "-"}:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
 def _format_source_terms(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     grouped: Dict[str, Dict[str, Any]] = {}
     for item in items:
@@ -4576,7 +4597,7 @@ def _build_action_ticket(doc: Dict[str, Any], assignment: Optional[Dict[str, Any
         "ioc_type": ioc_type,
         "ioc_type_label": IOC_TYPE_LABELS.get(ioc_type, str(doc.get("ioc_type", "unknown")).upper()),
         "context": " · ".join(part for part in context_parts if part),
-        "sources": _normalize_sources(doc),
+        "sources": _display_sources(_normalize_sources(doc)),
         "sla": "2 hours" if severity == "Critical" else "24 hours",
         "event_time": timestamp.isoformat().replace("+00:00", "Z") if timestamp else None,
         "owner_name": (assignment or {}).get("assignee", {}).get("name"),
@@ -4641,8 +4662,8 @@ def _build_action_detail(doc: Dict[str, Any]) -> Dict[str, Any]:
         "owner": owner,
         "context": {
             "target": doc.get("ioc_value"),
-            "source": primary_event.get("source_ip") or ", ".join(_normalize_sources(doc)),
-            "source_name": primary_event.get("source_name") or _primary_source(doc),
+            "source": primary_event.get("source_ip") or ", ".join(_display_sources(_normalize_sources(doc))),
+            "source_name": _source_display_name(primary_event.get("source_name") or _primary_source(doc) or ""),
             "target_victim": primary_event.get("target_ip"),
             "sector": sector["sector_name"],
             "threat_type": ", ".join(doc.get("ai_threat_types") or []),
@@ -4686,7 +4707,7 @@ def _build_ioc_record(rank: int, doc: Dict[str, Any]) -> Dict[str, Any]:
         "severity": _severity_label(_source_severity(doc)),
         "risk_score": int(doc.get("ai_risk_score") or 0),
         "threat_types": doc.get("ai_threat_types") or doc.get("threat_type") or [],
-        "sources": _normalize_sources(doc),
+        "sources": _display_sources(_normalize_sources(doc)),
         "first_seen": doc.get("first_seen") or doc.get("event_time") or doc.get("collect_time"),
         "last_seen": doc.get("last_seen") or doc.get("collect_time") or doc.get("processed_at"),
         "score_breakdown": doc.get("ai_score_breakdown") or {},
@@ -4767,7 +4788,7 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
         history_preview.append(
             {
                 "observed_at": observed_at.isoformat().replace("+00:00", "Z") if observed_at else None,
-                "source": _datalake_event_source(doc),
+                "source": _source_display_name(_datalake_event_source(doc) or ""),
                 "severity": _datalake_event_severity(doc),
                 "description": _datalake_event_description(doc),
             }
@@ -4779,7 +4800,7 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
             "ioc_type": warehouse_doc.get("ioc_type"),
             "ioc_type_label": IOC_TYPE_LABELS.get(str(warehouse_doc.get("ioc_type", "")).lower(), str(warehouse_doc.get("ioc_type", "")).upper()),
             "severity": _severity_label(_source_severity(warehouse_doc)),
-            "sources": _normalize_sources(warehouse_doc),
+            "sources": _display_sources(_normalize_sources(warehouse_doc)),
             "first_seen": warehouse_doc.get("first_seen") or warehouse_doc.get("event_time") or warehouse_doc.get("collect_time"),
             "threat_types": warehouse_doc.get("ai_threat_types") or warehouse_doc.get("threat_type") or [],
         },
@@ -4833,7 +4854,7 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
             ),
             "source_documents": [
                 {
-                    "source_name": _datalake_event_source(doc),
+                    "source_name": _source_display_name(_datalake_event_source(doc) or ""),
                     "reference": doc.get("reference"),
                     "event_time": (_datalake_event_time(doc) or datetime.now(UTC)).isoformat().replace("+00:00", "Z"),
                 }
@@ -5285,7 +5306,7 @@ def _build_ioc_relationship_graph(
             "reputation": first_datalake.get("reputation") or first_datalake.get("source_risk_score"),
             "first_seen": first_seen,
             "last_seen": last_seen,
-            "sources": _normalize_sources(warehouse_doc),
+            "sources": _display_sources(_normalize_sources(warehouse_doc)),
         },
         "relationship": {
             "nodes": nodes,
@@ -5955,7 +5976,30 @@ def list_sources(active: bool = True, query: Optional[str] = None, current_user:
     for bucket in dl_buckets:
         counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
     items = _lookup_items_from_counts(counts)
-    items = [{**item, "label": _source_display_name(item.get("label") or item.get("value"))} for item in items]
+    # Group by display label so raw values like "cyberint_iocs", "tcti-feeds",
+    # "cyberint iocs, tcti-feeds" all collapse into one "Cyberint IOC Feed"
+    # entry. The lookup value (used as the filter key) stays as the most
+    # frequent raw value within each group so existing filters keep working.
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        label = _source_display_name(item.get("label") or item.get("value") or "")
+        if not label or label.lower() in {"unknown", "none", "null", "n/a", "-"}:
+            continue
+        existing = grouped.get(label)
+        item_count = int(item.get("count") or 0)
+        if existing is None:
+            grouped[label] = {"value": item.get("value"), "label": label, "count": item_count}
+        else:
+            existing["count"] += item_count
+            # Keep the value from the largest raw bucket so it filters the
+            # majority of docs correctly.
+            if item_count > int(existing.get("_top_bucket", 0)):
+                existing["value"] = item.get("value")
+                existing["_top_bucket"] = item_count
+    items = [
+        {"value": entry["value"], "label": entry["label"], "count": entry["count"]}
+        for entry in sorted(grouped.values(), key=lambda e: e["count"], reverse=True)
+    ]
     if query:
         items = [item for item in items if query.lower() in item["label"].lower()]
     return _cache_set(cache_key, _success({"items": items}), ttl=300)
@@ -6134,7 +6178,7 @@ def operations_dashboard(
         "overview": _operations_overview_from_aggs(aggs, recent_stats=recent_stats),
         "incident_by_severity": _build_severity_distribution_from_counts(_severity_counts_from_filter_agg(aggs.get("severity_counts") or {})),
         "attack_time_heatmap": _build_attack_time_heatmap_from_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_OBSERVED),
-        "top_intelligence_sources": _terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
+        "top_intelligence_sources": _format_source_terms(_terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=aggs.get("total"), limit=25))[:5],
         "top_threat_types": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], limit=5),
         "top_attack_origins": _terms_items_from_buckets((aggs.get("countries") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
         "target_sectors": _format_sector_terms(_terms_items_from_buckets((aggs.get("sectors") or {}).get("buckets") or [], total=aggs.get("total"), limit=5)),
@@ -6967,7 +7011,7 @@ def list_iocs(
     severity_facet_counts = _severity_counts_from_filter_agg(aggs.get("severity_counts") or {})
     risk_facet_counts = _severity_counts_from_filter_agg(aggs.get("risk_level_counts") or {})
     facets = {
-        "sources": [{"value": item["key"], "label": item["label"], "count": item["value"]} for item in _terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=total, limit=10)],
+        "sources": [{"value": item["key"], "label": _source_display_name(item["label"]), "count": item["value"]} for item in _terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=total, limit=10)],
         "threat_types": [{"value": item["key"], "label": item["label"], "count": item["value"]} for item in _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], total=total, limit=10)],
         "risk_levels": [{"value": key, "label": _severity_label(key), "count": value} for key, value in risk_facet_counts.items() if value > 0],
         "ioc_types": [{"value": item["key"], "label": IOC_TYPE_LABELS.get(item["key"], item["key"].upper()), "count": item["value"]} for item in _terms_items_from_buckets((aggs.get("ioc_types") or {}).get("buckets") or [], total=total, limit=10)],
@@ -7094,7 +7138,7 @@ def ioc_events(
         observed = _datalake_event_time(doc)
         items.append({
             "observed_at": observed.isoformat().replace("+00:00", "Z") if observed else None,
-            "source": _datalake_event_source(doc),
+            "source": _source_display_name(_datalake_event_source(doc) or ""),
             "severity": _datalake_event_severity(doc),
             "description": _datalake_event_description(doc),
         })
@@ -7288,9 +7332,16 @@ def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str,
         for index, doc in enumerate(paged_docs)
     ]
 
-    # Build charts from ES aggregation buckets (accurate)
+    # Build charts from ES aggregation buckets (accurate). Use
+    # _format_source_terms so multiple raw values that map to the same
+    # display name (e.g. "tcti-feeds", "cyberint_iocs", "cyberint iocs,
+    # tcti-feeds" → "Cyberint IOC Feed") merge into one slice.
     source_buckets = (aggs.get("sources") or {}).get("buckets") or []
-    top_sources = [{"label": str(b.get("key") or "unknown"), "value": int(b.get("doc_count") or 0)} for b in source_buckets[:10]]
+    raw_source_items = [
+        {"label": str(b.get("key") or "unknown"), "value": int(b.get("doc_count") or 0)}
+        for b in source_buckets
+    ]
+    top_sources = _format_source_terms(raw_source_items)[:10]
     ioc_type_buckets = (aggs.get("ioc_types") or {}).get("buckets") or []
     top_ioc_types = [
         {
