@@ -7127,8 +7127,29 @@ def ioc_relationships(
     return _success(_build_ioc_relationship_graph(warehouse_doc, datalake_docs, related_docs, evidence_entries))
 
 
-@router.get("/iocs/{ioc_id}", tags=["IOCs"])
-def ioc_detail(ioc_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+@router.get("/iocs/detail", tags=["IOCs"])
+def ioc_detail_by_query(
+    ioc_id: str = Query(..., description="IOC identifier in '<type>::<value>' format"),
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    """Detail endpoint using query parameter (avoids %2F path decoding issues for URL IOCs)."""
+    return _ioc_detail_impl(ioc_id)
+
+
+@router.get("/iocs/detail/events", tags=["IOCs"])
+def ioc_events_by_query(
+    ioc_id: str = Query(..., description="IOC identifier in '<type>::<value>' format"),
+    page: int = 1,
+    page_size: int = 20,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    """Events endpoint using query parameter (avoids %2F path decoding issues for URL IOCs)."""
+    return _ioc_events_impl(ioc_id, page, page_size, start_date, end_date)
+
+
+def _ioc_detail_impl(ioc_id: str):
     ioc_type, ioc_value = _split_indicator_id(ioc_id)
     warehouse_doc = _get_warehouse_doc_by_indicator(ioc_type, ioc_value)
     if not warehouse_doc:
@@ -7137,15 +7158,12 @@ def ioc_detail(ioc_id: str, current_user: Dict[str, Any] = Depends(require_dashb
     return _success(_build_ioc_detail(warehouse_doc, datalake_docs))
 
 
-@router.get("/iocs/{ioc_id}/events", tags=["IOCs"])
-def ioc_events(
-    ioc_id: str,
-    page: int = 1,
-    page_size: int = 20,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    current_user: Dict[str, Any] = Depends(require_dashboard_user),
-):
+@router.get("/iocs/{ioc_id}", tags=["IOCs"])
+def ioc_detail(ioc_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+    return _ioc_detail_impl(ioc_id)
+
+
+def _ioc_events_impl(ioc_id: str, page: int = 1, page_size: int = 20, start_date: Optional[str] = None, end_date: Optional[str] = None):
     ioc_type, ioc_value = _split_indicator_id(ioc_id)
     raw_docs = _fetch_datalake_by_indicators([(ioc_type, ioc_value)])
     start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
@@ -7175,6 +7193,18 @@ def ioc_events(
             "description": _datalake_event_description(doc),
         })
     return _paged({"items": items}, page=page, page_size=page_size, total=len(docs))
+
+
+@router.get("/iocs/{ioc_id}/events", tags=["IOCs"])
+def ioc_events(
+    ioc_id: str,
+    page: int = 1,
+    page_size: int = 20,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+):
+    return _ioc_events_impl(ioc_id, page, page_size, start_date, end_date)
 
 
 @router.get("/ioc-analytics", tags=["IOCs"])
