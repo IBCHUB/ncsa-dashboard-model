@@ -69,7 +69,10 @@ WAREHOUSE_TIME_FIELDS: dict[str, list[str]] = {
     "observed": ["event_time", "first_seen", "last_seen"],
     "processed": ["processed_at", "created_at", "collect_time"],
     "published": ["published_at"],
-    "changed": ["revoked_at", "last_shared_at", "updated_at"],
+    # Warehouse mapping has no `revoked_at` or `updated_at` field. The two
+    # populated change-timestamps are `last_shared_at` (set on every doc) and
+    # `action_updated_at` (set when the action workflow advances).
+    "changed": ["last_shared_at", "action_updated_at"],
 }
 
 DATALAKE_TIME_FIELDS: dict[str, list[str]] = {
@@ -86,7 +89,7 @@ PYTHON_FILTER_FIELDS: dict[str, list[str]] = {
     "observed": ["event_time", "first_seen", "last_seen", "observation_date"],
     "processed": ["processed_at", "created_at", "collect_time"],
     "published": ["published_at"],
-    "changed": ["revoked_at", "last_shared_at", "updated_at"],
+    "changed": ["last_shared_at", "action_updated_at"],
 }
 RISK_LEVELS = [
     {"value": "critical", "label": "Critical"},
@@ -1358,6 +1361,7 @@ def _warehouse_summary_stats(
     threat_types: Optional[List[str]] = None,
     severities: Optional[List[str]] = None,
     ioc_types: Optional[List[str]] = None,
+    warehouse_eligible_only: bool = True,
 ) -> Dict[str, Any]:
     client = get_elastic_client()
     filters = _warehouse_search_filters(
@@ -1368,6 +1372,7 @@ def _warehouse_summary_stats(
         severities=severities,
         ioc_types=ioc_types,
         time_mode=time_mode,
+        warehouse_eligible_only=warehouse_eligible_only,
     )
     severity_filters = {
         severity: {"term": {"severity": severity}}
@@ -1392,16 +1397,7 @@ def _warehouse_summary_stats(
                 "filter": {"term": {"severity": "high"}},
             },
             "thailand_threat": {
-                "filter": {
-                    "bool": {
-                        "should": [
-                            {"term": {"geo_country": "Thailand"}},
-                            {"term": {"geo_country": "TH"}},
-                            {"term": {"geo_country": "thailand"}},
-                        ],
-                        "minimum_should_match": 1,
-                    }
-                },
+                "filter": {"term": {"geo_country": "TH"}},
             },
         },
     }
