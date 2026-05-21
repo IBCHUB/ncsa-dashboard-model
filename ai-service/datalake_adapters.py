@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +23,21 @@ try:
     from utils.whois_enrichment import lookup_domain_age as _lookup_domain_age
 except ImportError:
     _lookup_domain_age = None  # type: ignore[assignment]
+
+try:
+    from utils.threat_actor_enrichment import lookup_actors_from_description as _lookup_actors
+except ImportError:
+    _lookup_actors = None  # type: ignore[assignment]
+
+
+def _build_mitre_actor_evidence(actors: List[str]) -> Dict[str, Any]:
+    """Build evidence dict from MITRE actor mapping results."""
+    if not actors:
+        return {}
+    return _compact_evidence({
+        "evidence_type": "mitre_actor_mapping",
+        "source_threat_actors": actors,
+    })
 
 
 # Maps cyberint_iocs detected_activity values → MITRE ATT&CK technique IDs.
@@ -702,6 +720,15 @@ def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value)
     # Map detected_activity → MITRE ATT&CK technique IDs
     mitre_from_activity: List[str] = _CYBERINT_ACTIVITY_MITRE.get(activity, [])
 
+    # Extract threat actors from description using MITRE ATT&CK mapping
+    mitre_actors: List[str] = []
+    if _lookup_actors is not None and description:
+        try:
+            mitre_actors = _lookup_actors(description)
+        except Exception as exc:
+            logger.debug("Actor enrichment failed: %s", exc)
+            mitre_actors = []
+
     source_evidence = _compact_evidence({
         "evidence_type": "cyberint",
         "external_evidence_sources": ["cyberint_iocs"],
@@ -710,6 +737,7 @@ def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value)
         "source_confidence": confidence_raw,
         "source_threat_types": [activity] if activity else [],
         "source_mitre_techniques": mitre_from_activity,
+        "source_threat_actors": mitre_actors,
     })
 
     # WHOIS domain age enrichment for URL/domain IOC types
@@ -813,6 +841,15 @@ def _legacy_external_adapter(hit: Dict[str, Any], normalize_type, normalize_valu
     description = _as_text(first_source.get("description") or raw.get("description"))
     source_name = first_source.get("name") or raw.get("source_name") or raw.get("ref_doc_index") or _source_name_from_index(hit.get("_index")) or "cyberint_iocs"
     source_type = _infer_external_source_type(raw, _as_text(source_name), _as_text(hit.get("_index")))
+    # Extract threat actors from merged title + description via MITRE mapping
+    merged_text = "\n".join(part for part in [title, description] if part)
+    mitre_actors: List[str] = []
+    if _lookup_actors is not None and merged_text:
+        try:
+            mitre_actors = _lookup_actors(merged_text)
+        except Exception:
+            mitre_actors = []
+
     evidence = _merge_evidence(
         extract_virustotal_evidence(enrichment),
         extract_cyberint_evidence(enrichment),
@@ -821,6 +858,7 @@ def _legacy_external_adapter(hit: Dict[str, Any], normalize_type, normalize_valu
         _extract_related_entities_evidence(enrichment),
         extract_correlation_evidence(raw),
         extract_sandbox_evidence(raw),
+        _build_mitre_actor_evidence(mitre_actors),
     )
     confidence = max(_parse_int(raw.get("confidence"), 0), _parse_int(evidence.get("source_confidence"), 0))
 
