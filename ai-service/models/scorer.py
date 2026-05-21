@@ -53,6 +53,27 @@ _MALICIOUS_INDICATORS = re.compile(
 )
 
 
+def _normalize_source_name(name: Any) -> str:
+    """Normalize source name for matching: strip all whitespace + lowercase.
+
+    Handles variants like "The Hacker News" vs "TheHackerNews" — both
+    normalize to "thehackernews". Prevents whitespace-sensitive substring
+    matches from misclassifying news sources as "other".
+    """
+    raw = name.get("name", "") if isinstance(name, dict) else name
+    return "".join(str(raw or "").split()).lower()
+
+
+def _matches_any_source(normalized_name: str, source_list: List[str]) -> bool:
+    """Check if any source from the list matches the already-normalized name.
+
+    Both sides are whitespace-stripped + lowercased before substring match.
+    """
+    if not normalized_name:
+        return False
+    return any(_normalize_source_name(s) in normalized_name for s in source_list)
+
+
 def _infer_threat_types_for_hash(
     ioc_type: str,
     description: str,
@@ -76,8 +97,8 @@ def _infer_threat_types_for_hash(
     # Check if any source is trusted
     has_trusted = False
     for s in (sources or []):
-        name = str(s.get("name", s) if isinstance(s, dict) else s).upper()
-        if any(t.upper() in name for t in TRUSTED_SOURCES):
+        normalized = _normalize_source_name(s)
+        if _matches_any_source(normalized, TRUSTED_SOURCES):
             has_trusted = True
             break
 
@@ -183,19 +204,19 @@ def calculate_source_score(sources: List[Any]) -> Dict[str, Any]:
     for source in sources:
         # Handle both string and dict inputs
         if isinstance(source, dict):
-            name = str(source.get("name", "")).upper()
             confidence = float(source.get("confidence", 0))
         else:
-            name = str(source).upper()
             confidence = 0.0
-            
+
+        normalized = _normalize_source_name(source)
+
         # Confidence bonus: 20% of source confidence (0-100 scale → 0-20 bonus points)
         if confidence > 0:
             total_confidence_bonus += (confidence * 0.2)
-        
-        if any(t.upper() in name for t in TRUSTED_SOURCES):
+
+        if _matches_any_source(normalized, TRUSTED_SOURCES):
             trusted_count += 1
-        elif any(n.upper() in name for n in NEWS_SOURCES):
+        elif _matches_any_source(normalized, NEWS_SOURCES):
             news_count += 1
         else:
             other_count += 1
@@ -707,8 +728,8 @@ def calculate_risk_score(
 
     # 3. Source reliability score
     # Use source_names for categorization logic
-    trusted_list = [s for s in source_names if any(t.upper() in s.upper() for t in TRUSTED_SOURCES)]
-    news_list = [s for s in source_names if any(n.upper() in s.upper() for n in NEWS_SOURCES) and s not in trusted_list]
+    trusted_list = [s for s in source_names if _matches_any_source(_normalize_source_name(s), TRUSTED_SOURCES)]
+    news_list = [s for s in source_names if _matches_any_source(_normalize_source_name(s), NEWS_SOURCES) and s not in trusted_list]
     news_list = list(set(news_list)) # Deduplicate news list for display
 
     other_list = [s for s in source_names if s not in trusted_list and s not in news_list]

@@ -43,6 +43,36 @@ def test_source_quality_uses_doc_weights_and_confidence_bonus():
     assert result["confidence_bonus"] > 0
 
 
+def test_source_quality_news_name_with_spaces_matched():
+    """News source variants with whitespace must match (e.g. "The Hacker News").
+
+    Substring matching used to be whitespace-sensitive — "TheHackerNews"
+    in config didn't substring-match "THE HACKER NEWS" runtime name.
+    Now both sides are normalized (whitespace stripped + lowercased).
+    """
+    result = calculate_source_score([
+        {"name": "Dark Reading", "confidence": 0},
+        {"name": "The Hacker News", "confidence": 0},
+        {"name": "DarkReading", "confidence": 0},
+        {"name": "TheHackerNews", "confidence": 0},
+    ])
+
+    # All 4 should be news (whitespace + case variants of the same names)
+    assert result["news"] == 4
+    assert result["other"] == 0
+    assert result["trusted"] == 0
+
+
+def test_source_quality_trusted_name_with_spaces_matched():
+    """Trusted source variants with whitespace must match (e.g. "Cyble Threat Intelligence Feed")."""
+    result = calculate_source_score([
+        {"name": "Cyble Threat Intelligence Feed", "confidence": 0},
+        {"name": "cyble threat intelligence feed", "confidence": 0},  # lowercase variant
+    ])
+    assert result["trusted"] == 2
+    assert result["other"] == 0
+
+
 def test_keyword_score_uses_tiered_points():
     result = calculate_keyword_score("Ransomware exploit with phishing backdoor malware")
     assert result["score"] == 90
