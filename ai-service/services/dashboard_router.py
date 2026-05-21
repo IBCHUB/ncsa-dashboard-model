@@ -941,6 +941,24 @@ def require_dashboard_user(
     return user
 
 
+ADMIN_ROLE_NAMES = {"admin", "super admin", "superadmin"}
+
+
+def require_admin(
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+) -> Dict[str, Any]:
+    """Bearer + admin-role gate.
+
+    Used by user/group management, diagnostics, and other endpoints that
+    must not be reachable by ordinary analysts. `require_dashboard_user`
+    handles authentication; this layer enforces authorization on top.
+    """
+    role = str(current_user.get("role_name") or "").strip().lower()
+    if role not in ADMIN_ROLE_NAMES:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return current_user
+
+
 def require_internal_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")) -> str:
     allowed_keys = {
         key.strip()
@@ -6076,6 +6094,10 @@ def list_severities(active: bool = True, current_user: Dict[str, Any] = Depends(
 
 @router.get("/lookups/risk-levels", tags=["Lookups"])
 def list_risk_levels(active: bool = True, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+    # NOTE: this endpoint returns the same payload as /lookups/severities.
+    # It's kept as an alias because the frontend reads from both paths
+    # depending on which filter UI is rendering. Don't diverge the two
+    # without updating both call sites.
     items = [{"value": item["value"], "label": item["label"], "description": None, "active": active} for item in RISK_LEVELS]
     return _success({"items": items})
 
@@ -7787,7 +7809,7 @@ def list_users(
     query: Optional[str] = None,
     status: Optional[str] = None,
     group_ids: Optional[List[str]] = Query(default=None),
-    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+    current_user: Dict[str, Any] = Depends(require_admin),
 ):
     items = get_dashboard_state().list_users()
     if query:
@@ -7800,29 +7822,34 @@ def list_users(
 
 
 @router.post("/users", tags=["Users"], status_code=201)
-def create_user(request: UserCreateRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def create_user(request: UserCreateRequest, current_user: Dict[str, Any] = Depends(require_admin)):
     payload = get_dashboard_state().create_user(request.model_dump())
+    logger.info("user.created by=%s target=%s", current_user.get("user_id"), payload.get("user_id"))
     return _success(payload)
 
 
 @router.patch("/users/{user_id}", tags=["Users"])
-def update_user(user_id: str, request: UserUpdateRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def update_user(user_id: str, request: UserUpdateRequest, current_user: Dict[str, Any] = Depends(require_admin)):
     payload = get_dashboard_state().update_user(user_id, request.model_dump(exclude_none=True))
     if not payload:
         raise HTTPException(status_code=404, detail="User not found")
+    logger.info("user.updated by=%s target=%s", current_user.get("user_id"), user_id)
     return _success(payload)
 
 
 @router.delete("/users/{user_id}", tags=["Users"])
-def delete_user(user_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def delete_user(user_id: str, current_user: Dict[str, Any] = Depends(require_admin)):
+    if user_id == current_user.get("user_id"):
+        raise HTTPException(status_code=400, detail="Cannot delete your own account from the admin endpoint; use DELETE /account instead")
     deleted = get_dashboard_state().delete_user(user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="User not found")
+    logger.info("user.deleted by=%s target=%s", current_user.get("user_id"), user_id)
     return _success({"success": True, "message": "User deleted"})
 
 
 @router.get("/user-groups", tags=["Users"])
-def list_user_groups(page: int = 1, page_size: int = 20, query: Optional[str] = None, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def list_user_groups(page: int = 1, page_size: int = 20, query: Optional[str] = None, current_user: Dict[str, Any] = Depends(require_admin)):
     items = get_dashboard_state().list_groups()
     if query:
         items = [item for item in items if query.lower() in item["name"].lower()]
@@ -7833,13 +7860,14 @@ def list_user_groups(page: int = 1, page_size: int = 20, query: Optional[str] = 
 
 
 @router.post("/user-groups", tags=["Users"], status_code=201)
-def create_user_group(request: UserGroupCreateRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def create_user_group(request: UserGroupCreateRequest, current_user: Dict[str, Any] = Depends(require_admin)):
     payload = get_dashboard_state().create_group({"name": request.name, "permissions": [item.model_dump() for item in request.permissions]})
+    logger.info("user_group.created by=%s group=%s", current_user.get("user_id"), payload.get("group_id"))
     return _success(payload)
 
 
 @router.patch("/user-groups/{group_id}", tags=["Users"])
-def update_user_group(group_id: str, request: UserGroupUpdateRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def update_user_group(group_id: str, request: UserGroupUpdateRequest, current_user: Dict[str, Any] = Depends(require_admin)):
     payload = {
         key: value
         for key, value in request.model_dump(exclude_none=True).items()
@@ -7854,10 +7882,11 @@ def update_user_group(group_id: str, request: UserGroupUpdateRequest, current_us
 
 
 @router.delete("/user-groups/{group_id}", tags=["Users"])
-def delete_user_group(group_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def delete_user_group(group_id: str, current_user: Dict[str, Any] = Depends(require_admin)):
     deleted = get_dashboard_state().delete_group(group_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="User group not found")
+    logger.info("user_group.deleted by=%s group=%s", current_user.get("user_id"), group_id)
     return _success({"success": True, "message": "User group deleted"})
 
 
@@ -7870,7 +7899,8 @@ def list_notifications(
     status: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    items = get_dashboard_state().list_notifications()
+    user_id = current_user.get("user_id")
+    items = get_dashboard_state().list_notifications(user_id=user_id)
     if unread_only:
         items = [item for item in items if item.get("unread")]
     if type:
@@ -7888,8 +7918,13 @@ def list_notifications(
 
 @router.post("/notifications/{notification_id}/read", tags=["Notifications"])
 def mark_notification_read(notification_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    payload = get_dashboard_state().mark_notification_read(notification_id)
+    payload = get_dashboard_state().mark_notification_read(
+        notification_id,
+        user_id=current_user.get("user_id"),
+    )
     if not payload:
+        # Either the notification doesn't exist or it's targeted at a different
+        # user — return 404 for both cases so we don't leak the distinction.
         raise HTTPException(status_code=404, detail="Notification not found")
     return _success(payload)
 
@@ -7897,7 +7932,10 @@ def mark_notification_read(notification_id: str, current_user: Dict[str, Any] = 
 @router.post("/notifications/read-all", tags=["Notifications"])
 def mark_all_notifications_read(payload: Optional[BulkNotificationReadRequest] = Body(default=None), current_user: Dict[str, Any] = Depends(require_dashboard_user)):
     notification_type = payload.type if payload else None
-    result = get_dashboard_state().mark_all_notifications_read(notification_type=notification_type)
+    result = get_dashboard_state().mark_all_notifications_read(
+        notification_type=notification_type,
+        user_id=current_user.get("user_id"),
+    )
     return _success(result)
 
 
@@ -7932,7 +7970,7 @@ def list_ml_feedback(
 
 @router.get("/diagnostics/data-sources", tags=["Diagnostics"])
 def data_source_diagnostics(
-    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+    current_user: Dict[str, Any] = Depends(require_admin),
 ):
     """Return document counts and connectivity status for each ES index."""
     from elastic_client import DATALAKE_INDEX, WAREHOUSE_INDEX, PROCESSED_INDEX, QUARANTINE_INDEX

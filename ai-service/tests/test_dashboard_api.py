@@ -1349,3 +1349,112 @@ def test_compat_operations_shapes(client):
     sectors = test_client.get("/targetsectors?start_date=2026-03-10&end_date=2026-03-11")
     assert sectors.status_code == 200
     assert sectors.json()["res_result"][0]["Name"] == "ภาครัฐ"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.2 — Authorization regression tests
+# ---------------------------------------------------------------------------
+
+
+def _login_as_analyst(test_client):
+    response = test_client.post(
+        "/api/v1/auth/login",
+        json={"username": "analyst", "password": "analyst123!"},
+    )
+    assert response.status_code == 200
+    token = response.json()["data"]["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_user_admin_endpoints_require_admin_role(client):
+    """Phase 2.2-9/10 regression: user/group CRUD must reject non-admins.
+
+    Previously every authenticated user (including "General" analysts)
+    could list, create, edit, and delete users and groups.
+    """
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+
+    for path in ("/api/v1/users", "/api/v1/user-groups"):
+        response = test_client.get(path, headers=analyst_headers)
+        assert response.status_code == 403, f"{path} should be admin-only"
+
+    create_user = test_client.post(
+        "/api/v1/users",
+        json={"name": "Hacker", "email": "h@example.com", "password": "x"},
+        headers=analyst_headers,
+    )
+    assert create_user.status_code == 403
+
+    delete_user = test_client.delete("/api/v1/users/usr-admin", headers=analyst_headers)
+    assert delete_user.status_code == 403
+
+
+def test_admin_cannot_self_delete_via_user_endpoint(client):
+    """Phase 2.2-11 regression: deleting yourself from /users/{id} would
+    let an admin lock themselves out — must use DELETE /account instead.
+    """
+    test_client, _ = client
+    admin_headers = _login(test_client)
+    response = test_client.delete("/api/v1/users/usr-admin", headers=admin_headers)
+    assert response.status_code == 400
+    assert "own account" in response.json()["detail"].lower()
+
+
+def test_diagnostics_data_sources_requires_admin(client):
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+    response = test_client.get("/api/v1/diagnostics/data-sources", headers=analyst_headers)
+    assert response.status_code == 403
+
+
+def test_notifications_scope_excludes_other_users_targeted_items(client):
+    """Phase 2.2-16/17/18 regression: notifications with an explicit
+    recipient must not be visible to other users, and read-state mutations
+    from one user must not affect another user's targeted notifications.
+    """
+    test_client, fake_client = client
+    # Inject one broadcast and two user-targeted notifications directly into
+    # the bootstrap state. Use the internal state so the fixture stays small.
+    state = dashboard_bootstrap.get_dashboard_state()
+    state.notifications.append({
+        "notification_id": "ntf-private-admin",
+        "title": "Admin only",
+        "message": "Admin private",
+        "created_at": "2026-03-12T08:00:00Z",
+        "type": "system",
+        "unread": True,
+        "recipient_user_id": "usr-admin",
+    })
+    state.notifications.append({
+        "notification_id": "ntf-private-analyst",
+        "title": "Analyst only",
+        "message": "Analyst private",
+        "created_at": "2026-03-12T08:01:00Z",
+        "type": "system",
+        "unread": True,
+        "recipient_user_id": "usr-general",
+    })
+
+    analyst_headers = _login_as_analyst(test_client)
+    listing = test_client.get("/api/v1/notifications", headers=analyst_headers)
+    assert listing.status_code == 200
+    ids = {item["notification_id"] for item in listing.json()["data"]["items"]}
+    assert "ntf-private-admin" not in ids, "analyst must not see admin-only notification"
+    assert "ntf-private-analyst" in ids
+    # Broadcast notifications (no recipient_user_id) stay visible to everyone.
+    assert "ntf-001" in ids
+
+    # Trying to mark the admin-only notification as read should 404.
+    blocked = test_client.post(
+        "/api/v1/notifications/ntf-private-admin/read",
+        headers=analyst_headers,
+    )
+    assert blocked.status_code == 404
+
+    # Read-all must only mark the analyst's own + broadcast notifications.
+    test_client.post("/api/v1/notifications/read-all", headers=analyst_headers, json={})
+    admin_state_check = next(
+        n for n in state.notifications if n["notification_id"] == "ntf-private-admin"
+    )
+    assert admin_state_check["unread"] is True, "admin notification must remain unread"

@@ -284,6 +284,41 @@ def test_safe_search_re_raises_connection_errors_as_503(monkeypatch):
     assert excinfo.value.status_code == 503
 
 
+# ---------------------------------------------------------------------------
+# 2.2 — Authorization + notification scoping
+# ---------------------------------------------------------------------------
+
+
+def test_require_admin_rejects_general_role():
+    from fastapi import HTTPException as HE
+    with pytest.raises(HE) as excinfo:
+        r.require_admin(current_user={"user_id": "u-1", "role_name": "General"})
+    assert excinfo.value.status_code == 403
+
+
+@pytest.mark.parametrize("role", ["Admin", "Super Admin", "admin", "SuperAdmin", "superadmin"])
+def test_require_admin_allows_admin_roles(role):
+    user = r.require_admin(current_user={"user_id": "u-1", "role_name": role})
+    assert user["user_id"] == "u-1"
+
+
+def test_notification_visible_to_broadcast_to_everyone():
+    from services.dashboard_bootstrap import DashboardState
+
+    broadcast = {"notification_id": "n-1"}  # no recipient_user_id
+    assert DashboardState._notification_visible_to(broadcast, "any-user") is True
+    assert DashboardState._notification_visible_to(broadcast, None) is True
+
+
+def test_notification_visible_to_targeted_only_to_owner():
+    from services.dashboard_bootstrap import DashboardState
+
+    targeted = {"notification_id": "n-2", "recipient_user_id": "usr-a"}
+    assert DashboardState._notification_visible_to(targeted, "usr-a") is True
+    assert DashboardState._notification_visible_to(targeted, "usr-b") is False
+    assert DashboardState._notification_visible_to(targeted, None) is False
+
+
 def test_safe_search_query_error_falls_back_to_empty(monkeypatch):
     # Phase 2.1e-1: only connection-class errors raise. Query-level errors
     # (malformed body etc.) still degrade to empty hits so a single bad
