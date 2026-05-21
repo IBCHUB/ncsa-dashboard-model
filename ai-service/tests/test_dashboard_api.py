@@ -1401,6 +1401,51 @@ def test_admin_cannot_self_delete_via_user_endpoint(client):
     assert "own account" in response.json()["detail"].lower()
 
 
+def test_operation_event_detail_hides_tlp_red_from_analyst(client):
+    """Phase 2.3-2 regression: TLP:red docs were exposed via the event-detail
+    endpoint to any authenticated user. Analysts must see a 404 (not 403, to
+    avoid leaking the document's existence); admins still see it.
+    """
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+    admin_headers = _login(test_client)
+
+    analyst_resp = test_client.get("/api/v1/operations/events/wh-red-1", headers=analyst_headers)
+    assert analyst_resp.status_code == 404
+
+    admin_resp = test_client.get("/api/v1/operations/events/wh-red-1", headers=admin_headers)
+    assert admin_resp.status_code == 200
+    assert admin_resp.json()["data"]["event_id"] == "wh-red-1"
+
+
+def test_executive_dashboard_rejects_inverted_date_range(client):
+    """Phase 2.3-3 regression: inverted ranges used to silently return an
+    empty payload; surface 400 instead so the caller can fix the query.
+    """
+    test_client, _ = client
+    headers = _login(test_client)
+    response = test_client.get(
+        "/api/v1/executive/dashboard?start_date=2026-05-21&end_date=2026-05-20",
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "on or before" in response.json()["detail"].lower()
+
+
+def test_operations_dashboard_accepts_filter_params(client):
+    """Phase 2.3-1 regression: the dashboard endpoints used to drop
+    severity/source/threat-type filters on the floor — the signature
+    didn't declare them. Now they should at least be accepted (200).
+    """
+    test_client, _ = client
+    headers = _login(test_client)
+    response = test_client.get(
+        "/api/v1/operations/dashboard?severities=critical&threat_types=Phishing",
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+
 def test_diagnostics_data_sources_requires_admin(client):
     test_client, _ = client
     analyst_headers = _login_as_analyst(test_client)

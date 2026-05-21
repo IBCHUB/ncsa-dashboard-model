@@ -310,6 +310,38 @@ def test_notification_visible_to_broadcast_to_everyone():
     assert DashboardState._notification_visible_to(broadcast, None) is True
 
 
+@pytest.mark.parametrize(
+    "start,end,expected_detail",
+    [
+        ("2026-05-21", "2026-05-20", "on or before"),
+        ("not-a-date", "2026-05-21", "Invalid start_date"),
+        ("2026-05-01", "not-a-date", "Invalid end_date"),
+    ],
+)
+def test_validate_dashboard_date_range_rejects_bad_inputs(start, end, expected_detail):
+    from fastapi import HTTPException as HE
+    with pytest.raises(HE) as excinfo:
+        r._validate_dashboard_date_range(start, end)
+    assert excinfo.value.status_code == 400
+    assert expected_detail.lower() in str(excinfo.value.detail).lower()
+
+
+def test_validate_dashboard_date_range_rejects_excessive_span(monkeypatch):
+    from fastapi import HTTPException as HE
+    monkeypatch.setattr(r, "MAX_DASHBOARD_DATE_RANGE_DAYS", 30)
+    with pytest.raises(HE) as excinfo:
+        r._validate_dashboard_date_range("2026-01-01", "2026-12-31")
+    assert excinfo.value.status_code == 400
+    assert "range too wide" in str(excinfo.value.detail).lower()
+
+
+def test_validate_dashboard_date_range_allows_open_ended():
+    # Either bound alone should pass without error.
+    r._validate_dashboard_date_range("2026-05-21", None)
+    r._validate_dashboard_date_range(None, "2026-05-21")
+    r._validate_dashboard_date_range(None, None)
+
+
 def test_notification_visible_to_targeted_only_to_owner():
     from services.dashboard_bootstrap import DashboardState
 

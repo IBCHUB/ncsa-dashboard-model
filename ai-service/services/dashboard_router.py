@@ -587,7 +587,46 @@ def _resolve_anchor_end(end_date: Optional[str]) -> datetime:
         parsed = _parse_dt(normalized)
         if parsed:
             return parsed.astimezone(UTC)
+        logger.warning("_resolve_anchor_end: malformed end_date %r, falling back to now()", end_date)
     return datetime.now(UTC)
+
+
+MAX_DASHBOARD_DATE_RANGE_DAYS = int(os.getenv("DASHBOARD_MAX_RANGE_DAYS", "366"))
+
+
+def _validate_dashboard_date_range(start_date: Optional[str], end_date: Optional[str]) -> None:
+    """Reject obviously bad date windows before they hit ES.
+
+    - Inverted ranges (start > end) used to return an empty payload silently;
+      surface a 400 so callers can correct their query.
+    - Very wide windows can DoS the cluster — cap at MAX_DASHBOARD_DATE_RANGE_DAYS
+      (configurable via DASHBOARD_MAX_RANGE_DAYS env, default 366).
+    - Malformed dates are caught here too so handlers see a clean 400 instead
+      of `_resolve_anchor_end` quietly substituting `now()`.
+    """
+    if start_date is None and end_date is None:
+        return
+    if start_date:
+        start_parsed = _parse_dt(start_date if "T" in start_date else f"{start_date}T00:00:00+07:00")
+        if not start_parsed:
+            raise HTTPException(status_code=400, detail=f"Invalid start_date: {start_date!r}")
+    else:
+        start_parsed = None
+    if end_date:
+        end_parsed = _parse_dt(end_date if "T" in end_date else f"{end_date}T23:59:59+07:00")
+        if not end_parsed:
+            raise HTTPException(status_code=400, detail=f"Invalid end_date: {end_date!r}")
+    else:
+        end_parsed = None
+    if start_parsed and end_parsed:
+        if start_parsed > end_parsed:
+            raise HTTPException(status_code=400, detail="start_date must be on or before end_date")
+        span_days = (end_parsed - start_parsed).total_seconds() / 86400
+        if span_days > MAX_DASHBOARD_DATE_RANGE_DAYS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Date range too wide ({int(span_days)} days); max is {MAX_DASHBOARD_DATE_RANGE_DAYS}",
+            )
 
 
 def _date_filter(range_query: Optional[Dict[str, str]], fields: Sequence[str]) -> Optional[Dict[str, Any]]:
@@ -1277,9 +1316,26 @@ def _search_total(result: Dict[str, Any]) -> int:
         return 0
 
 
-def _warehouse_summary_stats(start_date: Optional[str], end_date: Optional[str], time_mode: str = TIME_MODE_PROCESSED) -> Dict[str, Any]:
+def _warehouse_summary_stats(
+    start_date: Optional[str],
+    end_date: Optional[str],
+    time_mode: str = TIME_MODE_PROCESSED,
+    *,
+    sources: Optional[List[str]] = None,
+    threat_types: Optional[List[str]] = None,
+    severities: Optional[List[str]] = None,
+    ioc_types: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     client = get_elastic_client()
-    filters = _warehouse_search_filters(start_date=start_date, end_date=end_date, time_mode=time_mode)
+    filters = _warehouse_search_filters(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        ioc_types=ioc_types,
+        time_mode=time_mode,
+    )
     severity_filters = {
         severity: {"term": {"severity": severity}}
         for severity in ("critical", "high", "medium", "low", "clean")
@@ -6205,18 +6261,44 @@ def list_enforcement_points(query: Optional[str] = None, type: Optional[str] = N
 def executive_dashboard(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    sources: Optional[List[str]] = Query(default=None),
+    threat_types: Optional[List[str]] = Query(default=None),
+    severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     now = _resolve_anchor_end(end_date)
     if not end_date:
         end_date = _to_bangkok_date(now)
     if not start_date:
         start_date = _to_bangkok_date(now - timedelta(hours=24))
 
-    current_stats = _warehouse_summary_stats(start_date, end_date, time_mode=TIME_MODE_PROCESSED)
-    current_aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_trend=True, time_mode=TIME_MODE_PROCESSED)
+    current_stats = _warehouse_summary_stats(
+        start_date,
+        end_date,
+        time_mode=TIME_MODE_PROCESSED,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+    )
+    current_aggs = _warehouse_dashboard_aggs(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        include_trend=True,
+        time_mode=TIME_MODE_PROCESSED,
+    )
     previous_start_date, previous_end_date = _previous_date_window(start_date, end_date)
-    previous_stats = _warehouse_summary_stats(previous_start_date, previous_end_date, time_mode=TIME_MODE_PROCESSED) if previous_start_date and previous_end_date else None
+    previous_stats = _warehouse_summary_stats(
+        previous_start_date,
+        previous_end_date,
+        time_mode=TIME_MODE_PROCESSED,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+    ) if previous_start_date and previous_end_date else None
     severity_distribution = _build_severity_distribution_from_counts(current_stats.get("severity_counts") or {})
     treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("threat_types") or [])
     sector_treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("sector_terms") or [])
@@ -6234,6 +6316,9 @@ def executive_dashboard(
         hourly_aggs = _warehouse_dashboard_aggs(
             start_date=lookback_start,
             end_date=lookback_end,
+            sources=sources,
+            threat_types=threat_types,
+            severities=severities,
             include_trend=True,
             time_mode=TIME_MODE_PROCESSED,
         )
@@ -6281,6 +6366,9 @@ def executive_report_preview(request: ExecutiveReportRequest, current_user: Dict
     payload = executive_dashboard(
         start_date=request.start_date.isoformat(),
         end_date=request.end_date.isoformat(),
+        sources=request.sources or None,
+        threat_types=request.threat_types or None,
+        severities=request.severities or None,
         current_user=current_user,
     )["data"]
     payload["filters"] = {
@@ -6314,17 +6402,42 @@ def executive_report_export(request: ExportReportRequest, current_user: Dict[str
 def operations_dashboard(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    sources: Optional[List[str]] = Query(default=None),
+    threat_types: Optional[List[str]] = Query(default=None),
+    severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     anchor_end = _resolve_anchor_end(end_date) if end_date else None
-    aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_PROCESSED)
+    aggs = _warehouse_dashboard_aggs(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        time_mode=TIME_MODE_PROCESSED,
+    )
     recent_start = _to_bangkok_date((anchor_end or datetime.now(UTC)) - timedelta(days=1))
     recent_end = _to_bangkok_date(anchor_end or datetime.now(UTC))
-    recent_stats = _warehouse_summary_stats(recent_start, recent_end, time_mode=TIME_MODE_PROCESSED)
+    recent_stats = _warehouse_summary_stats(
+        recent_start,
+        recent_end,
+        time_mode=TIME_MODE_PROCESSED,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+    )
     payload = {
         "overview": _operations_overview_from_aggs(aggs, recent_stats=recent_stats),
         "incident_by_severity": _build_severity_distribution_from_counts(_severity_counts_from_filter_agg(aggs.get("severity_counts") or {})),
-        "attack_time_heatmap": _build_attack_time_heatmap_from_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_PROCESSED),
+        "attack_time_heatmap": _build_attack_time_heatmap_from_aggs(
+            start_date=start_date,
+            end_date=end_date,
+            sources=sources,
+            threat_types=threat_types,
+            severities=severities,
+            time_mode=TIME_MODE_PROCESSED,
+        ),
         "top_intelligence_sources": _format_source_terms(_terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=aggs.get("total"), limit=25))[:5],
         "top_threat_types": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], limit=5),
         "top_attack_origins": _terms_items_from_buckets((aggs.get("countries") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
@@ -6868,6 +6981,12 @@ def operation_event_detail(event_id: str, current_user: Dict[str, Any] = Depends
     client = get_elastic_client()
     document = client.get_index_document(client.warehouse_index, event_id) or client.get_index_document(client.datalake_index, event_id)
     if not document:
+        raise HTTPException(status_code=404, detail="Event not found")
+    # TLP:red docs are restricted to admins; surface 404 (not 403) so we don't
+    # leak the existence of the document to ordinary analysts.
+    tlp = str(document.get("tlp") or "amber").strip().lower()
+    role = str(current_user.get("role_name") or "").strip().lower()
+    if tlp == "red" and role not in ADMIN_ROLE_NAMES:
         raise HTTPException(status_code=404, detail="Event not found")
     formatted = _attack_time_event_row({"_id": event_id, **document}, TIME_MODE_OBSERVED)
     payload = {
