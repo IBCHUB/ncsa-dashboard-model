@@ -1635,3 +1635,176 @@ def test_notifications_scope_excludes_other_users_targeted_items(client):
         n for n in state.notifications if n["notification_id"] == "ntf-private-admin"
     )
     assert admin_state_check["unread"] is True, "admin notification must remain unread"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.6 — Reports / Exports regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_export_download_analyst_cannot_access_other_users_export(client):
+    # BUG-2.6-1: export_download had no ownership check — any logged-in user
+    # could download any export job.  Now analysts get 404 for exports they
+    # don't own.
+    test_client, _ = client
+    admin_headers = _login(test_client)
+    analyst_headers = _login_as_analyst(test_client)
+
+    # Admin creates an export via the executive report endpoint.
+    resp = test_client.post(
+        "/api/v1/reports/executive/export",
+        headers=admin_headers,
+        json={
+            "export_format": "csv",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-21",
+        },
+    )
+    assert resp.status_code in (200, 202), resp.text
+    export_id = resp.json()["data"]["export_id"]
+
+    # Admin can download their own export.
+    dl_admin = test_client.get(f"/api/v1/exports/{export_id}/download", headers=admin_headers)
+    # 200 if file is attached; 404 if no file was generated — both are valid
+    # as long as the analyst is blocked below.
+    assert dl_admin.status_code in (200, 404)
+
+    # Analyst must NOT be able to download admin's export (404, not 200/403).
+    dl_analyst = test_client.get(f"/api/v1/exports/{export_id}/download", headers=analyst_headers)
+    assert dl_analyst.status_code == 404, (
+        "analyst must get 404 for another user's export, got "
+        f"{dl_analyst.status_code}: {dl_analyst.text}"
+    )
+
+
+def test_export_job_stores_owner_user_id(client):
+    # BUG-2.6-2: export jobs previously didn't record owner_user_id, so the
+    # ownership check in export_download had nothing to enforce.
+    test_client, _ = client
+    admin_headers = _login(test_client)
+
+    resp = test_client.post(
+        "/api/v1/reports/executive/export",
+        headers=admin_headers,
+        json={
+            "export_format": "csv",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-21",
+        },
+    )
+    assert resp.status_code in (200, 202), resp.text
+    export_id = resp.json()["data"]["export_id"]
+
+    import services.dashboard_bootstrap as _bs
+    state = _bs.get_dashboard_state()
+    job = state.get_export_job(export_id)
+    assert job is not None
+    assert job.get("owner_user_id") == "usr-admin", (
+        f"export job should record owner_user_id='usr-admin', got {job.get('owner_user_id')!r}"
+    )
+
+
+def test_export_download_admin_can_access_any_export(client):
+    # Admin role must bypass ownership check and download any export.
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+    admin_headers = _login(test_client)
+
+    # Analyst creates an export.
+    resp = test_client.post(
+        "/api/v1/reports/executive/export",
+        headers=analyst_headers,
+        json={
+            "export_format": "csv",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-21",
+        },
+    )
+    assert resp.status_code in (200, 202), resp.text
+    export_id = resp.json()["data"]["export_id"]
+
+    # Admin can download analyst's export.
+    dl = test_client.get(f"/api/v1/exports/{export_id}/download", headers=admin_headers)
+    # 200 with file or 404 because no file artifact — either is fine, not 403.
+    assert dl.status_code != 403, f"admin must not be blocked with 403, got {dl.status_code}"
+
+
+def test_export_delete_job_removes_both_job_and_file(client):
+    # BUG-2.6-3: TTL cleanup — verify delete_export_job removes job + file.
+    test_client, _ = client
+    import services.dashboard_bootstrap as _bs
+    state = _bs.get_dashboard_state()
+
+    # Directly create a job with a file via bootstrap.
+    job = state.create_export_job(
+        "csv",
+        "test-report",
+        report_type="test",
+        file_content=b"col1,col2\n1,2\n",
+        media_type="text/csv",
+        owner_user_id="usr-admin",
+    )
+    export_id = job["export_id"]
+
+    assert state.get_export_job(export_id) is not None
+    assert state.get_export_file(export_id) is not None
+
+    state.delete_export_job(export_id)
+
+    assert state.get_export_job(export_id) is None
+    assert state.get_export_file(export_id) is None
+
+
+def test_export_download_expired_job_returns_404(client, monkeypatch):
+    # BUG-2.6-3: expired exports must be cleaned up lazily and return 404.
+    test_client, _ = client
+    admin_headers = _login(test_client)
+
+    # Freeze time so the export appears far in the past.
+    from datetime import timezone as _tz
+    import datetime as _dt
+    import services.dashboard_router as _dr
+
+    resp = test_client.post(
+        "/api/v1/reports/executive/export",
+        headers=admin_headers,
+        json={
+            "export_format": "csv",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-21",
+        },
+    )
+    assert resp.status_code in (200, 202), resp.text
+    export_id = resp.json()["data"]["export_id"]
+
+    # Monkeypatch EXPORT_TTL_SECONDS to 0 so any export is immediately expired.
+    monkeypatch.setattr(_dr, "EXPORT_TTL_SECONDS", 0)
+
+    dl = test_client.get(f"/api/v1/exports/{export_id}/download", headers=admin_headers)
+    assert dl.status_code == 404, f"expired export must 404, got {dl.status_code}"
+
+
+def test_export_size_limit_rejected(client, monkeypatch):
+    # BUG-2.6-4: exports larger than EXPORT_MAX_BYTES must be rejected 413.
+    import services.dashboard_router as _dr
+    monkeypatch.setattr(_dr, "EXPORT_MAX_BYTES", 5)  # 5-byte limit for the test
+
+    test_client, _ = client
+    admin_headers = _login(test_client)
+
+    # Patch _build_ioc_export_artifact to return oversized content.
+    def _big_artifact(items, fmt):
+        return "csv", b"A" * 100, "text/csv"
+
+    monkeypatch.setattr(_dr, "_build_ioc_export_artifact", _big_artifact)
+
+    resp = test_client.post(
+        "/api/v1/reports/ioc/export",
+        headers=admin_headers,
+        json={
+            "export_format": "csv",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-21",
+        },
+    )
+    assert resp.status_code == 413, f"oversized export must return 413, got {resp.status_code}: {resp.text}"

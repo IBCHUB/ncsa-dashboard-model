@@ -592,6 +592,8 @@ def _resolve_anchor_end(end_date: Optional[str]) -> datetime:
 
 
 MAX_DASHBOARD_DATE_RANGE_DAYS = int(os.getenv("DASHBOARD_MAX_RANGE_DAYS", "366"))
+EXPORT_MAX_BYTES = int(os.getenv("DASHBOARD_EXPORT_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB
+EXPORT_TTL_SECONDS = int(os.getenv("DASHBOARD_EXPORT_TTL_SECONDS", str(4 * 3600)))  # 4 hours
 
 
 def _validate_dashboard_date_range(start_date: Optional[str], end_date: Optional[str]) -> None:
@@ -6086,7 +6088,13 @@ def _queue_export_job(
     filters: Optional[Dict[str, Any]] = None,
     file_content: Optional[bytes] = None,
     media_type: Optional[str] = None,
+    owner_user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    if file_content is not None and len(file_content) > EXPORT_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Export too large ({len(file_content):,} bytes); max is {EXPORT_MAX_BYTES:,}",
+        )
     state = get_dashboard_state()
     return state.create_export_job(
         export_format,
@@ -6095,6 +6103,7 @@ def _queue_export_job(
         filters=filters or {},
         file_content=file_content,
         media_type=media_type,
+        owner_user_id=owner_user_id,
     )
 
 
@@ -6425,6 +6434,7 @@ def executive_report_export(request: ExportReportRequest, current_user: Dict[str
             "sources": request.sources,
             "severities": request.severities,
         },
+        owner_user_id=current_user["user_id"],
     )
     return _success(job)
 
@@ -6624,6 +6634,7 @@ def attack_time_report_export(request: AttackTimeExportRequest, current_user: Di
             "page": request.page,
             "page_size": request.page_size,
         },
+        owner_user_id=current_user["user_id"],
     )
     return _success(job)
 
@@ -6642,6 +6653,7 @@ def operations_report_export(report_key: str, request: ExportReportRequest, curr
             "sources": request.sources,
             "severities": request.severities,
         },
+        owner_user_id=current_user["user_id"],
     )
     return _success(job)
 
@@ -6660,6 +6672,7 @@ def threat_intelligence_report_export(request: ThreatIntelligenceExportRequest, 
             "start_date": request.start_date.isoformat(),
             "end_date": request.end_date.isoformat(),
         },
+        owner_user_id=current_user["user_id"],
     )
     return _success(job)
 
@@ -7133,6 +7146,7 @@ def action_report_export(request: ActionReportRequest, current_user: Dict[str, A
             "severities": request.severities,
             "statuses": request.statuses,
         },
+        owner_user_id=current_user["user_id"],
     )
     return _success(job)
 
@@ -7802,6 +7816,7 @@ def ioc_report_export(
         filters,
         file_content=file_content,
         media_type=media_type,
+        owner_user_id=current_user["user_id"],
     )
     return _success(_public_export_job(job, http_request))
 
@@ -7883,6 +7898,18 @@ def export_download(export_id: str, current_user: Dict[str, Any] = Depends(requi
     state = get_dashboard_state()
     job = state.get_export_job(export_id)
     if not job:
+        raise HTTPException(status_code=404, detail="Export job not found")
+    # TTL check — treat expired jobs as not found to avoid accumulating stale files
+    created_at = _parse_dt(job.get("created_at"))
+    if created_at is not None:
+        age = (datetime.now(tz=UTC) - created_at).total_seconds()
+        if age > EXPORT_TTL_SECONDS:
+            state.delete_export_job(export_id)
+            raise HTTPException(status_code=404, detail="Export job not found")
+    # Ownership: admins may download any export; analysts may only download their own
+    role = str(current_user.get("role_name") or "").strip().lower()
+    owner_id = job.get("owner_user_id")
+    if role not in ADMIN_ROLE_NAMES and owner_id is not None and owner_id != current_user["user_id"]:
         raise HTTPException(status_code=404, detail="Export job not found")
     export_file = state.get_export_file(export_id)
     if not export_file:

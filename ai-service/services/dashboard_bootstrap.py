@@ -659,6 +659,7 @@ class DashboardState:
         filters: Optional[Dict[str, Any]] = None,
         file_content: Optional[bytes] = None,
         media_type: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         with self.lock:
             export_id = f"exp-{secrets.token_hex(4)}"
@@ -674,6 +675,7 @@ class DashboardState:
                 "completed_at": _isoformat(created_at),
                 "report_type": report_type or file_prefix,
                 "filters": deepcopy(filters or {}),
+                "owner_user_id": owner_user_id,
             }
             if file_content is not None:
                 self.export_files[export_id] = {
@@ -686,6 +688,11 @@ class DashboardState:
     def get_export_job(self, export_id: str) -> Optional[Dict[str, Any]]:
         job = self.export_jobs.get(export_id)
         return deepcopy(job) if job else None
+
+    def delete_export_job(self, export_id: str) -> None:
+        with self.lock:
+            self.export_jobs.pop(export_id, None)
+            self.export_files.pop(export_id, None)
 
     def get_export_file(self, export_id: str) -> Optional[Dict[str, Any]]:
         export_file = self.export_files.get(export_id)
