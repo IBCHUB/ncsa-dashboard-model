@@ -46,6 +46,17 @@ BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 UTC = timezone.utc
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "clean": 0}
 
+# Cyberint emits `severity` as a discrete numeric score in the datalake.
+# These bands mirror `_normalize_severity`'s numeric branch so that querying
+# the datalake with a normalized string label maps to the right numeric range.
+_CYBERINT_SEVERITY_BANDS: dict[str, Tuple[int, int]] = {
+    "critical": (80, 100),
+    "high": (60, 79),
+    "medium": (40, 59),
+    "low": (1, 39),
+    "clean": (0, 0),
+}
+
 # ---------------------------------------------------------------------------
 # Time-mode constants: each mode selects the semantically correct date fields
 # ---------------------------------------------------------------------------
@@ -65,7 +76,10 @@ DATALAKE_TIME_FIELDS: dict[str, list[str]] = {
     "observed": ["observation_date", "first_seen"],
     "processed": ["@timestamp", "processed_at"],
     "published": ["published_at"],
-    "changed": [],
+    # Datalake has no native "changed" timestamp; fall back to @timestamp so
+    # callers passing time_mode=changed against datalake don't silently bypass
+    # the date filter (would return entire index).
+    "changed": ["@timestamp"],
 }
 
 PYTHON_FILTER_FIELDS: dict[str, list[str]] = {
@@ -577,7 +591,10 @@ def _resolve_anchor_end(end_date: Optional[str]) -> datetime:
 
 
 def _date_filter(range_query: Optional[Dict[str, str]], fields: Sequence[str]) -> Optional[Dict[str, Any]]:
-    if not range_query or not fields:
+    if not range_query:
+        return None
+    if not fields:
+        logger.warning("_date_filter called with empty fields but non-empty range — date filter dropped: %s", range_query)
         return None
     should = [{"range": {field: range_query}} for field in fields]
     return {"bool": {"should": should, "minimum_should_match": 1}}
@@ -669,6 +686,9 @@ SECTOR_DISPLAY_NAMES = {
 }
 
 
+_UNMAPPED_SECTOR_SEEN: set[str] = set()
+
+
 def _sector_display_name(value: Any) -> Optional[str]:
     raw = str(value or "").strip()
     if not raw:
@@ -676,7 +696,15 @@ def _sector_display_name(value: Any) -> Optional[str]:
     lowered = raw.lower()
     if lowered in {"none", "null", "unknown", "n/a", "-", "ไม่ระบุ"}:
         return "Other"
-    return SECTOR_DISPLAY_NAMES.get(lowered) or SECTOR_DISPLAY_NAMES.get(raw) or "Other"
+    mapped = SECTOR_DISPLAY_NAMES.get(lowered) or SECTOR_DISPLAY_NAMES.get(raw)
+    if mapped:
+        return mapped
+    # Log unique unmapped sector values once so operators can extend
+    # SECTOR_DISPLAY_NAMES instead of silently collapsing data into "Other".
+    if lowered not in _UNMAPPED_SECTOR_SEEN:
+        _UNMAPPED_SECTOR_SEEN.add(lowered)
+        logger.info("sector display name unmapped, falling back to 'Other': %r", raw)
+    return "Other"
 
 
 def _sector_info(doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -930,12 +958,30 @@ def require_internal_api_key(x_api_key: Optional[str] = Header(default=None, ali
     return x_api_key
 
 
+_ES_CONNECTION_ERROR_KEYWORDS = ("connection", "timeout", "unreachable", "refused", "transport")
+
+
 def _safe_search(index: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Run an ES search, distinguishing infra failures from query-level errors.
+
+    Connection-class errors are re-raised as HTTP 503 so the UI surfaces
+    an outage instead of silently rendering "no data". Query-level errors
+    (malformed body, missing index) still fall back to an empty result so
+    a single bad endpoint can't take down the whole dashboard.
+    """
     client = get_elastic_client()
     try:
         return client.search_index(index, body)
     except Exception as exc:
-        logger.error("Elasticsearch search failed for %s: %s", index, exc)
+        message = str(exc).lower()
+        is_connection_error = (
+            exc.__class__.__name__.lower().endswith(("connectionerror", "timeout", "transporterror"))
+            or any(keyword in message for keyword in _ES_CONNECTION_ERROR_KEYWORDS)
+        )
+        if is_connection_error:
+            logger.error("Elasticsearch connection error for %s: %s", index, exc)
+            raise HTTPException(status_code=503, detail="Search backend unavailable") from exc
+        logger.error("Elasticsearch query failed for %s: %s | body_keys=%s", index, exc, sorted(body.keys()))
         return {"hits": {"total": {"value": 0}, "hits": []}}
 
 
@@ -1008,10 +1054,13 @@ def _warehouse_search_filters(
     filters: List[Dict[str, Any]] = []
     if ioc_types:
         filters.append({"terms": {"ioc_type": [item.lower() for item in ioc_types]}})
-    if severities:
-        filters.append({"terms": {"severity": [_normalize_severity(item) for item in severities]}})
-    if risk_levels:
-        filters.append({"terms": {"severity": [_normalize_severity(item) for item in risk_levels]}})
+    # severities + risk_levels both target the AI severity field. Merge into a
+    # single terms clause so passing both doesn't AND them into an empty result.
+    merged_severities = [_normalize_severity(item) for item in (severities or [])] + [
+        _normalize_severity(item) for item in (risk_levels or [])
+    ]
+    if merged_severities:
+        filters.append({"terms": {"severity": sorted(set(merged_severities))}})
     if sources:
         filters.append({"terms": {"source_name": sources}})
     if threat_types:
@@ -1104,6 +1153,9 @@ def _scroll_all_warehouse_docs(
     ioc_types: Optional[List[str]] = None,
     risk_levels: Optional[List[str]] = None,
     min_risk_score: Optional[int] = None,
+    validation_statuses: Optional[List[str]] = None,
+    review_states: Optional[List[str]] = None,
+    warehouse_eligible_only: Optional[bool] = True,
     sort_by: str = "risk",
     time_mode: str = TIME_MODE_PROCESSED,
 ) -> List[Dict[str, Any]]:
@@ -1117,6 +1169,10 @@ def _scroll_all_warehouse_docs(
         end_date=end_date,
         sources=sources,
         threat_types=threat_types,
+        validation_statuses=validation_statuses,
+        review_states=review_states,
+        warehouse_eligible_only=warehouse_eligible_only,
+        min_risk_score=min_risk_score,
         time_mode=time_mode,
     )
     sort = (
@@ -1174,14 +1230,9 @@ def _scroll_all_news_docs(
         }
     ]
     if sources:
-        filters.append(
-            {
-                "bool": {
-                    "should": [{"match_phrase": {"source_name": source}} for source in sources],
-                    "minimum_should_match": 1,
-                }
-            }
-        )
+        # `source_name` is a keyword field — use `terms` rather than `match_phrase`
+        # so the analyzer can't tokenize the query and mismatch against the doc.
+        filters.append({"terms": {"source_name": list(sources)}})
     date_filter = _date_filter(_date_query_range(start_date, end_date), WAREHOUSE_TIME_FIELDS[TIME_MODE_PUBLISHED])
     if date_filter:
         filters.append(date_filter)
@@ -1528,15 +1579,15 @@ def _source_category(value: Any) -> str:
     source = str(value or "").strip().lower()
     if not source:
         return "other"
-    if source in {"cyberint_iocs", "sandbox"} or source.startswith("cyberint") or "cyble threat intelligence" in source or source.startswith("misp"):
-        return "trusted"
+    # Check news feeds first so a name containing both "cyberint" and "news"
+    # doesn't get mislabelled as trusted before the news check runs.
     if source in {"zone-h", "darkreading", "thehackernews", "the hacker news"} or "news" in source:
         return "news"
-    if "tcti-feeds-sandbox" in source or "tcti-feeds-cyberint" in source or "misp_attributes" in source or source == "tcti-feeds":
-        return "trusted"
     if "tcti-feeds-darkreading" in source or "tcti-feeds-bleeping" in source or "tcti-feeds-thehackernews" in source or "tcti-feeds-zoneh" in source:
         return "news"
-    if source.startswith("cyberint_iocs-"):
+    if source in {"cyberint_iocs", "sandbox"} or source.startswith("cyberint") or "cyble threat intelligence" in source or source.startswith("misp"):
+        return "trusted"
+    if "tcti-feeds-sandbox" in source or "tcti-feeds-cyberint" in source or "misp_attributes" in source or source == "tcti-feeds":
         return "trusted"
     return "other"
 
@@ -1992,7 +2043,19 @@ def _datalake_search_filters(
     if ioc_types:
         filters.append({"terms": {"ioc_type": [item.lower() for item in ioc_types]}})
     if severities:
-        filters.append({"terms": {"severity": [_normalize_severity(item) for item in severities]}})
+        # Datalake (Cyberint) stores `severity` as a numeric score (0/20/80/100),
+        # not the AI string label. Map the requested string buckets back to
+        # numeric bands so filtering by "critical" actually matches docs.
+        severity_clauses: List[Dict[str, Any]] = []
+        seen_bands: set[Tuple[int, int]] = set()
+        for item in severities:
+            normalized = _normalize_severity(item)
+            band = _CYBERINT_SEVERITY_BANDS.get(normalized)
+            if band and band not in seen_bands:
+                seen_bands.add(band)
+                severity_clauses.append({"range": {"severity": {"gte": band[0], "lte": band[1]}}})
+        if severity_clauses:
+            filters.append({"bool": {"should": severity_clauses, "minimum_should_match": 1}})
     if sources:
         filters.append({"terms": {"source_name": sources}})
     if threat_types:
@@ -3205,8 +3268,14 @@ def _filter_warehouse_docs(
 
 
 def _resolve_date_bounds(start_date: Optional[str], end_date: Optional[str]) -> Tuple[Optional[datetime], Optional[datetime]]:
-    start_bound = _parse_dt(f"{start_date}T00:00:00+07:00") if start_date else None
-    end_bound = _parse_dt(f"{end_date}T23:59:59+07:00") if end_date else None
+    def _normalize(value: Optional[str], time_suffix: str) -> Optional[datetime]:
+        if not value:
+            return None
+        text = value if "T" in value else f"{value}{time_suffix}"
+        return _parse_dt(text)
+
+    start_bound = _normalize(start_date, "T00:00:00+07:00")
+    end_bound = _normalize(end_date, "T23:59:59+07:00")
     return start_bound, end_bound
 
 
@@ -5841,14 +5910,9 @@ def _search_news_docs(
         }
     ]
     if sources:
-        filters.append(
-            {
-                "bool": {
-                    "should": [{"match_phrase": {"source_name": source}} for source in sources],
-                    "minimum_should_match": 1,
-                }
-            }
-        )
+        # `source_name` is a keyword field — use `terms` rather than `match_phrase`
+        # so the analyzer can't tokenize the query and mismatch against the doc.
+        filters.append({"terms": {"source_name": list(sources)}})
     date_filter = _date_filter(_date_query_range(start_date, end_date), WAREHOUSE_TIME_FIELDS[TIME_MODE_PUBLISHED])
     if date_filter:
         filters.append(date_filter)
