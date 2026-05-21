@@ -1401,6 +1401,78 @@ def test_admin_cannot_self_delete_via_user_endpoint(client):
     assert "own account" in response.json()["detail"].lower()
 
 
+def test_block_ip_requires_admin(client):
+    """Phase 2.5-1 regression: block-ip queues a real firewall rule push.
+    General-role analysts must not reach it.
+    """
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+    response = test_client.post(
+        "/api/v1/actions/wh-1/block-ip",
+        headers=analyst_headers,
+        json={
+            "target_ioc": "evil.example",
+            "enforcement_point_ids": ["fw-bkk-01"],
+            "duration_mode": "permanent",
+            "duration_days": None,
+            "reason": "obvious",
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_block_ip_rejects_unknown_enforcement_point(client):
+    """Phase 2.5-12 regression: bogus enforcement_point_ids used to be
+    silently appended to the note. Reject with 400 instead.
+    """
+    test_client, _ = client
+    admin_headers = _login(test_client)
+    response = test_client.post(
+        "/api/v1/actions/wh-1/block-ip",
+        headers=admin_headers,
+        json={
+            "target_ioc": "evil.example",
+            "enforcement_point_ids": ["does-not-exist"],
+            "duration_mode": "permanent",
+            "duration_days": None,
+            "reason": "obvious",
+        },
+    )
+    assert response.status_code == 400
+    assert "Unknown enforcement_point_ids" in response.json()["detail"]
+
+
+def test_assign_action_rejects_inactive_assignee(client):
+    """Phase 2.5-9: must not assign work to a user marked inactive."""
+    test_client, _ = client
+    admin_headers = _login(test_client)
+    state = dashboard_bootstrap.get_dashboard_state()
+    # Mark the analyst user inactive on the fly.
+    state.update_user("usr-general", {"status": "inactive"})
+    response = test_client.post(
+        "/api/v1/actions/wh-1/assign",
+        headers=admin_headers,
+        json={"assignee_id": "usr-general", "handover_note": "please look"},
+    )
+    assert response.status_code == 404
+    assert "inactive" in response.json()["detail"].lower()
+
+
+def test_action_note_blocked_when_action_doc_is_tlp_red(client):
+    """Phase 2.5-4: action mutations must respect doc-level TLP, not just
+    require an authenticated user.
+    """
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+    response = test_client.post(
+        "/api/v1/actions/wh-red-1/notes",
+        headers=analyst_headers,
+        json={"content": "secret note"},
+    )
+    # 404, not 403, so we don't confirm wh-red-1 exists.
+    assert response.status_code == 404
+
+
 def test_ioc_events_hides_tlp_red_from_analyst(client, monkeypatch):
     """Phase 2.4-1 regression: /iocs/{id}/events used to return RED-tagged
     events for any authenticated user. Analysts must see the doc filtered

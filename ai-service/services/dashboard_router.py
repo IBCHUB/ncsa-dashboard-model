@@ -998,6 +998,37 @@ def require_admin(
     return current_user
 
 
+def _actor_display_name(user: Dict[str, Any]) -> str:
+    """Resolve a non-empty display name from a user payload.
+
+    Action endpoints used `user["name"]` directly, which raises KeyError
+    when an SSO identity arrives without a `name` field. Falls back to
+    email, username, and finally user_id so audit notes always have an
+    actor.
+    """
+    for key in ("name", "display_name", "email", "username"):
+        value = str(user.get(key) or "").strip()
+        if value:
+            return value
+    return str(user.get("user_id") or "unknown")
+
+
+def _ensure_doc_visible(doc: Optional[Dict[str, Any]], current_user: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the doc when the caller is allowed to see it; raise 404 otherwise.
+
+    Mirrors the analyst→404 / admin→200 pattern used by other detail
+    endpoints. Non-admins must not be able to mutate TLP:red docs even
+    when they happen to know the doc id.
+    """
+    if not doc:
+        raise HTTPException(status_code=404, detail="Action not found")
+    tlp = str(doc.get("tlp") or "amber").strip().lower()
+    role = str(current_user.get("role_name") or "").strip().lower()
+    if tlp == "red" and role not in ADMIN_ROLE_NAMES:
+        raise HTTPException(status_code=404, detail="Action not found")
+    return doc
+
+
 def require_internal_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")) -> str:
     allowed_keys = {
         key.strip()
@@ -6645,6 +6676,7 @@ def threat_trend_events(
     severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     cache_key = _cache_key("threat_trend_events", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, threat_types=threat_types, sources=sources, severities=severities)
     cached = _cache_get(cache_key)
     if cached:
@@ -7010,6 +7042,7 @@ def list_actions(
     status: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     cache_key = _cache_key("list_actions", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, threat_types=threat_types, sources=sources, severities=severities, status=status)
     cached = _cache_get(cache_key)
     if cached:
@@ -7133,33 +7166,36 @@ def related_iocs(action_id: str, page: int = 1, page_size: int = 20, current_use
 
 @router.post("/actions/{action_id}/notes", tags=["Actions"], status_code=201)
 def create_action_note(action_id: str, request: ActionNoteRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    doc = _get_processed_doc(action_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Action not found")
-    note = get_dashboard_state().append_action_note(action_id, current_user["name"], request.content.strip())
+    doc = _ensure_doc_visible(_get_processed_doc(action_id), current_user)
+    note = get_dashboard_state().append_action_note(action_id, _actor_display_name(current_user), request.content.strip())
     return _success({"action_id": action_id, "note": note})
 
 
 @router.post("/actions/{action_id}/assign", tags=["Actions"])
 def assign_action(action_id: str, request: AssignRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
     state = get_dashboard_state()
-    assignee = next((item for item in state.list_assignees() if item["user_id"] == request.assignee_id), None)
+    assignee = next(
+        (
+            item for item in state.list_assignees()
+            if item["user_id"] == request.assignee_id and str(item.get("status") or "active").lower() == "active"
+        ),
+        None,
+    )
     if not assignee:
-        raise HTTPException(status_code=404, detail="Assignee not found")
+        raise HTTPException(status_code=404, detail="Assignee not found or inactive")
+    doc = _ensure_doc_visible(_get_processed_doc(action_id), current_user)
     state.assign_action(action_id, assignee, request.handover_note or "")
-    doc = _get_processed_doc(action_id)
-    if doc:
-        get_elastic_client().update_warehouse_document(
-            action_id,
-            {
-                "action_required": True,
-                "action_status": ACTION_IN_PROGRESS,
-                "action_updated_at": _utcnow_z(),
-                "action_opened_at": doc.get("action_opened_at") or doc.get("processed_at") or doc.get("event_time"),
-            },
-        )
+    get_elastic_client().update_warehouse_document(
+        action_id,
+        {
+            "action_required": True,
+            "action_status": ACTION_IN_PROGRESS,
+            "action_updated_at": _utcnow_z(),
+            "action_opened_at": doc.get("action_opened_at") or doc.get("processed_at") or doc.get("event_time"),
+        },
+    )
     if request.handover_note:
-        state.append_action_note(action_id, current_user["name"], request.handover_note)
+        state.append_action_note(action_id, _actor_display_name(current_user), request.handover_note)
     return _success({"action_id": action_id, "status": ACTION_IN_PROGRESS, "audit_id": f"audit-{_hash_id(action_id, assignee['user_id'])}", "message": "Action assigned"})
 
 
@@ -7171,41 +7207,52 @@ async def mark_false_positive(
     evidence_file: Optional[UploadFile] = File(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    doc = _get_processed_doc(action_id)
-    if doc:
-        get_elastic_client().update_warehouse_document(
-            action_id,
-            {
-                "action_required": False,
-                "action_status": ACTION_CLOSED,
-                "action_closed_reason": "false_positive",
-                "action_closed_at": _utcnow_z(),
-                "action_updated_at": _utcnow_z(),
-            },
-        )
+    doc = _ensure_doc_visible(_get_processed_doc(action_id), current_user)
+    get_elastic_client().update_warehouse_document(
+        action_id,
+        {
+            "action_required": False,
+            "action_status": ACTION_CLOSED,
+            "action_closed_reason": "false_positive",
+            "action_closed_at": _utcnow_z(),
+            "action_updated_at": _utcnow_z(),
+        },
+    )
     note_content = justification
     if evidence_file is not None:
         note_content = f"{justification} (evidence: {evidence_file.filename})"
-    get_dashboard_state().append_action_note(action_id, current_user["name"], note_content)
+    logger.info("action.false_positive by=%s action=%s reason=%s", current_user.get("user_id"), action_id, reason_category)
+    get_dashboard_state().append_action_note(action_id, _actor_display_name(current_user), note_content)
     return _success({"action_id": action_id, "status": ACTION_CLOSED, "audit_id": f"audit-{_hash_id(action_id, reason_category)}", "message": "Marked as false positive"})
 
 
 @router.post("/actions/{action_id}/block-ip", tags=["Actions"])
-def block_ip(action_id: str, request: BlockIpRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def block_ip(action_id: str, request: BlockIpRequest, current_user: Dict[str, Any] = Depends(require_admin)):
+    """Queue a block-IP request against the named enforcement points.
+
+    Restricted to admins because this is a real-world network change
+    (firewall rule, blocklist push). Non-admin analysts who need to
+    request a block should use the notes endpoint to flag intent.
+    """
+    doc = _ensure_doc_visible(_get_processed_doc(action_id), current_user)
+    state = get_dashboard_state()
+    valid_enforcement_ids = {ep["enforcement_point_id"] for ep in state.list_enforcement_points()}
+    unknown = [pid for pid in request.enforcement_point_ids if pid not in valid_enforcement_ids]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown enforcement_point_ids: {unknown}")
     note = f"Block {request.target_ioc} on {', '.join(request.enforcement_point_ids)} ({request.duration_mode})"
-    get_dashboard_state().append_action_note(action_id, current_user["name"], note)
-    doc = _get_processed_doc(action_id)
-    if doc:
-        get_elastic_client().update_warehouse_document(
-            action_id,
-            {
-                "action_required": True,
-                "action_status": ACTION_IN_PROGRESS,
-                "action_reason": "block_ip",
-                "action_updated_at": _utcnow_z(),
-                "action_opened_at": doc.get("action_opened_at") or doc.get("processed_at") or doc.get("event_time"),
-            },
-        )
+    state.append_action_note(action_id, _actor_display_name(current_user), note)
+    logger.info("action.block_ip by=%s action=%s target=%s eps=%s", current_user.get("user_id"), action_id, request.target_ioc, request.enforcement_point_ids)
+    get_elastic_client().update_warehouse_document(
+        action_id,
+        {
+            "action_required": True,
+            "action_status": ACTION_IN_PROGRESS,
+            "action_reason": "block_ip",
+            "action_updated_at": _utcnow_z(),
+            "action_opened_at": doc.get("action_opened_at") or doc.get("processed_at") or doc.get("event_time"),
+        },
+    )
     return _success(
         {
             "action_id": action_id,
@@ -7855,6 +7902,7 @@ def list_news(
     sort_by: str = "published_at",
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     cache_key = _cache_key("list_news", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, sources=sources, sort_by=sort_by)
     cached = _cache_get(cache_key)
     if cached:
@@ -7888,9 +7936,22 @@ def news_detail(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    docs = _scroll_all_news_docs(start_date=start_date, end_date=end_date)
-    articles = {item["article_id"]: item for item in _build_news_articles(docs)}
-    article = articles.get(article_id)
+    _validate_dashboard_date_range(start_date, end_date)
+    # Try a direct doc lookup first — article_id is the doc id in the
+    # warehouse index. Falling back to a full scroll is O(N) and was the
+    # original behavior; keep it as a safety net but only when the direct
+    # lookup misses (e.g. derived article_id schemes from older fixtures).
+    client = get_elastic_client()
+    direct = client.get_index_document(client.warehouse_index, article_id)
+    if direct:
+        article_candidates = _build_news_articles([{"_id": article_id, **direct}])
+        article = next((item for item in article_candidates if item.get("article_id") == article_id), None)
+    else:
+        article = None
+    if not article:
+        docs = _scroll_all_news_docs(start_date=start_date, end_date=end_date)
+        articles = {item["article_id"]: item for item in _build_news_articles(docs)}
+        article = articles.get(article_id)
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
     related_ioc_records = []
