@@ -431,6 +431,42 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         if doc_domain_age is not None:
             domain_age_candidates.append(int(doc_domain_age))
 
+        # -----------------------------------------------------------
+        # Extract enrichment-level cross-source and domain-age data.
+        # The datalake enrichment object may contain:
+        #   enrichment.souce  — "Virustotal" or "Cyberint" (note: typo in field name)
+        #   enrichment.whois.creation_date — domain registration date (ISO string)
+        # These provide genuine second-source corroboration and domain age
+        # that the primary adapter fields may not capture.
+        # -----------------------------------------------------------
+        _enrichment = doc.get("enrichment")
+        if isinstance(_enrichment, dict) and _enrichment:
+            # Cross-source: enrichment.souce is the enrichment provider name
+            _enrich_source = str(_enrichment.get("souce") or _enrichment.get("source") or "").strip()
+            if _enrich_source and _enrich_source not in source_names:
+                source_names.append(_enrich_source)
+                source_objects.append({
+                    "name": _enrich_source,
+                    "confidence": 50,  # moderate default — enrichment confirmed existence
+                    "type": "enrichment",
+                })
+
+            # Domain age from WHOIS creation_date (fallback when domain_age_days not set)
+            if doc_domain_age is None:
+                _whois = _enrichment.get("whois")
+                if isinstance(_whois, dict) and _whois:
+                    # WHOIS providers use many field name variants for registration date
+                    _creation_date = (
+                        _whois.get("creation_date") or _whois.get("created_date")
+                        or _whois.get("create_date") or _whois.get("created")
+                        or _whois.get("regdate") or _whois.get("registered_on")
+                    )
+                    if _creation_date:
+                        _created_dt = parse_dt(str(_creation_date)[:25])
+                        if _created_dt:
+                            _age = max(0, (datetime.now(timezone.utc) - _created_dt.astimezone(timezone.utc)).days)
+                            domain_age_candidates.append(_age)
+
         event_dt = parse_dt(doc.get("event_time"))
         collect_dt = parse_dt(doc.get("collect_time"))
         if event_dt:

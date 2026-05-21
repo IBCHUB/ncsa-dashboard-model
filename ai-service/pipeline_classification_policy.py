@@ -16,7 +16,9 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 DEFAULT_ML_SOURCE_TYPES = "news,rss,article,report,advisory,blog"
 DEFAULT_RULE_SOURCE_TYPES = "customer-datalake,misp,external-feed,sandbox"
-DEFAULT_ML_MIN_CONTEXT_CHARS = 300
+# Lowered from 300 → 150: cyberint URL/domain descriptions average ~120 chars.
+# The old 300-char floor blocked ML inference for nearly all non-hash IOCs.
+DEFAULT_ML_MIN_CONTEXT_CHARS = 150
 DEFAULT_ML_CONFIDENCE_THRESHOLD = 0.75
 DEFAULT_ML_MAX_LABELS = 1
 DEFAULT_ML_MAX_INPUT_CHARS = 1800
@@ -104,6 +106,41 @@ INCIDENT_PATTERNS = (
 
 CONTEXT_RULE_PATTERNS = (
     (
+        "Phishing",
+        (
+            r"\bphishing\b",
+            r"\bspear[-\s]?phishing\b",
+            r"\bphish\b",
+            r"\bfake\s+login\b",
+        ),
+    ),
+    (
+        "Ransomware",
+        (
+            r"\bransomware\b",
+            r"\bransom\s+demand\b",
+            r"\bencrypt(?:ed|s|ing)?\s+files?\b",
+        ),
+    ),
+    (
+        "C2",
+        (
+            r"\bcommand\s+and\s+control\b",
+            r"\bc&c\b",
+            r"\bc2\s+(server|infrastructure|beacon|channel)\b",
+            r"\bcnc\s+server\b",
+            r"\bbeacon(?:ing)?\b",
+        ),
+    ),
+    (
+        "Botnet",
+        (
+            r"\bbotnet\b",
+            r"\bbot\s+network\b",
+            r"\bzombie\s+network\b",
+        ),
+    ),
+    (
         "Data Breach",
         (
             r"\bdata\s+(theft|breach|leak|exfiltration)\b",
@@ -137,6 +174,15 @@ CONTEXT_RULE_PATTERNS = (
     (
         "Malware",
         (
+            r"\bmalware\b",
+            r"\btrojan\b",
+            r"\bbackdoor\b",
+            r"\bdropper\b",
+            r"\bloader\b",
+            r"\brat\b",
+            r"\bkeylogger\b",
+            r"\brootkit\b",
+            r"\bworm\b",
             r"\bdeploy(?:ed|s|ing)?\s+malware\b",
             r"\bmalware\s+campaign\b",
         ),

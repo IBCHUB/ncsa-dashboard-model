@@ -12,7 +12,33 @@ import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+# Ensure ai-service root is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# Stub heavy ML dependencies so classifier.py can be imported without torch/transformers/lingua
+_torch_stub = MagicMock()
+_transformers_stub = MagicMock()
+_lingua_stub = MagicMock()
+# Make Language.ENGLISH a comparable sentinel
+_lingua_stub.Language.ENGLISH = "ENGLISH"
+_lingua_stub.LanguageDetectorBuilder.from_all_languages.return_value.build.return_value = MagicMock()
+
+for mod_name in ("torch", "transformers", "lingua"):
+    if mod_name not in sys.modules:
+        sys.modules[mod_name] = {
+            "torch": _torch_stub,
+            "transformers": _transformers_stub,
+            "lingua": _lingua_stub,
+        }[mod_name]
+
+# If another test (e.g. test_pipeline_documents_evidence) injected a SimpleNamespace
+# stub for models.classifier, remove it so we can import the real module.
+import importlib
+_existing = sys.modules.get("models.classifier")
+if _existing is not None and not hasattr(_existing, "get_en_classifier"):
+    del sys.modules["models.classifier"]
+import models.classifier  # noqa: E402  — force real import
+importlib.reload(models.classifier)
 
 from config import (
     LABEL_MAPPING,
@@ -73,12 +99,13 @@ class TestClassifyThreatReturnsSectorClassifications:
         mock_det.return_value.detect_language_of.return_value = MagicMock(
             __eq__=lambda self, other: True  # pretend English
         )
-        # Simulate model returning high score for financial sector label
+        # Use the actual sector label from config
+        financial_label = [l for l in SECTOR_LABELS if "banking" in l or "financial" in l][0]
         all_labels = THREAT_LABELS + SECTOR_LABELS
         scores = [(label, 0.1) for label in all_labels]
         scores_dict = dict(scores)
         scores_dict["ransomware"] = 0.85
-        scores_dict["targeting financial services or banking"] = 0.78
+        scores_dict[financial_label] = 0.78
         result_pairs = [(l, scores_dict.get(l, 0.1)) for l in all_labels]
 
         mock_en.return_value.return_value = _make_zero_shot_result(result_pairs)
@@ -120,11 +147,13 @@ class TestClassifyThreatReturnsSectorClassifications:
         mock_det.return_value.detect_language_of.return_value = MagicMock(
             __eq__=lambda self, other: True
         )
+        # Use the actual government sector label from config
+        gov_label = [l for l in SECTOR_LABELS if "government" in l][0]
         all_labels = THREAT_LABELS + SECTOR_LABELS
         scores = [(label, 0.05) for label in all_labels]
         scores_dict = dict(scores)
         scores_dict["ransomware"] = 0.9
-        scores_dict["targeting government or public sector"] = 0.8
+        scores_dict[gov_label] = 0.8
         result_pairs = [(l, scores_dict.get(l, 0.05)) for l in all_labels]
 
         mock_en.return_value.return_value = _make_zero_shot_result(result_pairs)
@@ -144,12 +173,12 @@ class TestClassifyThreatReturnsSectorClassifications:
         result = classify_threat("")
         assert result["sector_classifications"] == []
 
-    def test_error_path_returns_empty_sectors(self):
+    @patch("models.classifier.get_detector", side_effect=RuntimeError("fail"))
+    def test_error_path_returns_empty_sectors(self, _mock_det):
         from models.classifier import classify_threat
 
-        with patch("models.classifier.get_detector", side_effect=RuntimeError("fail")):
-            result = classify_threat("some text here enough to pass length check")
-            assert result["sector_classifications"] == []
+        result = classify_threat("some text here enough to pass length check")
+        assert result["sector_classifications"] == []
 
 
 class TestScorerUsesNlpSector:
@@ -169,7 +198,7 @@ class TestScorerUsesNlpSector:
                 "mitre_techniques": [],
                 "confidence": 0.8,
                 "sector_classifications": [
-                    {"sector": "financial", "confidence": 0.75, "label": "targeting financial services or banking"}
+                    {"sector": "financial", "confidence": 0.75, "label": "targeting banking or financial services"}
                 ],
             },
         )
@@ -238,7 +267,7 @@ class TestScorerUsesNlpSector:
                 "mitre_techniques": [],
                 "confidence": 0.5,
                 "sector_classifications": [
-                    {"sector": "government", "confidence": 0.55, "label": "targeting government or public sector"}
+                    {"sector": "government", "confidence": 0.55, "label": "targeting government or public services"}
                 ],
             },
         )

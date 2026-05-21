@@ -113,3 +113,131 @@ def test_raw_source_threat_types_are_mapped_before_ai_threat_types():
     assert doc["classification_mode"] == "source_rule"
     assert doc["ai_threat_types"] == ["Malware"]
     assert "malware_payload" not in doc["ai_threat_types"]
+
+
+def test_enrichment_souce_is_added_as_cross_source():
+    """enrichment.souce ('Virustotal'/'Cyberint') should appear as an extra scoring source."""
+    result = build_enriched_ioc_document([
+        {
+            "_id": "cyb-1",
+            "_index": "cyberint_iocs-20260520",
+            "adapter_name": "cyberint_iocs",
+            "ioc_type": "domain",
+            "ioc_value": "evil-bank.com",
+            "source_name": "cyberint_iocs",
+            "source_type": "customer-datalake",
+            "description": "Phishing domain targeting banking customers",
+            "threat_type": ["phishing"],
+            "severity": "",
+            "confidence": 60,
+            "event_time": "2026-05-19T00:00:00+00:00",
+            "collect_time": "2026-05-20T00:00:00+00:00",
+            "enrichment": {
+                "souce": "Virustotal",
+                "whois": {
+                    "creation_date": "2026-05-10T00:00:00Z",
+                    "registrar": "Namecheap",
+                },
+            },
+        }
+    ])
+
+    doc = result["document"]
+    # Virustotal should appear as an additional source from enrichment
+    assert "Virustotal" in doc["sources"]
+    assert doc["source_count"] >= 2
+    # Score breakdown should reflect the cross-source enrichment
+    breakdown = doc.get("ai_score_breakdown", {})
+    cross_source = breakdown.get("cross_source", {})
+    assert cross_source.get("count", 0) >= 2
+    assert "Virustotal" in cross_source.get("sources_found", [])
+
+
+def test_enrichment_whois_domain_age_feeds_scorer():
+    """When domain_age_days is None, WHOIS creation_date should be used for scoring."""
+    result = build_enriched_ioc_document([
+        {
+            "_id": "zh-1",
+            "_index": "tcti-feeds-zone-h",
+            "adapter_name": "legacy_external",
+            "ioc_type": "domain",
+            "ioc_value": "defaced-site.th",
+            "source_name": "Zone-H",
+            "source_type": "news",
+            "description": "Zone-H mirror shows a defaced website",
+            "threat_type": [],
+            "severity": "low",
+            "confidence": 0,
+            "event_time": "2026-01-01T00:00:00+00:00",
+            "collect_time": "2026-01-01T00:00:00+00:00",
+            "enrichment": {
+                "souce": "Virustotal",
+                "whois": {
+                    "creation_date": "2020-06-15T00:00:00Z",
+                },
+            },
+        }
+    ])
+
+    doc = result["document"]
+    # Domain age should flow into the score breakdown even though weight is 0%
+    breakdown = doc.get("ai_score_breakdown", {})
+    domain_age = breakdown.get("domain_age", {})
+    # The scorer received a real domain_age_days value from WHOIS
+    assert domain_age.get("days") is not None
+    assert domain_age["days"] > 1800
+
+
+def _make_domain_doc_with_whois_field(field_name: str, date_value: str) -> dict:
+    return {
+        "_id": "w-1",
+        "_index": "enrichment-idx",
+        "adapter_name": "legacy_external",
+        "ioc_type": "domain",
+        "ioc_value": "test.example.com",
+        "source_name": "TestFeed",
+        "source_type": "external-feed",
+        "description": "test",
+        "threat_type": [],
+        "severity": "",
+        "confidence": 0,
+        "event_time": "2026-01-01T00:00:00+00:00",
+        "collect_time": "2026-01-01T00:00:00+00:00",
+        "enrichment": {"whois": {field_name: date_value}},
+    }
+
+
+def test_whois_create_date_variant_feeds_domain_age():
+    """create_date (WHOIS/ARIN format) should be used when creation_date is absent."""
+    result = build_enriched_ioc_document([
+        _make_domain_doc_with_whois_field("create_date", "2019-03-10T00:00:00Z"),
+    ])
+    days = result["document"].get("ai_score_breakdown", {}).get("domain_age", {}).get("days")
+    assert days is not None and days > 2000
+
+
+def test_whois_created_variant_feeds_domain_age():
+    """created (RIPE/ARIN text format) should be used when other date fields are absent."""
+    result = build_enriched_ioc_document([
+        _make_domain_doc_with_whois_field("created", "2021-07-01T00:00:00Z"),
+    ])
+    days = result["document"].get("ai_score_breakdown", {}).get("domain_age", {}).get("days")
+    assert days is not None and days > 500
+
+
+def test_whois_regdate_variant_feeds_domain_age():
+    """regdate (ARIN format) should be parsed for domain age."""
+    result = build_enriched_ioc_document([
+        _make_domain_doc_with_whois_field("regdate", "2023-01-15"),
+    ])
+    days = result["document"].get("ai_score_breakdown", {}).get("domain_age", {}).get("days")
+    assert days is not None and days > 100
+
+
+def test_whois_registered_on_variant_feeds_domain_age():
+    """registered_on format should also be parsed."""
+    result = build_enriched_ioc_document([
+        _make_domain_doc_with_whois_field("registered_on", "2022-11-20T00:00:00Z"),
+    ])
+    days = result["document"].get("ai_score_breakdown", {}).get("domain_age", {}).get("days")
+    assert days is not None and days > 100

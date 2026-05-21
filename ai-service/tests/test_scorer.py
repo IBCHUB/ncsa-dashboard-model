@@ -181,7 +181,8 @@ def test_output_contains_doc_aligned_governance_fields():
 
     assert result["score_model_version"]
     assert result["score_config_version"]
-    # Weight tuned 2026-05-20: threat_type carries more weight because single-source
-    # cyberint IOCs make cross_source corroboration structurally hard to score.
+    # Weight tuned 2026-05-20: domain_age restored to 0.10 after Phase 1.8
+    # wired enrichment.whois.creation_date as fallback for WHOIS data.
     assert result["breakdown"]["score_governance"]["weights"]["threat_type_severity"] == 0.25
+    assert result["breakdown"]["score_governance"]["weights"]["domain_age"] == 0.10
     assert 0 <= result["risk_score"] <= 100

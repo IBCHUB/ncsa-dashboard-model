@@ -136,8 +136,13 @@ def _iter_dicts(value: Any) -> List[Dict[str, Any]]:
 
 def _extract_geo_country(raw: Dict[str, Any], enrichment: Optional[Dict[str, Any]] = None) -> Optional[str]:
     enrichment = enrichment if isinstance(enrichment, dict) else {}
+    # tcti-feeds-* format uses enrichment.geo_ip; *-enrichment-* format uses enrichment.geo
     geo_ip = enrichment.get("geo_ip") if isinstance(enrichment.get("geo_ip"), dict) else {}
+    if not geo_ip:
+        geo_ip = enrichment.get("geo") if isinstance(enrichment.get("geo"), dict) else {}
     ip_info = enrichment.get("ip_info") if isinstance(enrichment.get("ip_info"), dict) else {}
+    # ip_info.asn_data.country (enrichment format) vs ip_info.country (legacy format)
+    ip_asn_data = ip_info.get("asn_data") if isinstance(ip_info.get("asn_data"), dict) else {}
     geo_info = raw.get("geo_info") if isinstance(raw.get("geo_info"), dict) else {}
     asn_data = raw.get("asn_data") if isinstance(raw.get("asn_data"), dict) else {}
     event = raw.get("Event") if isinstance(raw.get("Event"), dict) else {}
@@ -175,6 +180,8 @@ def _extract_geo_country(raw: Dict[str, Any], enrichment: Optional[Dict[str, Any
         geo_ip.get("country_code"),
         geo_ip.get("country"),
         ip_info.get("country"),
+        ip_asn_data.get("country_code"),
+        ip_asn_data.get("country"),
         geo_info.get("country_code"),
         geo_info.get("country"),
         asn_data.get("country_code"),
@@ -322,10 +329,12 @@ def extract_cyberint_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
     threat_types: List[str] = []
     threat_actors: List[str] = []
 
+    occurrences_count = 0
     if isinstance(risk, dict):
         # Zone-H enrichment format — extract malicious_score, activity types, and linked threat actors
         raw_score = _parse_int(risk.get("malicious_score"), 0)
         risk_score = raw_score if raw_score > 0 else None
+        occurrences_count = _parse_int(risk.get("occurrences_count"), 0)
         for activity in _as_list(risk.get("detected_activities")):
             if not isinstance(activity, dict):
                 continue
@@ -344,13 +353,17 @@ def extract_cyberint_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
         raw_score = _parse_int(risk, 0)
         risk_score = raw_score if raw_score > 0 else None
 
+    # occurrences_count >= 5 means Cyberint confirmed across multiple data points — treat as
+    # corroborating source so cross_source score gets a boost
+    extra_sources = ["Cyberint (multi-occurrence)"] if occurrences_count >= 5 else []
     evidence = {
         "evidence_type": "cyberint_enrichment",
-        "external_evidence_sources": ["Cyberint"] if risk is not None else [],
+        "external_evidence_sources": (["Cyberint"] + extra_sources) if risk is not None else [],
         "source_risk_score": risk_score,
         "source_confidence": risk_score,
         "cyberint_ref": cyberint.get("ref"),
         "cyberint_source_indicator_count": len(source_indicators),
+        "cyberint_occurrence_count": occurrences_count if occurrences_count > 0 else None,
         "source_threat_types": _unique(threat_types),
         "source_threat_actors": _unique(threat_actors),
     }
@@ -462,6 +475,31 @@ def _extract_summary_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
         "source_target_countries": _as_list(summary.get("countries")),
     }
     return _compact_evidence(evidence)
+
+
+def _extract_related_entities_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract top-level enrichment.related_entities threat actors.
+
+    The *-enrichment-* index format stores related threat actor groups directly at
+    enrichment.related_entities[], separate from the enrichment.cyberint.risk path.
+    """
+    entities = enrichment.get("related_entities")
+    if not isinstance(entities, list) or not entities:
+        return {}
+    actors: List[str] = []
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        if _as_text(entity.get("entity_type")).lower() in ("threat-actor-group", "threat_actor", "actor"):
+            name = _first_text(entity.get("entity_name"), entity.get("name"))
+            if name:
+                actors.append(name)
+    if not actors:
+        return {}
+    return _compact_evidence({
+        "evidence_type": "related_entities",
+        "source_threat_actors": _unique(actors),
+    })
 
 
 def _extract_mitre_evidence(enrichment: Dict[str, Any]) -> Dict[str, Any]:
@@ -663,7 +701,7 @@ def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value)
         confidence=confidence_raw,
         source_url="",
         source_id=raw.get("id") or hit.get("_id"),
-        enrichment={},
+        enrichment=raw.get("enrichment") if isinstance(raw.get("enrichment"), dict) else {},
         domain_age_days=None,
         source_evidence=source_evidence,
     )
@@ -741,6 +779,7 @@ def _legacy_external_adapter(hit: Dict[str, Any], normalize_type, normalize_valu
         extract_cyberint_evidence(enrichment),
         _extract_summary_evidence(enrichment),
         _extract_mitre_evidence(enrichment),
+        _extract_related_entities_evidence(enrichment),
         extract_correlation_evidence(raw),
         extract_sandbox_evidence(raw),
     )

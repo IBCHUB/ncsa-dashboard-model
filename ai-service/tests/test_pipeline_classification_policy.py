@@ -187,6 +187,22 @@ def test_context_rule_keeps_vulnerability_when_breach_article_has_strong_cve_sig
     assert threats == ["Data Breach", "Remote Code Execution", "Exploited Vulnerability"]
 
 
+def test_context_rule_detects_phishing_ransomware_c2_botnet():
+    """Phase 1.6: new context-rule patterns for common cyberint threat types."""
+    assert detect_context_rule_threat_types("Phishing domain targeting users") == ["Phishing"]
+    assert detect_context_rule_threat_types("Ransomware C2 beacon detected") == ["Ransomware", "C2"]
+    assert detect_context_rule_threat_types("Botnet infrastructure") == ["Botnet"]
+    assert detect_context_rule_threat_types("Trojan delivered via email") == ["Malware"]
+    assert detect_context_rule_threat_types("Backdoor installed on server") == ["Malware"]
+
+
+def test_context_rule_does_not_match_generic_descriptions():
+    """Generic cyberint descriptions should NOT produce threat types."""
+    # "Malicious" ≠ "malware" — correct to return empty
+    assert detect_context_rule_threat_types("Recognized as Malicious.") == []
+    assert detect_context_rule_threat_types("IOC: example.com") == []
+
+
 def test_strict_ml_classification_keeps_only_confident_top_label(monkeypatch):
     monkeypatch.delenv("PIPELINE_ML_CONFIDENCE_THRESHOLD", raising=False)
     monkeypatch.delenv("PIPELINE_ML_MAX_LABELS", raising=False)
@@ -216,6 +232,42 @@ def test_strict_ml_classification_returns_empty_when_below_threshold(monkeypatch
 
     assert result["threat_types"] == []
     assert result["confidence"] == 0.0
+
+
+def test_cyberint_domain_ioc_with_enough_context_reaches_ml(monkeypatch):
+    """Cyberint url/domain IOCs with ~150+ chars of non-generic context should use ML."""
+    monkeypatch.delenv("PIPELINE_CLASSIFICATION_MODE", raising=False)
+    monkeypatch.delenv("PIPELINE_ML_MIN_CONTEXT_CHARS", raising=False)
+    # Typical enriched cyberint domain context — ~160 chars, not generic
+    text = (
+        "IOC: evil-bank-login.com (type: domain)\n"
+        "Phishing domain targeting Thai banking customers. "
+        "Certificate issued 2 days ago, ASN belongs to known bulletproof host."
+    )
+    assert len(text) >= 150  # Must be above the lowered threshold
+    decision = decide_classification_mode(
+        source_types=["customer-datalake"],
+        adapter_names=["cyberint_iocs"],
+        threat_types_raw=[],
+        classifier_input=text,
+        ioc_type="domain",
+    )
+    assert decision.mode == "ml"
+    assert decision.reason == "non_hash_ioc_context_rich"
+
+
+def test_cyberint_hash_ioc_stays_on_rules(monkeypatch):
+    """Hash IOCs from cyberint must stay on source_rule regardless of context length."""
+    monkeypatch.delenv("PIPELINE_CLASSIFICATION_MODE", raising=False)
+    text = "x " * 200  # Plenty of context
+    decision = decide_classification_mode(
+        source_types=["customer-datalake"],
+        adapter_names=["cyberint_iocs"],
+        threat_types_raw=[],
+        classifier_input=text,
+        ioc_type="file/sha256",
+    )
+    assert decision.mode == "source_rule"
 
 
 def test_ml_classifier_input_is_truncated(monkeypatch):

@@ -66,15 +66,16 @@ _MALICIOUS_INDICATORS = re.compile(
 def _effective_weights(ioc_type: str) -> Dict[str, float]:
     """Return scoring weights adjusted for IOC type.
 
-    For non-domain IOC types (hash, IP, etc.), domain_age and entropy
-    weights are redistributed proportionally to the remaining factors.
+    For non-domain IOC types (hash, IP, etc.), entropy weight is
+    redistributed proportionally to the remaining factors.
+    (domain_age is already 0.00 globally — no WHOIS data in datalake.)
     This ensures hash IOCs are not penalized for inapplicable factors.
     """
     base = dict(SCORING_WEIGHTS)
     ioc_lower = (ioc_type or "").strip().lower().replace("-", "").replace("_", "")
 
     if ioc_lower in _NON_DOMAIN_IOC_TYPES:
-        # Collect weight from inapplicable factors
+        # Collect weight from inapplicable factors (entropy only — domain_age is 0)
         reclaimed = base.pop("domain_age", 0.0) + base.pop("entropy", 0.0)
         if reclaimed > 0:
             remaining_sum = sum(base.values())
@@ -1128,7 +1129,7 @@ def calculate_risk_score(
         "reasonEn": decay_result["descriptionEn"],
         "methodology": "ลดคะแนน IOC ที่เก่าเพราะความเกี่ยวข้องลดลงตามเวลา",
         "methodologyEn": "Reduce score for older IOCs as relevance decreases over time",
-        "scoringRules": "<=7 วัน = 100%, 8-30 วัน = 90%, 31-90 วัน = 75%, 91-180 วัน = 60%, >180 วัน = 50%"
+        "scoringRules": "<=7d=100%, 8-30d=95%, 31-90d=85%, 91-180d=78%, 181-365d=72%, >1y=65%"
     }
     
     # ==========================================
