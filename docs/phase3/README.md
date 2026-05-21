@@ -33,26 +33,33 @@
 
 ## รูปแบบเอกสารต่อหน้า (per-page document format)
 
-ทุกไฟล์ `3.X-<page>.md` มีโครงสร้างเดียวกัน:
+ทุกไฟล์ `3.X-<page>.md` ใช้ section headers ภาษาอังกฤษคงเดิมเหล่านี้ (เนื้อหาภายในเป็นไทย) — เพื่อให้เทียบ UI ได้สะดวกและ search ข้ามไฟล์ได้:
 
 ```
 # 3.X — <ชื่อหน้า>
 
-## หน้า/Routes ที่ตรวจ
-- Frontend: <path ของไฟล์ .tsx>
+## Routes audited
+- Frontend (.tsx): <path>
 - API endpoints: <list>
 
-## ตารางตรวจ label (semantic map)
+## Label inventory
 
-| Label ที่หน้าเว็บ | Response path | Backend function | ES field | ES agg | สูตรคำนวณ / ความหมาย | Verified | Bug? |
-|------------------|---------------|------------------|----------|--------|---------------------|----------|------|
+| UI label | Response path | Backend fn | ES field | ES agg | สูตรคำนวณ / ความหมาย | Verified | Bug? |
+|----------|---------------|------------|----------|--------|---------------------|----------|------|
 
-## Bugs ที่พบ
-- <severity> · <สรุปสั้น> · <commit hash ของ fix>
+## Bugs found
 
-## เลื่อนทำ / Data quality notes
-- ...
+| # | Severity | สรุป (1 บรรทัด) | Fix commit |
+
+## Deferred / data-quality notes
+
+| # | Severity | ปัญหา | เหตุผลที่เลื่อน |
+
+## Regression tests
+## Commits ที่เกี่ยวข้อง
 ```
+
+**คอลัมน์ "UI label"** ต้องคัดลอกข้อความตรงๆ จากหน้าเว็บ (ทั้ง Thai/English ตามที่แสดงจริง) เพื่อให้ทีมเทียบ UI ↔ doc ได้ทันที
 
 ## Baseline ของข้อมูลจริง (จาก `warehouse_field_distribution.json` — 11.09M docs)
 
