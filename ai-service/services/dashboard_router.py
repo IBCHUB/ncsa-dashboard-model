@@ -2245,7 +2245,15 @@ def _hits_to_docs(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [{"_id": hit.get("_id"), **(hit.get("_source") or {})} for hit in result.get("hits", {}).get("hits", [])]
 
 
-def _fetch_datalake_by_indicators(indicators: Sequence[Tuple[str, str]]) -> List[Dict[str, Any]]:
+def _fetch_datalake_by_indicators(
+    indicators: Sequence[Tuple[str, str]],
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch datalake docs matching the given (ioc_type, ioc_value) pairs.
+
+    `limit` caps the total number of returned docs (most recent first).
+    `None` means no cap — the scroll fetches every match.
+    """
     unique = []
     seen = set()
     for ioc_type, ioc_value in indicators:
@@ -2299,6 +2307,8 @@ def _fetch_datalake_by_indicators(indicators: Sequence[Tuple[str, str]]) -> List
         key=lambda item: _datalake_event_time(item) or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
+    if limit is not None and limit > 0:
+        results = results[:limit]
     return results
 
 
@@ -6081,10 +6091,15 @@ def list_sources(active: bool = True, query: Optional[str] = None, current_user:
     wh_buckets = _terms_only_agg(client.warehouse_index, "source_name", size=200, missing="unknown")
     dl_buckets = _terms_only_agg(client.datalake_index, "source_name", size=200, missing="unknown")
     counts = Counter()
-    for bucket in wh_buckets:
-        counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
-    for bucket in dl_buckets:
-        counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
+    # source_name is sometimes comma-joined ("AbuseIPDB,ThreatFox") when an IOC
+    # crosses multiple feeds — split so each individual source appears in the
+    # lookup, mirroring the pipeline's comma-as-separator contract.
+    for bucket in (*wh_buckets, *dl_buckets):
+        raw_key = str(bucket.get("key") or "")
+        doc_count = int(bucket.get("doc_count") or 0)
+        parts = [part.strip() for part in raw_key.split(",") if part.strip()] or [raw_key]
+        for part in parts:
+            counts[part] += doc_count
     items = _lookup_items_from_counts(counts)
     # Group by display label so raw values like "cyberint_iocs", "tcti-feeds",
     # "cyberint iocs, tcti-feeds" all collapse into one "Cyberint IOC Feed"
