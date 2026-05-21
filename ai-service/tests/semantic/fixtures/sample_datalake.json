@@ -1,0 +1,99 @@
+{
+  "took" : 2,
+  "timed_out" : false,
+  "_shards" : {
+    "total" : 129,
+    "successful" : 129,
+    "skipped" : 0,
+    "failed" : 0
+  },
+  "hits" : {
+    "total" : {
+      "value" : 10000,
+      "relation" : "gte"
+    },
+    "max_score" : 1.0,
+    "hits" : [
+      {
+        "_index" : "cyberint-feeds-2026.04.22",
+        "_id" : "0717be3d7732da94c758e11386ed07a8598f1ebb0ba095aeaa69cb315bd7a726",
+        "_score" : 1.0,
+        "_source" : {
+          "id" : "0717be3d7732da94c758e11386ed07a8598f1ebb0ba095aeaa69cb315bd7a726",
+          "detected_activity" : "malware_payload",
+          "ioc_type" : "file/sha256",
+          "ioc_value" : "d906b9a6c61e51eb9a8ca16a052b69c52d9b725e1cfdb12b99dd65944805ce07",
+          "observation_date" : "2026-04-21T22:55:37+00:00",
+          "severity_score" : "100",
+          "confidence" : "80",
+          "description" : "Recognized as Win32.Expiro.Gen.7.",
+          "@timestamp" : "2026-05-21T15:34:56.579501Z"
+        }
+      },
+      {
+        "_index" : "cyberint-feeds-2026.04.22",
+        "_id" : "6bdd1a10360bc5d9d872134da2bb71fc24dda93bd58e5ebbee42e5e6d39194fa",
+        "_score" : 1.0,
+        "_source" : {
+          "id" : "6bdd1a10360bc5d9d872134da2bb71fc24dda93bd58e5ebbee42e5e6d39194fa",
+          "detected_activity" : "malware_payload",
+          "ioc_type" : "file/sha256",
+          "ioc_value" : "1b8187a1fb9fd1494bbe7fa38d9c356438bc82ff4bbf34207249e8c204bf49ff",
+          "observation_date" : "2026-04-21T22:53:20+00:00",
+          "severity_score" : "100",
+          "confidence" : "80",
+          "description" : "Recognized as Gen:Variant.Genie.8DN.1907.",
+          "@timestamp" : "2026-05-21T15:34:56.579515Z"
+        }
+      },
+      {
+        "_index" : "cyberint-feeds-2026.04.22",
+        "_id" : "0967c6381f43324f4121f2407a7ed26a7fc37063998d21f3aa90405c59d630d9",
+        "_score" : 1.0,
+        "_source" : {
+          "id" : "0967c6381f43324f4121f2407a7ed26a7fc37063998d21f3aa90405c59d630d9",
+          "detected_activity" : "malware_payload",
+          "ioc_type" : "file/sha256",
+          "ioc_value" : "19d8bd090c8434bf9f6f0e3277bc39d6ccaac48167ab9d848e3fbfecbc00561f",
+          "observation_date" : "2026-04-21T22:54:43+00:00",
+          "severity_score" : "100",
+          "confidence" : "80",
+          "description" : "Recognized as Gen:Variant.Application.fragtor.7410.",
+          "@timestamp" : "2026-05-21T15:34:56.579519Z"
+        }
+      },
+      {
+        "_index" : "cyberint-feeds-2026.04.22",
+        "_id" : "bf2e8507015f8e33e399082611b5a060936d2d7b7478479da332584bb988e8b9",
+        "_score" : 1.0,
+        "_source" : {
+          "id" : "bf2e8507015f8e33e399082611b5a060936d2d7b7478479da332584bb988e8b9",
+          "detected_activity" : "malware_payload",
+          "ioc_type" : "file/sha256",
+          "ioc_value" : "e15b17b5d4096965f95d0e344728681760b62fde6e23fd85f60faf08b1494293",
+          "observation_date" : "2026-04-14T22:50:32+00:00",
+          "severity_score" : "100",
+          "confidence" : "80",
+          "description" : "Recognized as Trojan/Win.Generic.R737978.",
+          "@timestamp" : "2026-05-21T15:34:56.579523Z"
+        }
+      },
+      {
+        "_index" : "cyberint-feeds-2026.04.22",
+        "_id" : "68faf8d3efbd24848f560f3069f209214984841b6692ed203bf145bde5bda5e1",
+        "_score" : 1.0,
+        "_source" : {
+          "id" : "68faf8d3efbd24848f560f3069f209214984841b6692ed203bf145bde5bda5e1",
+          "detected_activity" : "malware_payload",
+          "ioc_type" : "file/sha256",
+          "ioc_value" : "dcc4da6c981623ad0ff35d5ddaffe64078bf8cd86eed116d4aca34dfb949f6a0",
+          "observation_date" : "2026-04-21T22:55:01+00:00",
+          "severity_score" : "100",
+          "confidence" : "80",
+          "description" : "Recognized as Win64.Expiro.Gen.7.",
+          "@timestamp" : "2026-05-21T15:34:56.579526Z"
+        }
+      }
+    ]
+  }
+}

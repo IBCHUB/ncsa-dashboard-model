@@ -1,0 +1,1762 @@
+{
+  "took" : 14,
+  "timed_out" : false,
+  "_shards" : {
+    "total" : 1,
+    "successful" : 1,
+    "skipped" : 0,
+    "failed" : 0
+  },
+  "hits" : {
+    "total" : {
+      "value" : 10000,
+      "relation" : "gte"
+    },
+    "max_score" : null,
+    "hits" : [
+      {
+        "_index" : "cyber-logs-datawarehouse",
+        "_id" : "url:4f693d149c68514891e01dc6",
+        "_score" : null,
+        "_source" : {
+          "ioc_value" : "http://103.77.246.198/z0l1mxjm4mdl4jjfjf7sb2vdmv/kkvettgaaasecnnaaaa.m68k",
+          "ioc_type" : "url",
+          "canonical_ioc_key" : "url:http://103.77.246.198/z0l1mxjm4mdl4jjfjf7sb2vdmv/kkvettgaaasecnnaaaa.m68k",
+          "original_ioc_values" : [
+            "http://103.77.246.198/z0l1mxjm4mdl4jjfjf7sb2vdmv/KKveTTgaAAsecNNaaaa.m68k"
+          ],
+          "original_ioc_types" : [
+            "url"
+          ],
+          "source_name" : "cyberint_iocs",
+          "source_type" : "customer-datalake",
+          "sources" : [
+            "cyberint_iocs"
+          ],
+          "source_objects" : [
+            {
+              "name" : "cyberint_iocs",
+              "confidence" : 80.0,
+              "type" : "customer-datalake"
+            }
+          ],
+          "source_types" : [
+            "customer-datalake"
+          ],
+          "source_count" : 1,
+          "source_urls" : [ ],
+          "description" : "Recognized as Trojan.Linux.Mirai.1.",
+          "threat_type" : [
+            "malware_payload"
+          ],
+          "severity" : "medium",
+          "tags" : [
+            "malware_payload"
+          ],
+          "reference" : "",
+          "collect_time" : "2026-05-21T11:30:44.993360Z",
+          "event_time" : "2026-04-25T15:03:53Z",
+          "first_seen" : "2026-04-25T15:03:53Z",
+          "last_seen" : "2026-05-21T11:30:44.993360Z",
+          "ioc_age_days" : 26,
+          "domain_age_days" : null,
+          "geo_country" : null,
+          "target_sector" : "general",
+          "target_sector_name" : "Other",
+          "target_sector_name_th" : "อื่นๆ",
+          "target_sector_icon" : "\uD83C\uDF10",
+          "ai_risk_score" : 32,
+          "ai_severity" : "medium",
+          "ai_severity_th" : "ปานกลาง",
+          "ai_threat_types" : [
+            "Malware"
+          ],
+          "ai_threat_actors" : [ ],
+          "ai_mitre_techniques" : [ ],
+          "ai_classification_confidence" : 0.8,
+          "source_risk_score" : null,
+          "source_actionable" : false,
+          "external_evidence_sources" : [ ],
+          "virustotal_malicious" : null,
+          "virustotal_suspicious" : null,
+          "related_doc_count" : 0,
+          "source_campaigns" : [ ],
+          "source_target_countries" : [ ],
+          "source_malware_family" : null,
+          "source_evidence" : [ ],
+          "classification_mode" : "source_rule",
+          "classification_reason" : "context_rule_threat_metadata",
+          "classifier_input_chars" : 222,
+          "classifier_effective_input_chars" : 222,
+          "classification_time_ms" : 0,
+          "ai_score_breakdown" : {
+            "cross_source" : {
+              "raw_score" : 20,
+              "raw_max" : 100,
+              "score" : 20.0,
+              "maxScore" : 100,
+              "weighted_score" : 4.0,
+              "count" : 1,
+              "source_diversity" : 1,
+              "independence_factor" : 1.0,
+              "sources_found" : [
+                "cyberint_iocs"
+              ],
+              "description" : "พบจาก 1 แหล่งข้อมูล (independence: 1.0)",
+              "reason" : "พบใน 1 แหล่ง: cyberint_iocs (diversity: 1/3)",
+              "reasonEn" : "Found in 1 source(s): cyberint_iocs (diversity: 1/3)",
+              "methodology" : "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ แล้วคูณ independence factor ตามความหลากหลายของประเภทแหล่ง",
+              "methodologyEn" : "Count unique sources, then multiply by an independence factor based on source class diversity.",
+              "scoringRules" : "Raw: 1=20, 2=40, 3=60, 4=80, 5+=100 × independence(1class=0.5, 2class=0.8, 3class=1.0)"
+            },
+            "source_quality" : {
+              "score" : 46.0,
+              "trusted" : 1,
+              "news" : 0,
+              "other" : 0,
+              "confidence_bonus" : 16.0,
+              "raw_score" : 46.0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 11.5,
+              "trusted_sources" : [
+                "cyberint_iocs"
+              ],
+              "news_sources" : [ ],
+              "other_sources" : [ ],
+              "description" : "แหล่งน่าเชื่อถือ 1 แห่ง",
+              "reason" : "แหล่งเชื่อถือ: cyberint_iocs",
+              "reasonEn" : "Trusted: cyberint_iocs",
+              "methodology" : "ตรวจสอบว่าแหล่งข้อมูลอยู่ในรายการที่เชื่อถือได้หรือไม่ (เช่น VirusTotal, AbuseIPDB, MISP)",
+              "methodologyEn" : "Check if sources are in trusted list (e.g., VirusTotal, AbuseIPDB, MISP)",
+              "scoringRules" : "Raw: trusted=30, news=16, other=10 ต่อแหล่ง (cap 100)"
+            },
+            "keywords" : {
+              "score" : 10.0,
+              "keywords" : [
+                "trojan"
+              ],
+              "tier_breakdown" : {
+                "critical" : [ ],
+                "high" : [ ],
+                "medium" : [
+                  "trojan"
+                ]
+              },
+              "raw_score" : 10,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 1.0,
+              "description" : "พบ 1 คำสำคัญ",
+              "reason" : "พบคำสำคัญ: trojan",
+              "reasonEn" : "Keywords found: trojan",
+              "methodology" : "ค้นหาคำสำคัญที่บ่งชี้ภัยคุกคาม เช่น ransomware, zero-day, exploit, APT, backdoor",
+              "methodologyEn" : "Search for keywords indicating threats like ransomware, zero-day, exploit, APT, backdoor",
+              "scoringRules" : "Tiered: Critical=30, High=20, Medium=10 คะแนน/คำ (cap 100)"
+            },
+            "geo_risk" : {
+              "score" : 0,
+              "country" : null,
+              "is_high_risk" : false,
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "disabled" : true,
+              "description" : "ปิดใช้งาน - ไม่มีแหล่งข้อมูลที่ตรวจสอบได้",
+              "reason" : "ปัจจัยนี้ถูกปิดใช้งานเพราะข้อมูลประเทศต้นทางไม่สามารถ audit ได้",
+              "reasonEn" : "This factor is disabled - country data source is not auditable",
+              "methodology" : "ปิดใช้งานเพื่อความโปร่งใสและสามารถตรวจสอบได้",
+              "methodologyEn" : "Disabled for transparency and auditability",
+              "scoringRules" : "ปิดใช้งาน"
+            },
+            "threat_type_severity" : {
+              "score" : 60.0,
+              "types" : [
+                "Malware"
+              ],
+              "max_severity_level" : 2,
+              "details" : [
+                {
+                  "type" : "Malware",
+                  "score" : 60,
+                  "confidence" : 1.0,
+                  "weighted_score" : 60,
+                  "level" : 2,
+                  "description" : "มัลแวร์ทั่วไป"
+                }
+              ],
+              "using_granular_confidence" : false,
+              "raw_score" : 60.0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 18.0,
+              "description" : "ตรวจพบ 1 ประเภทภัยคุกคาม",
+              "reason" : "พบประเภทภัยคุกคาม: Malware",
+              "reasonEn" : "Threat types: Malware",
+              "methodology" : "Source-delivered threat type severity (no confidence multiplier)",
+              "methodologyEn" : "Source-delivered threat type severity (no confidence multiplier)",
+              "scoringRules" : "Raw severity score (sources vouch via delivery)"
+            },
+            "threat_actor" : {
+              "score" : 0.0,
+              "actors" : [ ],
+              "matched" : [ ],
+              "attribution_level" : "none",
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 0.0,
+              "actors_found" : [ ],
+              "description" : "กลุ่มผู้โจมตี: ไม่ระบุ",
+              "reason" : "ไม่พบกลุ่มผู้โจมตี",
+              "reasonEn" : "No threat actors found",
+              "methodology" : "Attribution from source/MITRE mapping (no confidence multiplier)",
+              "methodologyEn" : "Attribution from source/MITRE mapping (no confidence multiplier)",
+              "scoringRules" : "Raw actor score × activity_status (sources vouch via delivery)"
+            },
+            "mitre_techniques" : {
+              "score" : 0.0,
+              "techniques" : [ ],
+              "matched_tactics" : [ ],
+              "sophistication" : "none",
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 0.0,
+              "techniques_found" : [ ],
+              "description" : "MITRE tactics: none",
+              "reason" : "ไม่พบ MITRE tactics",
+              "reasonEn" : "No MITRE tactics found",
+              "methodology" : "MITRE technique mapping (no confidence multiplier)",
+              "methodologyEn" : "MITRE technique mapping (no confidence multiplier)",
+              "scoringRules" : "Raw: 20 points per confirmed technique (cap 100)"
+            },
+            "score_governance" : {
+              "model_version" : "scoring-v3.0.0",
+              "config_version" : "weights-v2-ioc-aware",
+              "weights" : {
+                "cross_source" : 0.2,
+                "threat_intel_source" : 0.25,
+                "high_risk_keywords" : 0.1,
+                "threat_type_severity" : 0.3,
+                "threat_actor" : 0.1,
+                "mitre_techniques" : 0.05
+              },
+              "ioc_type" : "url",
+              "weighted_total_before_decay" : 34.5,
+              "credibility_score" : 16,
+              "impact_score" : 18
+            },
+            "decay_factor" : {
+              "multiplier" : 0.95,
+              "reduction_percent" : 5,
+              "ioc_age_days" : 26,
+              "description" : "IOC ล่าสุด (8-30 วัน) - ลด 5%",
+              "descriptionEn" : "IOC age: 26 days - 5% reduction",
+              "original_score" : 34,
+              "final_score" : 32,
+              "maxScore" : 0,
+              "reason" : "IOC ล่าสุด (8-30 วัน) - ลด 5%",
+              "reasonEn" : "IOC age: 26 days - 5% reduction",
+              "methodology" : "ลดคะแนน IOC ที่เก่าเพราะความเกี่ยวข้องลดลงตามเวลา",
+              "methodologyEn" : "Reduce score for older IOCs as relevance decreases over time",
+              "scoringRules" : "<=7d=100%, 8-30d=95%, 31-90d=85%, 91-180d=78%, 181-365d=72%, >1y=65%"
+            },
+            "target_sector" : {
+              "sector" : "general",
+              "sector_name" : "Other",
+              "sector_name_th" : "อื่นๆ",
+              "icon" : "\uD83C\uDF10",
+              "confidence" : 0.0,
+              "matched_keywords" : [ ],
+              "matched_actors" : [ ],
+              "risk_bonus" : 0,
+              "score" : 0,
+              "maxScore" : 15,
+              "reason" : "ไม่ระบุเซกเตอร์เป้าหมาย",
+              "reasonEn" : "No specific sector identified",
+              "classification_method" : "keyword_fallback",
+              "methodology" : "วิเคราะห์จากคำสำคัญ โดเมน และกลุ่มผู้โจมตี",
+              "methodologyEn" : "Analyzed from keywords, domain patterns, and threat actors",
+              "scoringRules" : "Multiplier: critical_infrastructure=1.15, government=1.12, healthcare=1.10, financial=1.10, technology=1.05",
+              "score_before_policy" : 0,
+              "risk_bonus_original" : 0,
+              "multiplier_used" : 1.0
+            },
+            "policy_gate" : {
+              "triggered" : false,
+              "adjustments" : [ ]
+            }
+          },
+          "ai_top_factors" : [
+            {
+              "factor" : "threat_type_severity",
+              "score" : 60.0,
+              "weighted_score" : 18.0,
+              "label" : "ประเภทภัยคุกคาม (AI)"
+            },
+            {
+              "factor" : "source_quality",
+              "score" : 46.0,
+              "weighted_score" : 11.5,
+              "label" : "คุณภาพแหล่งข้อมูล"
+            },
+            {
+              "factor" : "cross_source",
+              "score" : 20.0,
+              "weighted_score" : 4.0,
+              "label" : "การยืนยันข้ามแหล่ง"
+            },
+            {
+              "factor" : "keywords",
+              "score" : 10.0,
+              "weighted_score" : 1.0,
+              "label" : "คำสำคัญอันตราย"
+            }
+          ],
+          "score_model_version" : "scoring-v3.0.0",
+          "score_config_version" : "weights-v2-ioc-aware",
+          "credibility_score" : 16,
+          "impact_score" : 18,
+          "validation_status" : "validated",
+          "validation_reasons" : [ ],
+          "warehouse_eligible" : true,
+          "review_required" : false,
+          "review_state" : "not_required",
+          "cleaning_flags" : [ ],
+          "sanitization_summary" : {
+            "sanitized" : false,
+            "redaction_counts" : { },
+            "flagged_fields" : [ ],
+            "flags" : [ ]
+          },
+          "cluster_label" : null,
+          "cluster_probability" : null,
+          "action_required" : true,
+          "action_status" : "open",
+          "action_title" : "Validate Intelligence Source",
+          "action_reason" : "ioc_follow_up",
+          "action_opened_at" : "2026-05-21T11:30:44.993360Z",
+          "action_updated_at" : "2026-05-21T11:30:44.993360Z",
+          "action_closed_at" : null,
+          "action_closed_reason" : null,
+          "processed_at" : "2026-05-21T15:36:46.515000+00:00",
+          "created_at" : "2026-05-21T15:36:46.515000+00:00",
+          "reviewed_by" : null,
+          "reviewed_at" : null,
+          "review_notes" : null,
+          "partner_id" : null,
+          "submitted_by_partner" : null,
+          "tlp" : "amber",
+          "published_at" : "2026-05-21T15:36:46.515000+00:00",
+          "last_shared_at" : "2026-05-21T15:36:46.515000+00:00",
+          "revoked_at" : null,
+          "sharing_status" : "active"
+        },
+        "sort" : [
+          1779377806515
+        ]
+      },
+      {
+        "_index" : "cyber-logs-datawarehouse",
+        "_id" : "url:530d4e70a90c4d9bea5c0976",
+        "_score" : null,
+        "_source" : {
+          "ioc_value" : "https://sound-track5.kym7sarel.in.net/05fe317c-0981-4de2-bc8a-930d369db441/ck-3d80df5d12cdfe6450a782fc87bf66b444.google",
+          "ioc_type" : "url",
+          "canonical_ioc_key" : "url:https://sound-track5.kym7sarel.in.net/05fe317c-0981-4de2-bc8a-930d369db441/ck-3d80df5d12cdfe6450a782fc87bf66b444.google",
+          "original_ioc_values" : [
+            "https://sound-track5.kym7sarel.in.net/05fe317c-0981-4de2-bc8a-930d369db441/ck-3d80df5d12cdfe6450a782fc87bf66b444.google"
+          ],
+          "original_ioc_types" : [
+            "url"
+          ],
+          "source_name" : "cyberint_iocs",
+          "source_type" : "customer-datalake",
+          "sources" : [
+            "cyberint_iocs"
+          ],
+          "source_objects" : [
+            {
+              "name" : "cyberint_iocs",
+              "confidence" : 80.0,
+              "type" : "customer-datalake"
+            }
+          ],
+          "source_types" : [
+            "customer-datalake"
+          ],
+          "source_count" : 1,
+          "source_urls" : [ ],
+          "description" : "Recognized as Gen:Variant.Ulise.596178.",
+          "threat_type" : [
+            "malware_payload"
+          ],
+          "severity" : "medium",
+          "tags" : [
+            "malware_payload"
+          ],
+          "reference" : "",
+          "collect_time" : "2026-05-21T11:22:40.343140Z",
+          "event_time" : "2026-04-21T09:14:32Z",
+          "first_seen" : "2026-04-21T09:14:32Z",
+          "last_seen" : "2026-05-21T11:22:40.343140Z",
+          "ioc_age_days" : 30,
+          "domain_age_days" : null,
+          "geo_country" : null,
+          "target_sector" : "technology",
+          "target_sector_name" : "Information Technology and Telecommunications",
+          "target_sector_name_th" : "ด้านเทคโนโลยีสารสนเทศและโทรคมนาคม",
+          "target_sector_icon" : "\uD83D\uDCBB",
+          "ai_risk_score" : 33,
+          "ai_severity" : "medium",
+          "ai_severity_th" : "ปานกลาง",
+          "ai_threat_types" : [
+            "Malware"
+          ],
+          "ai_threat_actors" : [ ],
+          "ai_mitre_techniques" : [ ],
+          "ai_classification_confidence" : 0.8,
+          "source_risk_score" : null,
+          "source_actionable" : false,
+          "external_evidence_sources" : [ ],
+          "virustotal_malicious" : null,
+          "virustotal_suspicious" : null,
+          "related_doc_count" : 0,
+          "source_campaigns" : [ ],
+          "source_target_countries" : [ ],
+          "source_malware_family" : null,
+          "source_evidence" : [ ],
+          "classification_mode" : "source_rule",
+          "classification_reason" : "rule_source_or_threat_metadata",
+          "classifier_input_chars" : 272,
+          "classifier_effective_input_chars" : 272,
+          "classification_time_ms" : 0,
+          "ai_score_breakdown" : {
+            "cross_source" : {
+              "raw_score" : 20,
+              "raw_max" : 100,
+              "score" : 20.0,
+              "maxScore" : 100,
+              "weighted_score" : 4.0,
+              "count" : 1,
+              "source_diversity" : 1,
+              "independence_factor" : 1.0,
+              "sources_found" : [
+                "cyberint_iocs"
+              ],
+              "description" : "พบจาก 1 แหล่งข้อมูล (independence: 1.0)",
+              "reason" : "พบใน 1 แหล่ง: cyberint_iocs (diversity: 1/3)",
+              "reasonEn" : "Found in 1 source(s): cyberint_iocs (diversity: 1/3)",
+              "methodology" : "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ แล้วคูณ independence factor ตามความหลากหลายของประเภทแหล่ง",
+              "methodologyEn" : "Count unique sources, then multiply by an independence factor based on source class diversity.",
+              "scoringRules" : "Raw: 1=20, 2=40, 3=60, 4=80, 5+=100 × independence(1class=0.5, 2class=0.8, 3class=1.0)"
+            },
+            "source_quality" : {
+              "score" : 46.0,
+              "trusted" : 1,
+              "news" : 0,
+              "other" : 0,
+              "confidence_bonus" : 16.0,
+              "raw_score" : 46.0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 11.5,
+              "trusted_sources" : [
+                "cyberint_iocs"
+              ],
+              "news_sources" : [ ],
+              "other_sources" : [ ],
+              "description" : "แหล่งน่าเชื่อถือ 1 แห่ง",
+              "reason" : "แหล่งเชื่อถือ: cyberint_iocs",
+              "reasonEn" : "Trusted: cyberint_iocs",
+              "methodology" : "ตรวจสอบว่าแหล่งข้อมูลอยู่ในรายการที่เชื่อถือได้หรือไม่ (เช่น VirusTotal, AbuseIPDB, MISP)",
+              "methodologyEn" : "Check if sources are in trusted list (e.g., VirusTotal, AbuseIPDB, MISP)",
+              "scoringRules" : "Raw: trusted=30, news=16, other=10 ต่อแหล่ง (cap 100)"
+            },
+            "keywords" : {
+              "score" : 0.0,
+              "keywords" : [ ],
+              "tier_breakdown" : {
+                "critical" : [ ],
+                "high" : [ ],
+                "medium" : [ ]
+              },
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 0.0,
+              "description" : "พบ 0 คำสำคัญ",
+              "reason" : "ไม่พบคำสำคัญที่น่าสงสัย",
+              "reasonEn" : "No high-risk keywords found",
+              "methodology" : "ค้นหาคำสำคัญที่บ่งชี้ภัยคุกคาม เช่น ransomware, zero-day, exploit, APT, backdoor",
+              "methodologyEn" : "Search for keywords indicating threats like ransomware, zero-day, exploit, APT, backdoor",
+              "scoringRules" : "Tiered: Critical=30, High=20, Medium=10 คะแนน/คำ (cap 100)"
+            },
+            "geo_risk" : {
+              "score" : 0,
+              "country" : null,
+              "is_high_risk" : false,
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "disabled" : true,
+              "description" : "ปิดใช้งาน - ไม่มีแหล่งข้อมูลที่ตรวจสอบได้",
+              "reason" : "ปัจจัยนี้ถูกปิดใช้งานเพราะข้อมูลประเทศต้นทางไม่สามารถ audit ได้",
+              "reasonEn" : "This factor is disabled - country data source is not auditable",
+              "methodology" : "ปิดใช้งานเพื่อความโปร่งใสและสามารถตรวจสอบได้",
+              "methodologyEn" : "Disabled for transparency and auditability",
+              "scoringRules" : "ปิดใช้งาน"
+            },
+            "threat_type_severity" : {
+              "score" : 60.0,
+              "types" : [
+                "Malware"
+              ],
+              "max_severity_level" : 2,
+              "details" : [
+                {
+                  "type" : "Malware",
+                  "score" : 60,
+                  "confidence" : 1.0,
+                  "weighted_score" : 60,
+                  "level" : 2,
+                  "description" : "มัลแวร์ทั่วไป"
+                }
+              ],
+              "using_granular_confidence" : false,
+              "raw_score" : 60.0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 18.0,
+              "description" : "ตรวจพบ 1 ประเภทภัยคุกคาม",
+              "reason" : "พบประเภทภัยคุกคาม: Malware",
+              "reasonEn" : "Threat types: Malware",
+              "methodology" : "Source-delivered threat type severity (no confidence multiplier)",
+              "methodologyEn" : "Source-delivered threat type severity (no confidence multiplier)",
+              "scoringRules" : "Raw severity score (sources vouch via delivery)"
+            },
+            "threat_actor" : {
+              "score" : 0.0,
+              "actors" : [ ],
+              "matched" : [ ],
+              "attribution_level" : "none",
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 0.0,
+              "actors_found" : [ ],
+              "description" : "กลุ่มผู้โจมตี: ไม่ระบุ",
+              "reason" : "ไม่พบกลุ่มผู้โจมตี",
+              "reasonEn" : "No threat actors found",
+              "methodology" : "Attribution from source/MITRE mapping (no confidence multiplier)",
+              "methodologyEn" : "Attribution from source/MITRE mapping (no confidence multiplier)",
+              "scoringRules" : "Raw actor score × activity_status (sources vouch via delivery)"
+            },
+            "mitre_techniques" : {
+              "score" : 0.0,
+              "techniques" : [ ],
+              "matched_tactics" : [ ],
+              "sophistication" : "none",
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 0.0,
+              "techniques_found" : [ ],
+              "description" : "MITRE tactics: none",
+              "reason" : "ไม่พบ MITRE tactics",
+              "reasonEn" : "No MITRE tactics found",
+              "methodology" : "MITRE technique mapping (no confidence multiplier)",
+              "methodologyEn" : "MITRE technique mapping (no confidence multiplier)",
+              "scoringRules" : "Raw: 20 points per confirmed technique (cap 100)"
+            },
+            "score_governance" : {
+              "model_version" : "scoring-v3.0.0",
+              "config_version" : "weights-v2-ioc-aware",
+              "weights" : {
+                "cross_source" : 0.2,
+                "threat_intel_source" : 0.25,
+                "high_risk_keywords" : 0.1,
+                "threat_type_severity" : 0.3,
+                "threat_actor" : 0.1,
+                "mitre_techniques" : 0.05
+              },
+              "ioc_type" : "url",
+              "weighted_total_before_decay" : 33.5,
+              "credibility_score" : 16,
+              "impact_score" : 18
+            },
+            "decay_factor" : {
+              "multiplier" : 0.95,
+              "reduction_percent" : 5,
+              "ioc_age_days" : 30,
+              "description" : "IOC ล่าสุด (8-30 วัน) - ลด 5%",
+              "descriptionEn" : "IOC age: 30 days - 5% reduction",
+              "original_score" : 34,
+              "final_score" : 32,
+              "maxScore" : 0,
+              "reason" : "IOC ล่าสุด (8-30 วัน) - ลด 5%",
+              "reasonEn" : "IOC age: 30 days - 5% reduction",
+              "methodology" : "ลดคะแนน IOC ที่เก่าเพราะความเกี่ยวข้องลดลงตามเวลา",
+              "methodologyEn" : "Reduce score for older IOCs as relevance decreases over time",
+              "scoringRules" : "<=7d=100%, 8-30d=95%, 31-90d=85%, 91-180d=78%, 181-365d=72%, >1y=65%"
+            },
+            "target_sector" : {
+              "sector" : "technology",
+              "sector_name" : "Information Technology and Telecommunications",
+              "sector_name_th" : "ด้านเทคโนโลยีสารสนเทศและโทรคมนาคม",
+              "icon" : "\uD83D\uDCBB",
+              "confidence" : 0.1,
+              "matched_keywords" : [
+                "google"
+              ],
+              "matched_actors" : [ ],
+              "risk_bonus" : 5,
+              "score" : 1,
+              "maxScore" : 15,
+              "reason" : "เป้าหมาย: ด้านเทคโนโลยีสารสนเทศและโทรคมนาคม",
+              "reasonEn" : "Target: Information Technology and Telecommunications",
+              "classification_method" : "keyword_fallback",
+              "methodology" : "วิเคราะห์จากคำสำคัญ โดเมน และกลุ่มผู้โจมตี",
+              "methodologyEn" : "Analyzed from keywords, domain patterns, and threat actors",
+              "scoringRules" : "Multiplier: critical_infrastructure=1.15, government=1.12, healthcare=1.10, financial=1.10, technology=1.05",
+              "score_before_policy" : 1,
+              "risk_bonus_original" : 5,
+              "multiplier_used" : 1.05
+            },
+            "policy_gate" : {
+              "triggered" : false,
+              "adjustments" : [ ]
+            }
+          },
+          "ai_top_factors" : [
+            {
+              "factor" : "threat_type_severity",
+              "score" : 60.0,
+              "weighted_score" : 18.0,
+              "label" : "ประเภทภัยคุกคาม (AI)"
+            },
+            {
+              "factor" : "source_quality",
+              "score" : 46.0,
+              "weighted_score" : 11.5,
+              "label" : "คุณภาพแหล่งข้อมูล"
+            },
+            {
+              "factor" : "cross_source",
+              "score" : 20.0,
+              "weighted_score" : 4.0,
+              "label" : "การยืนยันข้ามแหล่ง"
+            },
+            {
+              "factor" : "target_sector",
+              "score" : 1.0,
+              "weighted_score" : 1.0,
+              "label" : "ผลกระทบต่อโครงสร้างพื้นฐานสำคัญ"
+            }
+          ],
+          "score_model_version" : "scoring-v3.0.0",
+          "score_config_version" : "weights-v2-ioc-aware",
+          "credibility_score" : 16,
+          "impact_score" : 18,
+          "validation_status" : "validated",
+          "validation_reasons" : [ ],
+          "warehouse_eligible" : true,
+          "review_required" : false,
+          "review_state" : "not_required",
+          "cleaning_flags" : [ ],
+          "sanitization_summary" : {
+            "sanitized" : false,
+            "redaction_counts" : { },
+            "flagged_fields" : [ ],
+            "flags" : [ ]
+          },
+          "cluster_label" : null,
+          "cluster_probability" : null,
+          "action_required" : true,
+          "action_status" : "open",
+          "action_title" : "Validate Intelligence Source",
+          "action_reason" : "ioc_follow_up",
+          "action_opened_at" : "2026-05-21T11:22:40.343140Z",
+          "action_updated_at" : "2026-05-21T11:22:40.343140Z",
+          "action_closed_at" : null,
+          "action_closed_reason" : null,
+          "processed_at" : "2026-05-21T15:36:46.515101+00:00",
+          "created_at" : "2026-05-21T15:36:46.515101+00:00",
+          "reviewed_by" : null,
+          "reviewed_at" : null,
+          "review_notes" : null,
+          "partner_id" : null,
+          "submitted_by_partner" : null,
+          "tlp" : "amber",
+          "published_at" : "2026-05-21T15:36:46.515101+00:00",
+          "last_shared_at" : "2026-05-21T15:36:46.515101+00:00",
+          "revoked_at" : null,
+          "sharing_status" : "active"
+        },
+        "sort" : [
+          1779377806515
+        ]
+      },
+      {
+        "_index" : "cyber-logs-datawarehouse",
+        "_id" : "sha256:b5f5d1bf4fa9edf91bc99edd",
+        "_score" : null,
+        "_source" : {
+          "ioc_value" : "3555e1dae604b0a3a1813993572d8ae2cbdb06aa40c78d7370ac581d45b39847",
+          "ioc_type" : "sha256",
+          "canonical_ioc_key" : "sha256:3555e1dae604b0a3a1813993572d8ae2cbdb06aa40c78d7370ac581d45b39847",
+          "original_ioc_values" : [
+            "3555e1dae604b0a3a1813993572d8ae2cbdb06aa40c78d7370ac581d45b39847"
+          ],
+          "original_ioc_types" : [
+            "file/sha256"
+          ],
+          "source_name" : "cyberint_iocs",
+          "source_type" : "customer-datalake",
+          "sources" : [
+            "cyberint_iocs"
+          ],
+          "source_objects" : [
+            {
+              "name" : "cyberint_iocs",
+              "confidence" : 70.0,
+              "type" : "customer-datalake"
+            }
+          ],
+          "source_types" : [
+            "customer-datalake"
+          ],
+          "source_count" : 1,
+          "source_urls" : [ ],
+          "description" : "Recognized as W32.Malware.1AD52492.",
+          "threat_type" : [
+            "malware_payload"
+          ],
+          "severity" : "medium",
+          "tags" : [
+            "malware_payload"
+          ],
+          "reference" : "",
+          "collect_time" : "2026-05-21T11:09:11.465040Z",
+          "event_time" : "2026-04-28T23:45:33Z",
+          "first_seen" : "2026-04-28T23:45:33Z",
+          "last_seen" : "2026-05-21T11:09:11.465040Z",
+          "ioc_age_days" : 22,
+          "domain_age_days" : null,
+          "geo_country" : null,
+          "target_sector" : "general",
+          "target_sector_name" : "Other",
+          "target_sector_name_th" : "อื่นๆ",
+          "target_sector_icon" : "\uD83C\uDF10",
+          "ai_risk_score" : 32,
+          "ai_severity" : "medium",
+          "ai_severity_th" : "ปานกลาง",
+          "ai_threat_types" : [
+            "Malware"
+          ],
+          "ai_threat_actors" : [ ],
+          "ai_mitre_techniques" : [ ],
+          "ai_classification_confidence" : 0.7,
+          "source_risk_score" : null,
+          "source_actionable" : false,
+          "external_evidence_sources" : [ ],
+          "virustotal_malicious" : null,
+          "virustotal_suspicious" : null,
+          "related_doc_count" : 0,
+          "source_campaigns" : [ ],
+          "source_target_countries" : [ ],
+          "source_malware_family" : null,
+          "source_evidence" : [ ],
+          "classification_mode" : "source_rule",
+          "classification_reason" : "context_rule_threat_metadata",
+          "classifier_input_chars" : 216,
+          "classifier_effective_input_chars" : 216,
+          "classification_time_ms" : 0,
+          "ai_score_breakdown" : {
+            "cross_source" : {
+              "raw_score" : 20,
+              "raw_max" : 100,
+              "score" : 20.0,
+              "maxScore" : 100,
+              "weighted_score" : 4.0,
+              "count" : 1,
+              "source_diversity" : 1,
+              "independence_factor" : 1.0,
+              "sources_found" : [
+                "cyberint_iocs"
+              ],
+              "description" : "พบจาก 1 แหล่งข้อมูล (independence: 1.0)",
+              "reason" : "พบใน 1 แหล่ง: cyberint_iocs (diversity: 1/3)",
+              "reasonEn" : "Found in 1 source(s): cyberint_iocs (diversity: 1/3)",
+              "methodology" : "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ แล้วคูณ independence factor ตามความหลากหลายของประเภทแหล่ง",
+              "methodologyEn" : "Count unique sources, then multiply by an independence factor based on source class diversity.",
+              "scoringRules" : "Raw: 1=20, 2=40, 3=60, 4=80, 5+=100 × independence(1class=0.5, 2class=0.8, 3class=1.0)"
+            },
+            "source_quality" : {
+              "score" : 44.0,
+              "trusted" : 1,
+              "news" : 0,
+              "other" : 0,
+              "confidence_bonus" : 14.0,
+              "raw_score" : 44.0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 11.0,
+              "trusted_sources" : [
+                "cyberint_iocs"
+              ],
+              "news_sources" : [ ],
+              "other_sources" : [ ],
+              "description" : "แหล่งน่าเชื่อถือ 1 แห่ง",
+              "reason" : "แหล่งเชื่อถือ: cyberint_iocs",
+              "reasonEn" : "Trusted: cyberint_iocs",
+              "methodology" : "ตรวจสอบว่าแหล่งข้อมูลอยู่ในรายการที่เชื่อถือได้หรือไม่ (เช่น VirusTotal, AbuseIPDB, MISP)",
+              "methodologyEn" : "Check if sources are in trusted list (e.g., VirusTotal, AbuseIPDB, MISP)",
+              "scoringRules" : "Raw: trusted=30, news=16, other=10 ต่อแหล่ง (cap 100)"
+            },
+            "keywords" : {
+              "score" : 10.0,
+              "keywords" : [
+                "malware"
+              ],
+              "tier_breakdown" : {
+                "critical" : [ ],
+                "high" : [ ],
+                "medium" : [
+                  "malware"
+                ]
+              },
+              "raw_score" : 10,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 1.0,
+              "description" : "พบ 1 คำสำคัญ",
+              "reason" : "พบคำสำคัญ: malware",
+              "reasonEn" : "Keywords found: malware",
+              "methodology" : "ค้นหาคำสำคัญที่บ่งชี้ภัยคุกคาม เช่น ransomware, zero-day, exploit, APT, backdoor",
+              "methodologyEn" : "Search for keywords indicating threats like ransomware, zero-day, exploit, APT, backdoor",
+              "scoringRules" : "Tiered: Critical=30, High=20, Medium=10 คะแนน/คำ (cap 100)"
+            },
+            "geo_risk" : {
+              "score" : 0,
+              "country" : null,
+              "is_high_risk" : false,
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "disabled" : true,
+              "description" : "ปิดใช้งาน - ไม่มีแหล่งข้อมูลที่ตรวจสอบได้",
+              "reason" : "ปัจจัยนี้ถูกปิดใช้งานเพราะข้อมูลประเทศต้นทางไม่สามารถ audit ได้",
+              "reasonEn" : "This factor is disabled - country data source is not auditable",
+              "methodology" : "ปิดใช้งานเพื่อความโปร่งใสและสามารถตรวจสอบได้",
+              "methodologyEn" : "Disabled for transparency and auditability",
+              "scoringRules" : "ปิดใช้งาน"
+            },
+            "threat_type_severity" : {
+              "score" : 60.0,
+              "types" : [
+                "Malware"
+              ],
+              "max_severity_level" : 2,
+              "details" : [
+                {
+                  "type" : "Malware",
+                  "score" : 60,
+                  "confidence" : 1.0,
+                  "weighted_score" : 60,
+                  "level" : 2,
+                  "description" : "มัลแวร์ทั่วไป"
+                }
+              ],
+              "using_granular_confidence" : false,
+              "raw_score" : 60.0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 18.0,
+              "description" : "ตรวจพบ 1 ประเภทภัยคุกคาม",
+              "reason" : "พบประเภทภัยคุกคาม: Malware",
+              "reasonEn" : "Threat types: Malware",
+              "methodology" : "Source-delivered threat type severity (no confidence multiplier)",
+              "methodologyEn" : "Source-delivered threat type severity (no confidence multiplier)",
+              "scoringRules" : "Raw severity score (sources vouch via delivery)"
+            },
+            "threat_actor" : {
+              "score" : 0.0,
+              "actors" : [ ],
+              "matched" : [ ],
+              "attribution_level" : "none",
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 0.0,
+              "actors_found" : [ ],
+              "description" : "กลุ่มผู้โจมตี: ไม่ระบุ",
+              "reason" : "ไม่พบกลุ่มผู้โจมตี",
+              "reasonEn" : "No threat actors found",
+              "methodology" : "Attribution from source/MITRE mapping (no confidence multiplier)",
+              "methodologyEn" : "Attribution from source/MITRE mapping (no confidence multiplier)",
+              "scoringRules" : "Raw actor score × activity_status (sources vouch via delivery)"
+            },
+            "mitre_techniques" : {
+              "score" : 0.0,
+              "techniques" : [ ],
+              "matched_tactics" : [ ],
+              "sophistication" : "none",
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 0.0,
+              "techniques_found" : [ ],
+              "description" : "MITRE tactics: none",
+              "reason" : "ไม่พบ MITRE tactics",
+              "reasonEn" : "No MITRE tactics found",
+              "methodology" : "MITRE technique mapping (no confidence multiplier)",
+              "methodologyEn" : "MITRE technique mapping (no confidence multiplier)",
+              "scoringRules" : "Raw: 20 points per confirmed technique (cap 100)"
+            },
+            "score_governance" : {
+              "model_version" : "scoring-v3.0.0",
+              "config_version" : "weights-v2-ioc-aware",
+              "weights" : {
+                "cross_source" : 0.2,
+                "threat_intel_source" : 0.25,
+                "high_risk_keywords" : 0.1,
+                "threat_type_severity" : 0.3,
+                "threat_actor" : 0.1,
+                "mitre_techniques" : 0.05
+              },
+              "ioc_type" : "sha256",
+              "weighted_total_before_decay" : 34.0,
+              "credibility_score" : 15,
+              "impact_score" : 19
+            },
+            "decay_factor" : {
+              "multiplier" : 0.95,
+              "reduction_percent" : 5,
+              "ioc_age_days" : 22,
+              "description" : "IOC ล่าสุด (8-30 วัน) - ลด 5%",
+              "descriptionEn" : "IOC age: 22 days - 5% reduction",
+              "original_score" : 34,
+              "final_score" : 32,
+              "maxScore" : 0,
+              "reason" : "IOC ล่าสุด (8-30 วัน) - ลด 5%",
+              "reasonEn" : "IOC age: 22 days - 5% reduction",
+              "methodology" : "ลดคะแนน IOC ที่เก่าเพราะความเกี่ยวข้องลดลงตามเวลา",
+              "methodologyEn" : "Reduce score for older IOCs as relevance decreases over time",
+              "scoringRules" : "<=7d=100%, 8-30d=95%, 31-90d=85%, 91-180d=78%, 181-365d=72%, >1y=65%"
+            },
+            "target_sector" : {
+              "sector" : "general",
+              "sector_name" : "Other",
+              "sector_name_th" : "อื่นๆ",
+              "icon" : "\uD83C\uDF10",
+              "confidence" : 0.0,
+              "matched_keywords" : [ ],
+              "matched_actors" : [ ],
+              "risk_bonus" : 0,
+              "score" : 0,
+              "maxScore" : 15,
+              "reason" : "ไม่ระบุเซกเตอร์เป้าหมาย",
+              "reasonEn" : "No specific sector identified",
+              "classification_method" : "keyword_fallback",
+              "methodology" : "วิเคราะห์จากคำสำคัญ โดเมน และกลุ่มผู้โจมตี",
+              "methodologyEn" : "Analyzed from keywords, domain patterns, and threat actors",
+              "scoringRules" : "Multiplier: critical_infrastructure=1.15, government=1.12, healthcare=1.10, financial=1.10, technology=1.05",
+              "score_before_policy" : 0,
+              "risk_bonus_original" : 0,
+              "multiplier_used" : 1.0
+            },
+            "policy_gate" : {
+              "triggered" : false,
+              "adjustments" : [ ]
+            }
+          },
+          "ai_top_factors" : [
+            {
+              "factor" : "threat_type_severity",
+              "score" : 60.0,
+              "weighted_score" : 18.0,
+              "label" : "ประเภทภัยคุกคาม (AI)"
+            },
+            {
+              "factor" : "source_quality",
+              "score" : 44.0,
+              "weighted_score" : 11.0,
+              "label" : "คุณภาพแหล่งข้อมูล"
+            },
+            {
+              "factor" : "cross_source",
+              "score" : 20.0,
+              "weighted_score" : 4.0,
+              "label" : "การยืนยันข้ามแหล่ง"
+            },
+            {
+              "factor" : "keywords",
+              "score" : 10.0,
+              "weighted_score" : 1.0,
+              "label" : "คำสำคัญอันตราย"
+            }
+          ],
+          "score_model_version" : "scoring-v3.0.0",
+          "score_config_version" : "weights-v2-ioc-aware",
+          "credibility_score" : 15,
+          "impact_score" : 19,
+          "validation_status" : "validated",
+          "validation_reasons" : [ ],
+          "warehouse_eligible" : true,
+          "review_required" : false,
+          "review_state" : "not_required",
+          "cleaning_flags" : [ ],
+          "sanitization_summary" : {
+            "sanitized" : false,
+            "redaction_counts" : { },
+            "flagged_fields" : [ ],
+            "flags" : [ ]
+          },
+          "cluster_label" : null,
+          "cluster_probability" : null,
+          "action_required" : true,
+          "action_status" : "open",
+          "action_title" : "Security Action Detail",
+          "action_reason" : "ioc_follow_up",
+          "action_opened_at" : "2026-05-21T11:09:11.465040Z",
+          "action_updated_at" : "2026-05-21T11:09:11.465040Z",
+          "action_closed_at" : null,
+          "action_closed_reason" : null,
+          "processed_at" : "2026-05-21T15:36:46.515220+00:00",
+          "created_at" : "2026-05-21T15:36:46.515220+00:00",
+          "reviewed_by" : null,
+          "reviewed_at" : null,
+          "review_notes" : null,
+          "partner_id" : null,
+          "submitted_by_partner" : null,
+          "tlp" : "amber",
+          "published_at" : "2026-05-21T15:36:46.515220+00:00",
+          "last_shared_at" : "2026-05-21T15:36:46.515220+00:00",
+          "revoked_at" : null,
+          "sharing_status" : "active"
+        },
+        "sort" : [
+          1779377806515
+        ]
+      },
+      {
+        "_index" : "cyber-logs-datawarehouse",
+        "_id" : "ip:d2fccd246de72687e2623cfa",
+        "_score" : null,
+        "_source" : {
+          "ioc_value" : "28.40.167.51",
+          "ioc_type" : "ip",
+          "canonical_ioc_key" : "ip:28.40.167.51",
+          "original_ioc_values" : [
+            "28.40.167.51"
+          ],
+          "original_ioc_types" : [
+            "ipv4"
+          ],
+          "source_name" : "cyberint_iocs",
+          "source_type" : "customer-datalake",
+          "sources" : [
+            "cyberint_iocs"
+          ],
+          "source_objects" : [
+            {
+              "name" : "cyberint_iocs",
+              "confidence" : 90.0,
+              "type" : "customer-datalake"
+            }
+          ],
+          "source_types" : [
+            "customer-datalake"
+          ],
+          "source_count" : 1,
+          "source_urls" : [ ],
+          "description" : "Observed infection of malware Vidar.",
+          "threat_type" : [
+            "infected_machine"
+          ],
+          "severity" : "medium",
+          "tags" : [
+            "infected_machine"
+          ],
+          "reference" : "",
+          "collect_time" : "2026-05-21T10:56:01.496794Z",
+          "event_time" : "2026-05-20T12:10:58.117138Z",
+          "first_seen" : "2026-05-20T12:10:58.117138Z",
+          "last_seen" : "2026-05-21T10:56:01.496794Z",
+          "ioc_age_days" : 1,
+          "domain_age_days" : null,
+          "geo_country" : "US",
+          "target_sector" : "general",
+          "target_sector_name" : "Other",
+          "target_sector_name_th" : "อื่นๆ",
+          "target_sector_icon" : "\uD83C\uDF10",
+          "ai_risk_score" : 35,
+          "ai_severity" : "medium",
+          "ai_severity_th" : "ปานกลาง",
+          "ai_threat_types" : [
+            "Malware"
+          ],
+          "ai_threat_actors" : [ ],
+          "ai_mitre_techniques" : [ ],
+          "ai_classification_confidence" : 0.85,
+          "source_risk_score" : null,
+          "source_actionable" : false,
+          "external_evidence_sources" : [ ],
+          "virustotal_malicious" : null,
+          "virustotal_suspicious" : null,
+          "related_doc_count" : 0,
+          "source_campaigns" : [ ],
+          "source_target_countries" : [ ],
+          "source_malware_family" : null,
+          "source_evidence" : [ ],
+          "classification_mode" : "source_rule",
+          "classification_reason" : "context_rule_threat_metadata",
+          "classifier_input_chars" : 162,
+          "classifier_effective_input_chars" : 162,
+          "classification_time_ms" : 0,
+          "ai_score_breakdown" : {
+            "cross_source" : {
+              "raw_score" : 20,
+              "raw_max" : 100,
+              "score" : 20.0,
+              "maxScore" : 100,
+              "weighted_score" : 4.0,
+              "count" : 1,
+              "source_diversity" : 1,
+              "independence_factor" : 1.0,
+              "sources_found" : [
+                "cyberint_iocs"
+              ],
+              "description" : "พบจาก 1 แหล่งข้อมูล (independence: 1.0)",
+              "reason" : "พบใน 1 แหล่ง: cyberint_iocs (diversity: 1/3)",
+              "reasonEn" : "Found in 1 source(s): cyberint_iocs (diversity: 1/3)",
+              "methodology" : "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ แล้วคูณ independence factor ตามความหลากหลายของประเภทแหล่ง",
+              "methodologyEn" : "Count unique sources, then multiply by an independence factor based on source class diversity.",
+              "scoringRules" : "Raw: 1=20, 2=40, 3=60, 4=80, 5+=100 × independence(1class=0.5, 2class=0.8, 3class=1.0)"
+            },
+            "source_quality" : {
+              "score" : 48.0,
+              "trusted" : 1,
+              "news" : 0,
+              "other" : 0,
+              "confidence_bonus" : 18.0,
+              "raw_score" : 48.0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 12.0,
+              "trusted_sources" : [
+                "cyberint_iocs"
+              ],
+              "news_sources" : [ ],
+              "other_sources" : [ ],
+              "description" : "แหล่งน่าเชื่อถือ 1 แห่ง",
+              "reason" : "แหล่งเชื่อถือ: cyberint_iocs",
+              "reasonEn" : "Trusted: cyberint_iocs",
+              "methodology" : "ตรวจสอบว่าแหล่งข้อมูลอยู่ในรายการที่เชื่อถือได้หรือไม่ (เช่น VirusTotal, AbuseIPDB, MISP)",
+              "methodologyEn" : "Check if sources are in trusted list (e.g., VirusTotal, AbuseIPDB, MISP)",
+              "scoringRules" : "Raw: trusted=30, news=16, other=10 ต่อแหล่ง (cap 100)"
+            },
+            "keywords" : {
+              "score" : 10.0,
+              "keywords" : [
+                "malware"
+              ],
+              "tier_breakdown" : {
+                "critical" : [ ],
+                "high" : [ ],
+                "medium" : [
+                  "malware"
+                ]
+              },
+              "raw_score" : 10,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 1.0,
+              "description" : "พบ 1 คำสำคัญ",
+              "reason" : "พบคำสำคัญ: malware",
+              "reasonEn" : "Keywords found: malware",
+              "methodology" : "ค้นหาคำสำคัญที่บ่งชี้ภัยคุกคาม เช่น ransomware, zero-day, exploit, APT, backdoor",
+              "methodologyEn" : "Search for keywords indicating threats like ransomware, zero-day, exploit, APT, backdoor",
+              "scoringRules" : "Tiered: Critical=30, High=20, Medium=10 คะแนน/คำ (cap 100)"
+            },
+            "geo_risk" : {
+              "score" : 0,
+              "country" : null,
+              "is_high_risk" : false,
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "disabled" : true,
+              "description" : "ปิดใช้งาน - ไม่มีแหล่งข้อมูลที่ตรวจสอบได้",
+              "reason" : "ปัจจัยนี้ถูกปิดใช้งานเพราะข้อมูลประเทศต้นทางไม่สามารถ audit ได้",
+              "reasonEn" : "This factor is disabled - country data source is not auditable",
+              "methodology" : "ปิดใช้งานเพื่อความโปร่งใสและสามารถตรวจสอบได้",
+              "methodologyEn" : "Disabled for transparency and auditability",
+              "scoringRules" : "ปิดใช้งาน"
+            },
+            "threat_type_severity" : {
+              "score" : 60.0,
+              "types" : [
+                "Malware"
+              ],
+              "max_severity_level" : 2,
+              "details" : [
+                {
+                  "type" : "Malware",
+                  "score" : 60,
+                  "confidence" : 1.0,
+                  "weighted_score" : 60,
+                  "level" : 2,
+                  "description" : "มัลแวร์ทั่วไป"
+                }
+              ],
+              "using_granular_confidence" : false,
+              "raw_score" : 60.0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 18.0,
+              "description" : "ตรวจพบ 1 ประเภทภัยคุกคาม",
+              "reason" : "พบประเภทภัยคุกคาม: Malware",
+              "reasonEn" : "Threat types: Malware",
+              "methodology" : "Source-delivered threat type severity (no confidence multiplier)",
+              "methodologyEn" : "Source-delivered threat type severity (no confidence multiplier)",
+              "scoringRules" : "Raw severity score (sources vouch via delivery)"
+            },
+            "threat_actor" : {
+              "score" : 0.0,
+              "actors" : [ ],
+              "matched" : [ ],
+              "attribution_level" : "none",
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 0.0,
+              "actors_found" : [ ],
+              "description" : "กลุ่มผู้โจมตี: ไม่ระบุ",
+              "reason" : "ไม่พบกลุ่มผู้โจมตี",
+              "reasonEn" : "No threat actors found",
+              "methodology" : "Attribution from source/MITRE mapping (no confidence multiplier)",
+              "methodologyEn" : "Attribution from source/MITRE mapping (no confidence multiplier)",
+              "scoringRules" : "Raw actor score × activity_status (sources vouch via delivery)"
+            },
+            "mitre_techniques" : {
+              "score" : 0.0,
+              "techniques" : [ ],
+              "matched_tactics" : [ ],
+              "sophistication" : "none",
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 0.0,
+              "techniques_found" : [ ],
+              "description" : "MITRE tactics: none",
+              "reason" : "ไม่พบ MITRE tactics",
+              "reasonEn" : "No MITRE tactics found",
+              "methodology" : "MITRE technique mapping (no confidence multiplier)",
+              "methodologyEn" : "MITRE technique mapping (no confidence multiplier)",
+              "scoringRules" : "Raw: 20 points per confirmed technique (cap 100)"
+            },
+            "score_governance" : {
+              "model_version" : "scoring-v3.0.0",
+              "config_version" : "weights-v2-ioc-aware",
+              "weights" : {
+                "cross_source" : 0.2,
+                "threat_intel_source" : 0.25,
+                "high_risk_keywords" : 0.1,
+                "threat_type_severity" : 0.3,
+                "threat_actor" : 0.1,
+                "mitre_techniques" : 0.05
+              },
+              "ioc_type" : "ip",
+              "weighted_total_before_decay" : 35.0,
+              "credibility_score" : 16,
+              "impact_score" : 19
+            },
+            "decay_factor" : {
+              "multiplier" : 1.0,
+              "reduction_percent" : 0,
+              "ioc_age_days" : 1,
+              "description" : "IOC ใหม่ (<=7 วัน) - คะแนนเต็ม",
+              "descriptionEn" : "IOC age: 1 days - 0% reduction",
+              "original_score" : 35,
+              "final_score" : 35,
+              "maxScore" : 0,
+              "reason" : "IOC ใหม่ (<=7 วัน) - คะแนนเต็ม",
+              "reasonEn" : "IOC age: 1 days - 0% reduction",
+              "methodology" : "ลดคะแนน IOC ที่เก่าเพราะความเกี่ยวข้องลดลงตามเวลา",
+              "methodologyEn" : "Reduce score for older IOCs as relevance decreases over time",
+              "scoringRules" : "<=7d=100%, 8-30d=95%, 31-90d=85%, 91-180d=78%, 181-365d=72%, >1y=65%"
+            },
+            "target_sector" : {
+              "sector" : "general",
+              "sector_name" : "Other",
+              "sector_name_th" : "อื่นๆ",
+              "icon" : "\uD83C\uDF10",
+              "confidence" : 0.0,
+              "matched_keywords" : [ ],
+              "matched_actors" : [ ],
+              "risk_bonus" : 0,
+              "score" : 0,
+              "maxScore" : 15,
+              "reason" : "ไม่ระบุเซกเตอร์เป้าหมาย",
+              "reasonEn" : "No specific sector identified",
+              "classification_method" : "keyword_fallback",
+              "methodology" : "วิเคราะห์จากคำสำคัญ โดเมน และกลุ่มผู้โจมตี",
+              "methodologyEn" : "Analyzed from keywords, domain patterns, and threat actors",
+              "scoringRules" : "Multiplier: critical_infrastructure=1.15, government=1.12, healthcare=1.10, financial=1.10, technology=1.05",
+              "score_before_policy" : 0,
+              "risk_bonus_original" : 0,
+              "multiplier_used" : 1.0
+            },
+            "policy_gate" : {
+              "triggered" : false,
+              "adjustments" : [ ]
+            }
+          },
+          "ai_top_factors" : [
+            {
+              "factor" : "threat_type_severity",
+              "score" : 60.0,
+              "weighted_score" : 18.0,
+              "label" : "ประเภทภัยคุกคาม (AI)"
+            },
+            {
+              "factor" : "source_quality",
+              "score" : 48.0,
+              "weighted_score" : 12.0,
+              "label" : "คุณภาพแหล่งข้อมูล"
+            },
+            {
+              "factor" : "cross_source",
+              "score" : 20.0,
+              "weighted_score" : 4.0,
+              "label" : "การยืนยันข้ามแหล่ง"
+            },
+            {
+              "factor" : "keywords",
+              "score" : 10.0,
+              "weighted_score" : 1.0,
+              "label" : "คำสำคัญอันตราย"
+            }
+          ],
+          "score_model_version" : "scoring-v3.0.0",
+          "score_config_version" : "weights-v2-ioc-aware",
+          "credibility_score" : 16,
+          "impact_score" : 19,
+          "validation_status" : "validated",
+          "validation_reasons" : [ ],
+          "warehouse_eligible" : true,
+          "review_required" : false,
+          "review_state" : "not_required",
+          "cleaning_flags" : [ ],
+          "sanitization_summary" : {
+            "sanitized" : false,
+            "redaction_counts" : { },
+            "flagged_fields" : [ ],
+            "flags" : [ ]
+          },
+          "cluster_label" : null,
+          "cluster_probability" : null,
+          "action_required" : true,
+          "action_status" : "open",
+          "action_title" : "Validate Intelligence Source",
+          "action_reason" : "ioc_follow_up",
+          "action_opened_at" : "2026-05-21T10:56:01.496794Z",
+          "action_updated_at" : "2026-05-21T10:56:01.496794Z",
+          "action_closed_at" : null,
+          "action_closed_reason" : null,
+          "processed_at" : "2026-05-21T15:36:46.515326+00:00",
+          "created_at" : "2026-05-21T15:36:46.515326+00:00",
+          "reviewed_by" : null,
+          "reviewed_at" : null,
+          "review_notes" : null,
+          "partner_id" : null,
+          "submitted_by_partner" : null,
+          "tlp" : "amber",
+          "published_at" : "2026-05-21T15:36:46.515326+00:00",
+          "last_shared_at" : "2026-05-21T15:36:46.515326+00:00",
+          "revoked_at" : null,
+          "sharing_status" : "active"
+        },
+        "sort" : [
+          1779377806515
+        ]
+      },
+      {
+        "_index" : "cyber-logs-datawarehouse",
+        "_id" : "sha256:ab1a3548a2760a73fd8aba87",
+        "_score" : null,
+        "_source" : {
+          "ioc_value" : "8897c0721d5c1885c5cd1b62e93fe212a47f9d13225184f2ccc79e835a18d82a",
+          "ioc_type" : "sha256",
+          "canonical_ioc_key" : "sha256:8897c0721d5c1885c5cd1b62e93fe212a47f9d13225184f2ccc79e835a18d82a",
+          "original_ioc_values" : [
+            "8897c0721d5c1885c5cd1b62e93fe212a47f9d13225184f2ccc79e835a18d82a"
+          ],
+          "original_ioc_types" : [
+            "file/sha256"
+          ],
+          "source_name" : "cyberint_iocs",
+          "source_type" : "customer-datalake",
+          "sources" : [
+            "cyberint_iocs"
+          ],
+          "source_objects" : [
+            {
+              "name" : "cyberint_iocs",
+              "confidence" : 80.0,
+              "type" : "customer-datalake"
+            }
+          ],
+          "source_types" : [
+            "customer-datalake"
+          ],
+          "source_count" : 1,
+          "source_urls" : [ ],
+          "description" : "malware payload\nRecognized as Generic.Malware.SF!dld!.0D4DB8C2.",
+          "threat_type" : [
+            "malware_payload"
+          ],
+          "severity" : "low",
+          "tags" : [
+            "malware_payload"
+          ],
+          "reference" : "827a4cdbeba4a68c5cf3dcf4746667ac5305fb3b498ec255f9eeac1f3b0fee49",
+          "collect_time" : "2025-11-11T10:24:22.782612Z",
+          "event_time" : "2024-12-11T03:02:17Z",
+          "first_seen" : "2024-12-11T03:02:17Z",
+          "last_seen" : "2025-11-11T10:24:22.782612Z",
+          "ioc_age_days" : 526,
+          "domain_age_days" : null,
+          "geo_country" : null,
+          "target_sector" : "general",
+          "target_sector_name" : "Other",
+          "target_sector_name_th" : "อื่นๆ",
+          "target_sector_icon" : "\uD83C\uDF10",
+          "ai_risk_score" : 23,
+          "ai_severity" : "low",
+          "ai_severity_th" : "ต่ำ",
+          "ai_threat_types" : [
+            "Malware"
+          ],
+          "ai_threat_actors" : [ ],
+          "ai_mitre_techniques" : [
+            "T1587.001"
+          ],
+          "ai_classification_confidence" : 0.8,
+          "source_risk_score" : 100,
+          "source_actionable" : true,
+          "external_evidence_sources" : [
+            "cyberint_iocs"
+          ],
+          "virustotal_malicious" : null,
+          "virustotal_suspicious" : null,
+          "related_doc_count" : 0,
+          "source_campaigns" : [ ],
+          "source_target_countries" : [ ],
+          "source_malware_family" : null,
+          "source_evidence" : [
+            {
+              "evidence_type" : "cyberint",
+              "external_evidence_sources" : [
+                "cyberint_iocs"
+              ],
+              "source_risk_score" : 100,
+              "source_actionable" : true,
+              "source_confidence" : 80,
+              "source_threat_types" : [
+                "malware_payload"
+              ],
+              "source_mitre_techniques" : [
+                "T1587.001"
+              ]
+            }
+          ],
+          "classification_mode" : "source_rule",
+          "classification_reason" : "context_rule_threat_metadata",
+          "classifier_input_chars" : 244,
+          "classifier_effective_input_chars" : 244,
+          "classification_time_ms" : 0,
+          "ai_score_breakdown" : {
+            "cross_source" : {
+              "raw_score" : 20,
+              "raw_max" : 100,
+              "score" : 20.0,
+              "maxScore" : 100,
+              "weighted_score" : 4.0,
+              "count" : 1,
+              "source_diversity" : 1,
+              "independence_factor" : 1.0,
+              "sources_found" : [
+                "cyberint_iocs"
+              ],
+              "description" : "พบจาก 1 แหล่งข้อมูล (independence: 1.0)",
+              "reason" : "พบใน 1 แหล่ง: cyberint_iocs (diversity: 1/3)",
+              "reasonEn" : "Found in 1 source(s): cyberint_iocs (diversity: 1/3)",
+              "methodology" : "นับจำนวนแหล่งข้อมูลที่ไม่ซ้ำ แล้วคูณ independence factor ตามความหลากหลายของประเภทแหล่ง",
+              "methodologyEn" : "Count unique sources, then multiply by an independence factor based on source class diversity.",
+              "scoringRules" : "Raw: 1=20, 2=40, 3=60, 4=80, 5+=100 × independence(1class=0.5, 2class=0.8, 3class=1.0)"
+            },
+            "source_quality" : {
+              "score" : 46.0,
+              "trusted" : 1,
+              "news" : 0,
+              "other" : 0,
+              "confidence_bonus" : 16.0,
+              "raw_score" : 46.0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 11.5,
+              "trusted_sources" : [
+                "cyberint_iocs"
+              ],
+              "news_sources" : [ ],
+              "other_sources" : [ ],
+              "description" : "แหล่งน่าเชื่อถือ 1 แห่ง",
+              "reason" : "แหล่งเชื่อถือ: cyberint_iocs",
+              "reasonEn" : "Trusted: cyberint_iocs",
+              "methodology" : "ตรวจสอบว่าแหล่งข้อมูลอยู่ในรายการที่เชื่อถือได้หรือไม่ (เช่น VirusTotal, AbuseIPDB, MISP)",
+              "methodologyEn" : "Check if sources are in trusted list (e.g., VirusTotal, AbuseIPDB, MISP)",
+              "scoringRules" : "Raw: trusted=30, news=16, other=10 ต่อแหล่ง (cap 100)"
+            },
+            "keywords" : {
+              "score" : 10.0,
+              "keywords" : [
+                "malware"
+              ],
+              "tier_breakdown" : {
+                "critical" : [ ],
+                "high" : [ ],
+                "medium" : [
+                  "malware"
+                ]
+              },
+              "raw_score" : 10,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 1.0,
+              "description" : "พบ 1 คำสำคัญ",
+              "reason" : "พบคำสำคัญ: malware",
+              "reasonEn" : "Keywords found: malware",
+              "methodology" : "ค้นหาคำสำคัญที่บ่งชี้ภัยคุกคาม เช่น ransomware, zero-day, exploit, APT, backdoor",
+              "methodologyEn" : "Search for keywords indicating threats like ransomware, zero-day, exploit, APT, backdoor",
+              "scoringRules" : "Tiered: Critical=30, High=20, Medium=10 คะแนน/คำ (cap 100)"
+            },
+            "geo_risk" : {
+              "score" : 0,
+              "country" : null,
+              "is_high_risk" : false,
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "disabled" : true,
+              "description" : "ปิดใช้งาน - ไม่มีแหล่งข้อมูลที่ตรวจสอบได้",
+              "reason" : "ปัจจัยนี้ถูกปิดใช้งานเพราะข้อมูลประเทศต้นทางไม่สามารถ audit ได้",
+              "reasonEn" : "This factor is disabled - country data source is not auditable",
+              "methodology" : "ปิดใช้งานเพื่อความโปร่งใสและสามารถตรวจสอบได้",
+              "methodologyEn" : "Disabled for transparency and auditability",
+              "scoringRules" : "ปิดใช้งาน"
+            },
+            "threat_type_severity" : {
+              "score" : 60.0,
+              "types" : [
+                "Malware"
+              ],
+              "max_severity_level" : 2,
+              "details" : [
+                {
+                  "type" : "Malware",
+                  "score" : 60,
+                  "confidence" : 1.0,
+                  "weighted_score" : 60,
+                  "level" : 2,
+                  "description" : "มัลแวร์ทั่วไป"
+                }
+              ],
+              "using_granular_confidence" : false,
+              "raw_score" : 60.0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 18.0,
+              "description" : "ตรวจพบ 1 ประเภทภัยคุกคาม",
+              "reason" : "พบประเภทภัยคุกคาม: Malware",
+              "reasonEn" : "Threat types: Malware",
+              "methodology" : "Source-delivered threat type severity (no confidence multiplier)",
+              "methodologyEn" : "Source-delivered threat type severity (no confidence multiplier)",
+              "scoringRules" : "Raw severity score (sources vouch via delivery)"
+            },
+            "threat_actor" : {
+              "score" : 0.0,
+              "actors" : [ ],
+              "matched" : [ ],
+              "attribution_level" : "none",
+              "raw_score" : 0,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 0.0,
+              "actors_found" : [ ],
+              "description" : "กลุ่มผู้โจมตี: ไม่ระบุ",
+              "reason" : "ไม่พบกลุ่มผู้โจมตี",
+              "reasonEn" : "No threat actors found",
+              "methodology" : "Attribution from source/MITRE mapping (no confidence multiplier)",
+              "methodologyEn" : "Attribution from source/MITRE mapping (no confidence multiplier)",
+              "scoringRules" : "Raw actor score × activity_status (sources vouch via delivery)"
+            },
+            "mitre_techniques" : {
+              "score" : 20.0,
+              "techniques" : [
+                "T1587.001"
+              ],
+              "matched_tactics" : [ ],
+              "sophistication" : "basic",
+              "raw_score" : 20,
+              "raw_max" : 100,
+              "maxScore" : 100,
+              "weighted_score" : 1.0,
+              "techniques_found" : [
+                "T1587.001"
+              ],
+              "description" : "MITRE tactics: basic",
+              "reason" : "พบ 1 tactics",
+              "reasonEn" : "Found 1 tactics",
+              "methodology" : "MITRE technique mapping (no confidence multiplier)",
+              "methodologyEn" : "MITRE technique mapping (no confidence multiplier)",
+              "scoringRules" : "Raw: 20 points per confirmed technique (cap 100)"
+            },
+            "score_governance" : {
+              "model_version" : "scoring-v3.0.0",
+              "config_version" : "weights-v2-ioc-aware",
+              "weights" : {
+                "cross_source" : 0.2,
+                "threat_intel_source" : 0.25,
+                "high_risk_keywords" : 0.1,
+                "threat_type_severity" : 0.3,
+                "threat_actor" : 0.1,
+                "mitre_techniques" : 0.05
+              },
+              "ioc_type" : "sha256",
+              "weighted_total_before_decay" : 35.5,
+              "credibility_score" : 16,
+              "impact_score" : 20
+            },
+            "decay_factor" : {
+              "multiplier" : 0.65,
+              "reduction_percent" : 35,
+              "ioc_age_days" : 526,
+              "description" : "IOC เก่ามากกว่า 1 ปี - ลด 35% (floor)",
+              "descriptionEn" : "IOC age: 526 days - 35% reduction",
+              "original_score" : 36,
+              "final_score" : 23,
+              "maxScore" : 0,
+              "reason" : "IOC เก่ามากกว่า 1 ปี - ลด 35% (floor)",
+              "reasonEn" : "IOC age: 526 days - 35% reduction",
+              "methodology" : "ลดคะแนน IOC ที่เก่าเพราะความเกี่ยวข้องลดลงตามเวลา",
+              "methodologyEn" : "Reduce score for older IOCs as relevance decreases over time",
+              "scoringRules" : "<=7d=100%, 8-30d=95%, 31-90d=85%, 91-180d=78%, 181-365d=72%, >1y=65%"
+            },
+            "target_sector" : {
+              "sector" : "general",
+              "sector_name" : "Other",
+              "sector_name_th" : "อื่นๆ",
+              "icon" : "\uD83C\uDF10",
+              "confidence" : 0.0,
+              "matched_keywords" : [ ],
+              "matched_actors" : [ ],
+              "risk_bonus" : 0,
+              "score" : 0,
+              "maxScore" : 15,
+              "reason" : "ไม่ระบุเซกเตอร์เป้าหมาย",
+              "reasonEn" : "No specific sector identified",
+              "classification_method" : "keyword_fallback",
+              "methodology" : "วิเคราะห์จากคำสำคัญ โดเมน และกลุ่มผู้โจมตี",
+              "methodologyEn" : "Analyzed from keywords, domain patterns, and threat actors",
+              "scoringRules" : "Multiplier: critical_infrastructure=1.15, government=1.12, healthcare=1.10, financial=1.10, technology=1.05",
+              "score_before_policy" : 0,
+              "risk_bonus_original" : 0,
+              "multiplier_used" : 1.0
+            },
+            "policy_gate" : {
+              "triggered" : false,
+              "adjustments" : [ ]
+            }
+          },
+          "ai_top_factors" : [
+            {
+              "factor" : "threat_type_severity",
+              "score" : 60.0,
+              "weighted_score" : 18.0,
+              "label" : "ประเภทภัยคุกคาม (AI)"
+            },
+            {
+              "factor" : "source_quality",
+              "score" : 46.0,
+              "weighted_score" : 11.5,
+              "label" : "คุณภาพแหล่งข้อมูล"
+            },
+            {
+              "factor" : "cross_source",
+              "score" : 20.0,
+              "weighted_score" : 4.0,
+              "label" : "การยืนยันข้ามแหล่ง"
+            },
+            {
+              "factor" : "keywords",
+              "score" : 10.0,
+              "weighted_score" : 1.0,
+              "label" : "คำสำคัญอันตราย"
+            },
+            {
+              "factor" : "mitre_techniques",
+              "score" : 20.0,
+              "weighted_score" : 1.0,
+              "label" : "MITRE ATT&CK (AI)"
+            }
+          ],
+          "score_model_version" : "scoring-v3.0.0",
+          "score_config_version" : "weights-v2-ioc-aware",
+          "credibility_score" : 16,
+          "impact_score" : 20,
+          "validation_status" : "validated",
+          "validation_reasons" : [ ],
+          "warehouse_eligible" : true,
+          "review_required" : false,
+          "review_state" : "not_required",
+          "cleaning_flags" : [ ],
+          "sanitization_summary" : {
+            "sanitized" : false,
+            "redaction_counts" : { },
+            "flagged_fields" : [ ],
+            "flags" : [ ]
+          },
+          "cluster_label" : null,
+          "cluster_probability" : null,
+          "action_required" : true,
+          "action_status" : "open",
+          "action_title" : "Security Action Detail",
+          "action_reason" : "ioc_follow_up",
+          "action_opened_at" : "2025-11-11T10:24:22.782612Z",
+          "action_updated_at" : "2025-11-11T10:24:22.782612Z",
+          "action_closed_at" : null,
+          "action_closed_reason" : null,
+          "processed_at" : "2026-05-21T15:36:46.515433+00:00",
+          "created_at" : "2026-05-21T15:36:46.515433+00:00",
+          "reviewed_by" : null,
+          "reviewed_at" : null,
+          "review_notes" : null,
+          "partner_id" : null,
+          "submitted_by_partner" : null,
+          "tlp" : "amber",
+          "published_at" : "2026-05-21T15:36:46.515433+00:00",
+          "last_shared_at" : "2026-05-21T15:36:46.515433+00:00",
+          "revoked_at" : null,
+          "sharing_status" : "active"
+        },
+        "sort" : [
+          1779377806515
+        ]
+      }
+    ]
+  }
+}
