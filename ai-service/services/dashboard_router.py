@@ -7240,11 +7240,16 @@ def list_iocs(
     sort_order: str = "desc",
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     cache_key = _cache_key("list_iocs", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, sources=sources, threat_types=threat_types, risk_levels=risk_levels, ioc_types=ioc_types, severities=severities, high_risk_only=high_risk_only, sort_by=sort_by, sort_order=sort_order)
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    min_risk_score = 80 if high_risk_only else None
+    # Phase 2.4-2: "high risk" matches the scoring-v3.0.0 cutoff of 50
+    # (the threshold for `high`/`critical`). The previous 80 floor only
+    # captured `critical` and made the toggle behave like a hidden
+    # "critical-only" filter from the user's perspective.
+    min_risk_score = 50 if high_risk_only else None
     search_result = _search_warehouse_docs(
         query_text=query or "*",
         start_date=start_date,
@@ -7380,7 +7385,7 @@ def ioc_events_by_query(
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
     """Events endpoint using query parameter (avoids %2F path decoding issues for URL IOCs)."""
-    return _ioc_events_impl(ioc_id, page, page_size, start_date, end_date)
+    return _ioc_events_impl(ioc_id, page, page_size, start_date, end_date, current_user=current_user)
 
 
 def _ioc_detail_impl(ioc_id: str):
@@ -7397,9 +7402,29 @@ def ioc_detail(ioc_id: str, current_user: Dict[str, Any] = Depends(require_dashb
     return _ioc_detail_impl(ioc_id)
 
 
-def _ioc_events_impl(ioc_id: str, page: int = 1, page_size: int = 20, start_date: Optional[str] = None, end_date: Optional[str] = None):
+IOC_EVENTS_MAX_FETCH = int(os.getenv("DASHBOARD_IOC_EVENTS_MAX_FETCH", "5000"))
+
+
+def _ioc_events_impl(
+    ioc_id: str,
+    page: int = 1,
+    page_size: int = 20,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: Optional[Dict[str, Any]] = None,
+):
+    _validate_dashboard_date_range(start_date, end_date)
     ioc_type, ioc_value = _split_indicator_id(ioc_id)
-    raw_docs = _fetch_datalake_by_indicators([(ioc_type, ioc_value)])
+    # Cap the datalake scroll so a hot IOC with 10K+ matching events doesn't
+    # pull megabytes into Python before pagination. The cap is configurable
+    # via DASHBOARD_IOC_EVENTS_MAX_FETCH.
+    raw_docs = _fetch_datalake_by_indicators([(ioc_type, ioc_value)], limit=IOC_EVENTS_MAX_FETCH)
+    # TLP:red events are admin-only; analysts must not see them through the
+    # IOC events feed. Drop them before date/page filtering so total counts
+    # match what the caller is allowed to see.
+    role = str((current_user or {}).get("role_name") or "").strip().lower()
+    if role not in ADMIN_ROLE_NAMES:
+        raw_docs = [d for d in raw_docs if str(d.get("tlp") or "amber").strip().lower() != "red"]
     start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
     docs = []
     for doc in raw_docs:
@@ -7438,7 +7463,10 @@ def ioc_events(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    return _ioc_events_impl(ioc_id, page, page_size, start_date, end_date)
+    return _ioc_events_impl(ioc_id, page, page_size, start_date, end_date, current_user=current_user)
+
+
+IOC_ANALYTICS_TABS = {"ioc-summary", "statistics-import"}
 
 
 @router.get("/ioc-analytics", tags=["IOCs"])
@@ -7448,6 +7476,9 @@ def ioc_analytics(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    if tab not in IOC_ANALYTICS_TABS:
+        raise HTTPException(status_code=400, detail=f"Unknown tab {tab!r}; expected one of {sorted(IOC_ANALYTICS_TABS)}")
+    _validate_dashboard_date_range(start_date, end_date)
     cache_key = _cache_key("ioc_analytics", tab=tab, start_date=start_date, end_date=end_date)
     cached = _cache_get(cache_key)
     if cached:

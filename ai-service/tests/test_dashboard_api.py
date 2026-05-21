@@ -1401,6 +1401,66 @@ def test_admin_cannot_self_delete_via_user_endpoint(client):
     assert "own account" in response.json()["detail"].lower()
 
 
+def test_ioc_events_hides_tlp_red_from_analyst(client, monkeypatch):
+    """Phase 2.4-1 regression: /iocs/{id}/events used to return RED-tagged
+    events for any authenticated user. Analysts must see the doc filtered
+    out; admins still see it.
+    """
+    test_client, fake_client = client
+    # Seed a RED-tagged datalake event for a known IOC.
+    fake_client.index_docs[fake_client.datalake_index]["dl-red-1"] = {
+        "ioc_value": "malicious.example",
+        "ioc_type": "domain",
+        "description": "Red-tagged sensitive observation",
+        "severity": 80,
+        "source_name": "Cyberint",
+        "tlp": "red",
+        "event_time": "2026-03-11T08:30:00Z",
+        "@timestamp": "2026-03-11T08:30:00Z",
+    }
+
+    analyst_headers = _login_as_analyst(test_client)
+    admin_headers = _login(test_client)
+
+    analyst_resp = test_client.get(
+        "/api/v1/iocs/domain::malicious.example/events",
+        headers=analyst_headers,
+    )
+    assert analyst_resp.status_code == 200
+    descriptions = [item.get("description", "") for item in analyst_resp.json()["data"]["items"]]
+    assert "Red-tagged sensitive observation" not in descriptions
+
+    admin_resp = test_client.get(
+        "/api/v1/iocs/domain::malicious.example/events",
+        headers=admin_headers,
+    )
+    assert admin_resp.status_code == 200
+    admin_descriptions = [item.get("description", "") for item in admin_resp.json()["data"]["items"]]
+    assert "Red-tagged sensitive observation" in admin_descriptions
+
+
+def test_ioc_analytics_rejects_unknown_tab(client):
+    """Phase 2.4-5 regression: unknown tab silently went to default branch
+    and cached a confusing empty payload. Must return 400 instead.
+    """
+    test_client, _ = client
+    headers = _login(test_client)
+    response = test_client.get("/api/v1/ioc-analytics?tab=not-a-tab", headers=headers)
+    assert response.status_code == 400
+    assert "unknown tab" in response.json()["detail"].lower()
+
+
+def test_ioc_list_rejects_inverted_date_range(client):
+    """Phase 2.4-4: date validation must extend to the IOC list endpoint."""
+    test_client, _ = client
+    headers = _login(test_client)
+    response = test_client.get(
+        "/api/v1/iocs?start_date=2026-05-21&end_date=2026-05-20",
+        headers=headers,
+    )
+    assert response.status_code == 400
+
+
 def test_operation_event_detail_hides_tlp_red_from_analyst(client):
     """Phase 2.3-2 regression: TLP:red docs were exposed via the event-detail
     endpoint to any authenticated user. Analysts must see a 404 (not 403, to
