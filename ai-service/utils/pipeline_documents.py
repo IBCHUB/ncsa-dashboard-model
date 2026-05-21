@@ -651,6 +651,9 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
         "first_seen": first_seen,
         "last_seen": last_seen,
         "ioc_age_days": ioc_age_days,
+        # Phase 1.10: domain_age_days retained as metadata for display only —
+        # no longer used in risk scoring (unified 6-factor scoring drops it).
+        "domain_age_days": domain_age_days,
         "geo_country": geo_countries[0] if geo_countries else None,
         "target_sector": target_sector.get("sector"),
         "target_sector_name": target_sector.get("sector_name"),

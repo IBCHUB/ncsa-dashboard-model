@@ -180,12 +180,11 @@ def test_enrichment_whois_domain_age_feeds_scorer():
     ])
 
     doc = result["document"]
-    # Domain age should flow into the score breakdown even though weight is 0%
-    breakdown = doc.get("ai_score_breakdown", {})
-    domain_age = breakdown.get("domain_age", {})
-    # The scorer received a real domain_age_days value from WHOIS
-    assert domain_age.get("days") is not None
-    assert domain_age["days"] > 1800
+    # Unified 6-factor scoring drops domain_age from breakdown,
+    # but the WHOIS-derived domain_age_days is still surfaced as
+    # top-level metadata in the warehouse document for display.
+    assert doc.get("domain_age_days") is not None
+    assert doc["domain_age_days"] > 1800
 
 
 def _make_domain_doc_with_whois_field(field_name: str, date_value: str) -> dict:
@@ -212,7 +211,7 @@ def test_whois_create_date_variant_feeds_domain_age():
     result = build_enriched_ioc_document([
         _make_domain_doc_with_whois_field("create_date", "2019-03-10T00:00:00Z"),
     ])
-    days = result["document"].get("ai_score_breakdown", {}).get("domain_age", {}).get("days")
+    days = result["document"].get("domain_age_days")
     assert days is not None and days > 2000
 
 
@@ -221,7 +220,7 @@ def test_whois_created_variant_feeds_domain_age():
     result = build_enriched_ioc_document([
         _make_domain_doc_with_whois_field("created", "2021-07-01T00:00:00Z"),
     ])
-    days = result["document"].get("ai_score_breakdown", {}).get("domain_age", {}).get("days")
+    days = result["document"].get("domain_age_days")
     assert days is not None and days > 500
 
 
@@ -230,7 +229,7 @@ def test_whois_regdate_variant_feeds_domain_age():
     result = build_enriched_ioc_document([
         _make_domain_doc_with_whois_field("regdate", "2023-01-15"),
     ])
-    days = result["document"].get("ai_score_breakdown", {}).get("domain_age", {}).get("days")
+    days = result["document"].get("domain_age_days")
     assert days is not None and days > 100
 
 
@@ -239,5 +238,5 @@ def test_whois_registered_on_variant_feeds_domain_age():
     result = build_enriched_ioc_document([
         _make_domain_doc_with_whois_field("registered_on", "2022-11-20T00:00:00Z"),
     ])
-    days = result["document"].get("ai_score_breakdown", {}).get("domain_age", {}).get("days")
+    days = result["document"].get("domain_age_days")
     assert days is not None and days > 100

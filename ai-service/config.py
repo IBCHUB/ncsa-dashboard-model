@@ -86,27 +86,20 @@ SECTOR_CONFIDENCE_THRESHOLD = 0.35
 # ============================================
 
 # Risk Scoring Weights (sum = 1.0)
-# NOTE: geo_risk removed - data source not auditable
-# These are the DEFAULT weights for domain/URL IOCs.
-# For hash/IP IOCs, inapplicable factors (domain_age, entropy) are
-# automatically redistributed — see scorer.py _effective_weights().
+# Unified 6-factor scoring — applies equally to all IOC types
+# (sha256, domain, url, ip, etc.). domain_age and entropy factors
+# were dropped: domain_age coverage is only 3-4% even after WHOIS
+# enrichment, and entropy is a weak DGA signal with high false-positives.
+# Their 15% combined weight was redistributed to the 6 universal factors.
 SCORING_WEIGHTS = {
-    # Reduced from 0.25 — 99.99% of cyberint IOCs are single-source so a heavy
-    # weight on cross-source corroboration penalises legitimate trusted-feed data.
-    "cross_source": 0.15,         # พบจากหลายแหล่ง
-    # Raised from 0.15 → 0.20 — trusted source quality carries more weight when
-    # cross-source corroboration is structurally limited.
-    "threat_intel_source": 0.20,  # แหล่งน่าเชื่อถือ
-    "high_risk_keywords": 0.10,   # คำสำคัญอันตราย
-    # Restored to 0.10 — Phase 1.8 wired enrichment.whois.creation_date as
-    # fallback so domain_age is available for enriched IOCs (~161 docs have WHOIS).
-    "domain_age": 0.10,           # อายุโดเมนจาก WHOIS enrichment
-    "entropy": 0.05,              # ความสุ่ม DGA (domain/URL เท่านั้น)
-    # Returned to 0.25 — domain_age restored, gave back 5%.
-    "threat_type_severity": 0.25, # AI: ประเภทภัยคุกคาม
-    "threat_actor": 0.10,         # AI: กลุ่มผู้โจมตี
-    "mitre_techniques": 0.05      # AI: MITRE ATT&CK
+    "cross_source":         0.20,  # พบจากหลายแหล่ง (+5% from 0.15)
+    "threat_intel_source":  0.25,  # แหล่งน่าเชื่อถือ (+5% from 0.20)
+    "high_risk_keywords":   0.10,  # คำสำคัญอันตราย
+    "threat_type_severity": 0.30,  # AI: ประเภทภัยคุกคาม (+5% from 0.25)
+    "threat_actor":         0.10,  # AI: กลุ่มผู้โจมตี
+    "mitre_techniques":     0.05,  # AI: MITRE ATT&CK
 }
+# Total: 1.00 — applies uniformly to all IOC types
 
 # Threat Type Severity Levels
 # Level 1 (Critical): Maximum impact, nation-state or destructive

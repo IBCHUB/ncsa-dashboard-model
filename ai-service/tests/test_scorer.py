@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.scorer import (  # noqa: E402
     calculate_cross_source_score,
     calculate_decay_factor,
-    calculate_domain_age_score,
     calculate_keyword_score,
     calculate_mitre_score,
     calculate_risk_score,
@@ -49,13 +48,6 @@ def test_keyword_score_uses_tiered_points():
     assert result["score"] == 90
     assert "ransomware" in [item.lower() for item in result["keywords"]]
     assert "exploit" in [item.lower() for item in result["keywords"]]
-
-
-def test_domain_age_score_matches_document_thresholds():
-    assert calculate_domain_age_score(15)["score"] == 100
-    assert calculate_domain_age_score(60)["score"] == 75
-    assert calculate_domain_age_score(200)["score"] == 25
-    assert calculate_domain_age_score(400)["score"] == 0
 
 
 def test_mitre_score_is_twenty_points_per_unique_technique():
@@ -181,8 +173,8 @@ def test_output_contains_doc_aligned_governance_fields():
 
     assert result["score_model_version"]
     assert result["score_config_version"]
-    # Weight tuned 2026-05-20: domain_age restored to 0.10 after Phase 1.8
-    # wired enrichment.whois.creation_date as fallback for WHOIS data.
-    assert result["breakdown"]["score_governance"]["weights"]["threat_type_severity"] == 0.25
-    assert result["breakdown"]["score_governance"]["weights"]["domain_age"] == 0.10
+    # Unified 6-factor weights — domain_age and entropy dropped.
+    assert result["breakdown"]["score_governance"]["weights"]["threat_type_severity"] == 0.30
+    assert "domain_age" not in result["breakdown"]["score_governance"]["weights"]
+    assert "entropy" not in result["breakdown"]["score_governance"]["weights"]
     assert 0 <= result["risk_score"] <= 100

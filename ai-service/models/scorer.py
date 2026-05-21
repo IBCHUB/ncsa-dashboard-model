@@ -1,14 +1,13 @@
 """
 Risk Scoring Model - Enhanced with NLP Classification
 
-Calculate risk scores for IOCs based on multiple factors:
+Calculate risk scores for IOCs based on 6 unified factors (applies to all IOC types):
 - Cross-source validation
 - Source reliability
 - High-risk keywords
-- Domain age
-- Entropy (DGA detection)
-- Geolocation risk
-- AI Classification (Threat Types, Actors, MITRE)
+- AI: Threat type severity
+- AI: Threat actor
+- AI: MITRE ATT&CK techniques
 """
 
 from typing import List, Dict, Any, Optional
@@ -40,19 +39,10 @@ WEIGHT_KEY_BY_FACTOR = {
     "cross_source": "cross_source",
     "source_quality": "threat_intel_source",
     "keywords": "high_risk_keywords",
-    "domain_age": "domain_age",
-    "entropy": "entropy",
     "threat_type_severity": "threat_type_severity",
     "threat_actor": "threat_actor",
     "mitre_techniques": "mitre_techniques"
 }
-
-# IOC types where domain_age and entropy factors are NOT applicable.
-_NON_DOMAIN_IOC_TYPES = frozenset({
-    "hash", "sha256", "sha1", "md5", "ip", "ipv4", "ipv6",
-    "email", "filename", "filepath", "registry", "mutex",
-    "certificate", "ja3", "jarm", "ssdeep",
-})
 
 # Patterns in description that imply malware for hash IOCs from trusted sources.
 _MALICIOUS_INDICATORS = re.compile(
@@ -61,28 +51,6 @@ _MALICIOUS_INDICATORS = re.compile(
     r"remote.access|command.and.control|c2\b|cnc",
     re.IGNORECASE,
 )
-
-
-def _effective_weights(ioc_type: str) -> Dict[str, float]:
-    """Return scoring weights adjusted for IOC type.
-
-    For non-domain IOC types (hash, IP, etc.), entropy weight is
-    redistributed proportionally to the remaining factors.
-    (domain_age is already 0.00 globally — no WHOIS data in datalake.)
-    This ensures hash IOCs are not penalized for inapplicable factors.
-    """
-    base = dict(SCORING_WEIGHTS)
-    ioc_lower = (ioc_type or "").strip().lower().replace("-", "").replace("_", "")
-
-    if ioc_lower in _NON_DOMAIN_IOC_TYPES:
-        # Collect weight from inapplicable factors (entropy only — domain_age is 0)
-        reclaimed = base.pop("domain_age", 0.0) + base.pop("entropy", 0.0)
-        if reclaimed > 0:
-            remaining_sum = sum(base.values())
-            if remaining_sum > 0:
-                scale = (remaining_sum + reclaimed) / remaining_sum
-                base = {k: round(v * scale, 4) for k, v in base.items()}
-    return base
 
 
 def _infer_threat_types_for_hash(
@@ -155,49 +123,6 @@ def _weighted_points(
     weight_key = WEIGHT_KEY_BY_FACTOR.get(factor)
     weight = w.get(weight_key, 0.0) if weight_key else 0.0
     return round(normalized * weight * 100, 3)
-
-
-def calculate_entropy(text: str) -> float:
-    """
-    Calculate Shannon entropy of a string.
-    High entropy suggests DGA-generated domains.
-    
-    Returns:
-        Entropy score (0-100)
-    """
-    if not text:
-        return 0.0
-    
-    # Remove TLD for domain analysis
-    text = text.split('.')[0] if '.' in text else text
-    
-    # Count character frequencies
-    freq = {}
-    for char in text.lower():
-        if char.isalnum():
-            freq[char] = freq.get(char, 0) + 1
-    
-    if not freq:
-        return 0.0
-    
-    # Calculate entropy
-    length = sum(freq.values())
-    entropy = 0.0
-    
-    for count in freq.values():
-        probability = count / length
-        entropy -= probability * math.log2(probability)
-    
-    # Scoring (Normalized to 0-100)
-    # Average English word entropy ~3.5
-    # Random strings usually > 4.0
-    val = round(entropy, 3)
-    if val > 4.2:
-        return 100.0
-    elif val > 3.8:
-        return 60.0
-    else:
-        return 0.0
 
 
 def calculate_keyword_score(text: str) -> Dict[str, Any]:
@@ -342,40 +267,6 @@ def calculate_cross_source_score(source_count: int, source_diversity: int = 1) -
     # PDF 01 defines corroboration as base step score multiplied by source-class independence.
     independence = _calculate_source_independence(source_diversity, source_count)
     return min(int(points * independence), 100)
-
-
-def calculate_domain_age_score(
-    age_days: Optional[int],
-    is_new_domain: bool = False
-) -> Dict[str, Any]:
-    """
-    Calculate risk score based on domain age.
-    Newer domains are riskier.
-    """
-    score = 0
-    description = "Unknown age"
-    
-    if is_new_domain or (age_days is not None and age_days < 30):
-        score = 100  # Very new domain
-        description = "Very new (<30 days)"
-    elif age_days is not None and age_days < 90:
-        score = 75
-        description = "New (30-90 days)"
-    elif age_days is not None and age_days < 180:
-        score = 50
-        description = "Recent (90-180 days)"
-    elif age_days is not None and age_days < 365:
-        score = 25
-        description = "Less than 1 year"
-    elif age_days is not None:
-        score = 0
-        description = f"Established ({age_days} days)"
-    
-    return {
-        "score": score,
-        "days": age_days,
-        "description": description
-    }
 
 
 def calculate_decay_factor(ioc_age_days: Optional[int]) -> Dict[str, Any]:
@@ -768,11 +659,8 @@ def calculate_risk_score(
     threat_classification = threat_classification or {}
     breakdown = {}
 
-    # IOC-type-aware weight redistribution:
-    # For hash/IP/email IOCs, domain_age and entropy weights are
-    # redistributed proportionally to the remaining applicable factors.
-    eff_weights = _effective_weights(ioc_type)
-    is_redistributed = eff_weights != dict(SCORING_WEIGHTS)
+    # Unified 6-factor scoring — weights apply equally to all IOC types.
+    # (domain_age and entropy factors were dropped — see config.SCORING_WEIGHTS.)
 
     # ==========================================
     # TRADITIONAL FACTORS
@@ -804,7 +692,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(cross_source_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("cross_source", cross_source_score, 100, eff_weights),
+        "weighted_score": _weighted_points("cross_source", cross_source_score, 100),
         "count": source_count,
         "source_diversity": source_diversity,
         "independence_factor": independence_factor,
@@ -849,7 +737,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(source_quality_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("source_quality", source_quality_score, 100, eff_weights),
+        "weighted_score": _weighted_points("source_quality", source_quality_score, 100),
         "trusted_sources": trusted_list,
         "news_sources": news_list,
         "other_sources": other_list,
@@ -872,50 +760,13 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(keyword_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("keywords", keyword_score, 100, eff_weights),
+        "weighted_score": _weighted_points("keywords", keyword_score, 100),
         "description": f"พบ {len(matched_keywords)} คำสำคัญ",
         "reason": f"พบคำสำคัญ: {', '.join(matched_keywords)}" if matched_keywords else "ไม่พบคำสำคัญที่น่าสงสัย",
         "reasonEn": f"Keywords found: {', '.join(matched_keywords)}" if matched_keywords else "No high-risk keywords found",
         "methodology": "ค้นหาคำสำคัญที่บ่งชี้ภัยคุกคาม เช่น ransomware, zero-day, exploit, APT, backdoor",
         "methodologyEn": "Search for keywords indicating threats like ransomware, zero-day, exploit, APT, backdoor",
         "scoringRules": "Tiered: Critical=30, High=20, Medium=10 คะแนน/คำ (cap 100)"
-    }
-    
-    # 4. Entropy (for domains/URLs)
-    entropy = 0.0
-    entropy_score = 0
-    entropy_description = "ไม่ได้วิเคราะห์"
-    entropy_reason = "ไม่ได้วิเคราะห์ (ไม่ใช่โดเมน/URL)"
-    
-    if ioc_type in ["domain", "url", "hostname"]:
-        entropy = calculate_entropy(ioc_value)
-        if entropy > 4.2:
-            entropy_score = 100
-            entropy_description = "สูงมาก (น่าสงสัย DGA)"
-            entropy_reason = f"Entropy = {entropy:.2f} (สูงมาก > 4.2) บ่งชี้ว่าอาจเป็นโดเมนที่สร้างจาก DGA"
-        elif entropy > 3.8:
-            entropy_score = 60
-            entropy_description = "สูง (อาจเป็น DGA)"
-            entropy_reason = f"Entropy = {entropy:.2f} (สูง > 3.8) อาจเป็นโดเมน DGA"
-        else:
-            entropy_score = 0
-            entropy_description = "ปกติ"
-            entropy_reason = f"Entropy = {entropy:.2f} (ปกติ)"
-    
-    entropy_norm = _raw_to_score100(entropy_score, 100)
-    breakdown["entropy"] = {
-        "value": entropy,
-        "raw_score": entropy_score,
-        "raw_max": 100,
-        "score": round(entropy_norm, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("entropy", entropy_norm, 100, eff_weights),
-        "description": entropy_description,
-        "reason": entropy_reason,
-        "reasonEn": f"Entropy value = {entropy:.2f}" if ioc_type in ["domain", "url", "hostname"] else "Not analyzed (not a domain/URL)",
-        "methodology": "คำนวณค่า Shannon Entropy ของชื่อโดเมน ค่าสูง = สุ่มมาก = อาจเป็น DGA (Domain Generation Algorithm)",
-        "methodologyEn": "Calculate Shannon Entropy of domain name. High entropy = more random = likely DGA",
-        "scoringRules": "Raw: Entropy > 4.2 = 100, > 3.8 = 60 (cap 100)"
     }
     
     # 5. Geolocation risk - DISABLED (data source not auditable)
@@ -934,31 +785,6 @@ def calculate_risk_score(
         "methodology": "ปิดใช้งานเพื่อความโปร่งใสและสามารถตรวจสอบได้",
         "methodologyEn": "Disabled for transparency and auditability",
         "scoringRules": "ปิดใช้งาน"
-    }
-    
-    # 6. Domain age (if applicable)
-    age_result = {"score": 0, "days": None, "description": "ไม่ใช่โดเมน"}
-    if ioc_type in ["domain", "url", "hostname"]:
-        age_result = calculate_domain_age_score(domain_age_days)
-    
-    age_reason = age_result.get("description", "ไม่ทราบ")
-    if domain_age_days is not None:
-        age_reason = f"อายุโดเมน {domain_age_days} วัน - {age_result.get('description', '')}"
-    
-    domain_age_raw = age_result["score"]
-    domain_age_score = _raw_to_score100(domain_age_raw, 100)
-    breakdown["domain_age"] = {
-        **age_result,
-        "raw_score": domain_age_raw,
-        "raw_max": 100,
-        "score": round(domain_age_score, 2),
-        "maxScore": 100,
-        "weighted_score": _weighted_points("domain_age", domain_age_score, 100, eff_weights),
-        "reason": age_reason,
-        "reasonEn": f"Domain age: {domain_age_days} days" if domain_age_days else "Domain age unknown",
-        "methodology": "วิเคราะห์อายุโดเมนจาก WHOIS โดเมนใหม่มากมีความเสี่ยงสูงกว่า",
-        "methodologyEn": "Analyze domain age from WHOIS. Newer domains are riskier.",
-        "scoringRules": "Raw: <30=100, <90=75, <180=50, <365=25 (cap 100)"
     }
     
     # ==========================================
@@ -1012,7 +838,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(threat_type_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("threat_type_severity", threat_type_score, 100, eff_weights),
+        "weighted_score": _weighted_points("threat_type_severity", threat_type_score, 100),
         "confidence_used": ai_confidence,
         "description": f"ตรวจพบ {len(threat_types)} ประเภทภัยคุกคาม",
         "reason": reason_str,
@@ -1037,7 +863,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(threat_actor_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("threat_actor", threat_actor_score, 100, eff_weights),
+        "weighted_score": _weighted_points("threat_actor", threat_actor_score, 100),
         "confidence_used": ai_confidence,
         "actors_found": actor_names,
         "description": f"กลุ่มผู้โจมตี: {', '.join(actor_names) if actor_names else 'ไม่ระบุ'} (Conf: {int(ai_confidence*100)}%)",
@@ -1062,7 +888,7 @@ def calculate_risk_score(
         "raw_max": 100,
         "score": round(mitre_score, 2),
         "maxScore": 100,
-        "weighted_score": _weighted_points("mitre_techniques", mitre_score, 100, eff_weights),
+        "weighted_score": _weighted_points("mitre_techniques", mitre_score, 100),
         "confidence_used": ai_confidence,
         "techniques_found": mitre_techniques,
         "description": f"MITRE tactics: {mitre_result['sophistication']} (Conf: {int(ai_confidence*100)}%)",
@@ -1083,8 +909,6 @@ def calculate_risk_score(
         "cross_source": breakdown["cross_source"]["weighted_score"],
         "source_quality": breakdown["source_quality"]["weighted_score"],
         "keywords": breakdown["keywords"]["weighted_score"],
-        "entropy": breakdown["entropy"]["weighted_score"],
-        "domain_age": breakdown["domain_age"]["weighted_score"],
         "threat_type_severity": breakdown["threat_type_severity"]["weighted_score"],
         "threat_actor": breakdown["threat_actor"]["weighted_score"],
         "mitre_techniques": breakdown["mitre_techniques"]["weighted_score"]
@@ -1106,8 +930,6 @@ def calculate_risk_score(
         "model_version": SCORE_MODEL_VERSION,
         "config_version": SCORE_CONFIG_VERSION,
         "weights": SCORING_WEIGHTS,
-        "effective_weights": eff_weights,
-        "weights_redistributed": is_redistributed,
         "ioc_type": ioc_type,
         "weighted_total_before_decay": weighted_total,
         "credibility_score": credibility_score,
@@ -1281,8 +1103,6 @@ def calculate_risk_score(
         ("cross_source", breakdown["cross_source"]["score"], weighted_components["cross_source"], "การยืนยันข้ามแหล่ง"),
         ("source_quality", breakdown["source_quality"]["score"], weighted_components["source_quality"], "คุณภาพแหล่งข้อมูล"),
         ("keywords", breakdown["keywords"]["score"], weighted_components["keywords"], "คำสำคัญอันตราย"),
-        ("entropy", breakdown["entropy"]["score"], weighted_components["entropy"], "การวิเคราะห์ Entropy"),
-        ("domain_age", breakdown["domain_age"]["score"], weighted_components["domain_age"], "อายุโดเมน"),
         ("threat_type_severity", breakdown["threat_type_severity"]["score"], weighted_components["threat_type_severity"], "ประเภทภัยคุกคาม (AI)"),
         ("threat_actor", breakdown["threat_actor"]["score"], weighted_components["threat_actor"], "กลุ่มผู้โจมตี (AI)"),
         ("mitre_techniques", breakdown["mitre_techniques"]["score"], weighted_components["mitre_techniques"], "MITRE ATT&CK (AI)"),
@@ -1345,7 +1165,7 @@ def calculate_risk_score(
         "top_factors": top_factors,
         "target_sector": sector_result,  # NEW: Include full sector info
         "summary": {
-            "traditional_score": cross_source_raw + source_quality["score"] + keyword_result["score"] + entropy_score + geo_result["score"] + age_result["score"],
+            "traditional_score": cross_source_raw + source_quality["score"] + keyword_result["score"] + geo_result["score"],
             "ai_score": threat_type_result["score"] + threat_actor_result["score"] + mitre_result["score"],
             "weighted_total_before_decay": weighted_total,
             "has_threat_actor": len(threat_actors) > 0,
