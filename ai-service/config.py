@@ -264,13 +264,55 @@ SECTORS = {
         "icon": "🏦",
         "weight": 1.3,  # Higher impact multiplier
         "keywords": [
+            # English
             "bank", "banking", "financial", "payment", "credit", "fintech",
             "trading", "cryptocurrency", "crypto", "wallet", "swift", "atm",
             "pos", "point of sale", "merchant", "insurance", "investment",
-            "stock", "exchange", "fund", "loan", "mortgage"
+            "stock", "exchange", "fund", "loan", "mortgage",
+            # Thai context (Phase 1.17)
+            "ธนาคาร", "การเงิน", "การธนาคาร", "หลักทรัพย์", "ลงทุน",
+            "ตลาดหลักทรัพย์", "บัตรเครดิต", "พร้อมเพย์", "promptpay",
+            # Thai bank brand tokens — only words >=4 chars to avoid substring false positives.
+            # Short codes (scb/ktb/bbl/uob/etc.) live in domains[] where token-level
+            # matching prevents 3-letter substring traps like "rtadlnacz".
+            "kasikorn", "kbank", "bangkokbank",
+            "krungsri", "krungthai", "ttbbank", "tmbthanachart",
+            "cimbthai", "thanachart", "ghbank", "lhbank",
+            "kiatnakin", "kkpfg",
+            # International brands often phished (Phase 1.17)
+            "paypal", "venmo", "zelle", "cashapp", "wise", "revolut", "n26",
+            "stripe", "square", "klarna", "afterpay",
+            # Crypto exchanges & wallets (very common phishing target)
+            "binance", "coinbase", "kraken", "bitfinex", "huobi", "okx",
+            "metamask", "trustwallet", "tokenpocket", "imtoken", "phantom",
+            "ledger", "trezor", "exodus", "uniswap", "pancakeswap",
+            # Major international banks
+            "hsbc", "citi", "citibank", "chase", "wellsfargo", "bofa",
+            "bankofamerica", "barclays", "santander", "bbva", "garanti",
+            "natwest", "rbs", "lloyds", "deutsche", "credit-suisse",
         ],
-        "domains": [".bank.", ".finance.", "pay.", "crypto."],
-        "threat_actors": ["Lazarus", "FIN7", "FIN8", "Carbanak", "Cobalt Group", 
+        "domains": [
+            ".bank.", ".finance.", "pay.", "crypto.",
+            # Thai bank domains — full domain substring (safe)
+            "scb.co.th", "scbeasy", "kasikornbank", "kbank.co.th",
+            "ktb.co.th", "bangkokbank.com", "krungsri.com",
+            "krungthai.com", "ttbbank.com", "uob.co.th",
+            "cimbthai.com", "thanachart.co.th", "ghbank.co.th",
+            "gsb.or.th", "lhbank.co.th", "kkpfg.com",
+            "bot.or.th", "set.or.th", "sec.or.th",
+            # Thai bank bare tokens — token-level match (split by . _ -) prevents false positives
+            "scb", "ktb", "bbl", "uob", "ghb", "gsb", "exim",
+            # International payment / crypto domains (full substring)
+            "paypal.com", "venmo.com", "cashapp.com", "stripe.com",
+            "binance.com", "coinbase.com", "kraken.com", "metamask.io",
+            "trustwallet.com", "tokenpocket.pro", "imtoken.io",
+            "hsbc.com", "chase.com", "wellsfargo.com", "barclays.com",
+            # International payment / crypto bare tokens (token-level match)
+            "paypal", "venmo", "stripe", "binance", "coinbase", "kraken",
+            "metamask", "trustwallet", "tokenpocket", "imtoken",
+            "hsbc", "chase", "barclays", "santander", "bbva", "garanti",
+        ],
+        "threat_actors": ["Lazarus", "FIN7", "FIN8", "Carbanak", "Cobalt Group",
                           "Qakbot", "TrickBot", "IcedID", "Emotet"]
     },
     "government": {
@@ -279,13 +321,30 @@ SECTORS = {
         "icon": "🏛️",
         "weight": 1.4,  # Highest impact multiplier
         "keywords": [
+            # English
             "government", "ministry", "agency", "federal", "state", "municipal",
             "embassy", "diplomatic", "military", "defense",
             "parliament", "senate", "congress", "election", "voting",
-            "public sector", "civil service", "national security"
+            "public sector", "civil service", "national security",
+            # Thai context (Phase 1.17)
+            "รัฐบาล", "กระทรวง", "กรม", "สำนัก", "หน่วยงานรัฐ",
+            "ภาครัฐ", "ราชการ", "ความมั่นคง", "กลาโหม",
+            # Thai gov agency tokens — only longer words (>=4 chars) safe for substring.
+            # Short 3-char codes (mof, mfa, moi, moe, moj, mol, nia, rta, rtn) moved to
+            # domains[] where token-level matching avoids false positives.
+            "ncsa", "etda", "depa", "moph", "moac", "rtaf", "rtarf", "isoc",
         ],
-        "domains": [".gov.", ".go.th", ".mil.", ".mod.", ".mfa."],
-        "threat_actors": ["APT28", "APT29", "APT41", "Sandworm", "Turla", 
+        "domains": [
+            ".gov.", ".go.th", ".mil.", ".mod.", ".mfa.",
+            # Thai government domains (full substring — safe)
+            "etda.or.th", "depa.or.th", "ncsa.or.th",
+            "moph.go.th", "mof.go.th", "mfa.go.th", "moe.go.th",
+            "moac.go.th", "moj.go.th", "mol.go.th", "moi.go.th",
+            "rtaf.mi.th", "navy.mi.th", "rta.mi.th",
+            # Short Thai gov agency tokens (token-level match avoids false positives)
+            "mof", "mfa", "moi", "moe", "moj", "mol", "nia", "rta", "rtn",
+        ],
+        "threat_actors": ["APT28", "APT29", "APT41", "Sandworm", "Turla",
                           "Equation Group", "Charming Kitten", "MuddyWater", "OilRig"]
     },
     "healthcare": {
@@ -294,12 +353,28 @@ SECTORS = {
         "icon": "🏥",
         "weight": 1.3,
         "keywords": [
+            # English
             "hospital", "health", "medical", "pharmaceutical", "clinic", "patient",
             "doctor", "nurse", "medicine", "drug", "vaccine", "laboratory",
             "diagnostic", "treatment", "surgery", "emergency", "ambulance",
-            "healthcare", "public health", "epidem"
+            "healthcare", "public health", "epidem",
+            # Thai context (Phase 1.17)
+            "สาธารณสุข", "โรงพยาบาล", "คลินิก", "การแพทย์",
+            "ยา", "วัคซีน", "อนามัย", "ผู้ป่วย", "แพทย์", "พยาบาล",
+            # Thai hospital brands
+            "siriraj", "ramathibodi", "chulalongkorn", "phyathai",
+            "bumrungrad", "samitivej", "bangkokhospital", "bdms",
+            "siphhospital", "rajavithi", "vichaiyut", "siphhospital",
+            "ku.ac.th", "mahidol", "phramongkutklao",
         ],
-        "domains": [".health.", ".hospital.", ".med.", ".clinic."],
+        "domains": [
+            ".health.", ".hospital.", ".med.", ".clinic.",
+            # Thai healthcare (Phase 1.17)
+            ".hosp.go.th", "moph.go.th",
+            "siriraj.go.th", "rama.mahidol.ac.th", "chula.ac.th",
+            "bangkokhospital.com", "samitivejhospitals.com",
+            "bumrungrad.com", "phyathai.com", "bdms.co.th",
+        ],
         "threat_actors": ["Conti", "Royal", "Ryuk", "Maze", "BlackCat"]
     },
     "education": {
@@ -308,11 +383,25 @@ SECTORS = {
         "icon": "🎓",
         "weight": 1.0,
         "keywords": [
+            # English
             "university", "school", "college", "education", "academic", "research",
             "student", "professor", "faculty", "campus", "library", "scholar",
-            "institute", "academy", "learning", "course", "curriculum"
+            "institute", "academy", "learning", "course", "curriculum",
+            # Thai context (Phase 1.17)
+            "มหาวิทยาลัย", "โรงเรียน", "การศึกษา", "นิสิต", "นักศึกษา",
+            "ครู", "อาจารย์", "วิทยาลัย", "สถาบัน",
+            # Thai universities
+            "chula", "mahidol", "thammasat", "kasetsart", "chiangmai",
+            "khonkaen", "ku.ac.th", "kmutt", "kmitl", "kmutnb",
+            "ait.ac.th", "mu.ac.th", "psu.ac.th",
         ],
-        "domains": [".edu.", ".ac.th", ".edu.th", ".ac.", ".university."],
+        "domains": [
+            ".edu.", ".ac.th", ".edu.th", ".ac.", ".university.",
+            # Thai universities (Phase 1.17)
+            "chula.ac.th", "mahidol.ac.th", "tu.ac.th", "ku.ac.th",
+            "cmu.ac.th", "kku.ac.th", "kmutt.ac.th", "kmitl.ac.th",
+            "kmutnb.ac.th", "psu.ac.th", "swu.ac.th", "mu.ac.th",
+        ],
         "threat_actors": ["Charming Kitten"]  # Known to target academics
     },
     "critical_infrastructure": {
@@ -321,12 +410,28 @@ SECTORS = {
         "icon": "⚡",
         "weight": 1.5,  # Highest impact
         "keywords": [
+            # English
             "power", "energy", "electricity", "water", "utility", "grid", "pipeline",
-            "telecom", "telecommunications", "network", "internet", "isp",
             "transportation", "rail", "airport", "port", "logistics",
-            "oil", "gas", "refinery", "nuclear", "dam", "scada", "ics", "ot"
+            "oil", "gas", "refinery", "nuclear", "dam", "scada", "ics", "ot",
+            # Thai context (Phase 1.17)
+            "พลังงาน", "ไฟฟ้า", "น้ำมัน", "ก๊าซ", "ประปา",
+            "การไฟฟ้า", "การประปา", "สาธารณูปโภค", "โรงไฟฟ้า",
+            # Thai utilities — only longer brand words safe for substring keyword match
+            "pttep", "pttgc", "irpc", "esso", "metropolitan",
+            "thai-airways", "airportthai", "thairailway",
         ],
-        "domains": [".energy.", ".power.", ".utility."],
+        "domains": [
+            ".energy.", ".power.", ".utility.",
+            # Thai utilities full domain (safe substring)
+            "egat.co.th", "pea.co.th", "mea.or.th",
+            "pttplc.com", "pttep.com", "pttgc.com",
+            "bangchak.co.th", "irpc.co.th",
+            "airportthai.co.th", "aot.co.th",
+            "srt.or.th", "mrta.co.th", "bts.co.th",
+            # Short Thai utility tokens (token-level match)
+            "egat", "pea", "mea", "ptt", "aot", "srt", "mrta", "bts", "bcp",
+        ],
         "threat_actors": ["Sandworm", "Xenotime", "Triton", "Havex"]
     },
     "technology": {
@@ -335,11 +440,44 @@ SECTORS = {
         "icon": "💻",
         "weight": 1.1,
         "keywords": [
+            # English
             "software", "hardware", "tech", "technology", "saas", "cloud",
             "data center", "hosting", "developer", "programming", "code",
-            "api", "platform", "startup", "vendor", "supplier", "mssp"
+            "api", "platform", "startup", "vendor", "supplier", "mssp",
+            # Telecom (moved from critical_infrastructure to align with dashboard taxonomy)
+            "telecom", "telecommunications", "network", "internet", "isp",
+            "mobile", "cellular", "broadband", "fiber", "5g",
+            # Thai context (Phase 1.17)
+            "เทคโนโลยี", "โทรคมนาคม", "อินเทอร์เน็ต", "ไอที", "ซอฟต์แวร์",
+            "ผู้ให้บริการอินเทอร์เน็ต", "เครือข่าย",
+            # Thai telecom + IT brands — only longer words safe for substring
+            "advanced-info", "truemove", "truemoveh", "true-corp",
+            "totalaccess", "cat-telecom", "samartcorp", "sammart", "interlink",
+            # Global cloud / CDN
+            "aws", "amazon-aws", "azure", "gcp", "cloudflare", "akamai",
+            "fastly", "github", "gitlab", "digitalocean", "linode",
+            # Major SaaS / social tech often phished (Phase 1.17)
+            "google", "gmail", "microsoft", "office365", "outlook",
+            "apple", "icloud", "yahoo", "dropbox",
+            "facebook", "instagram", "whatsapp", "messenger",
+            "twitter", "tiktok", "snapchat", "linkedin", "discord",
+            "telegram", "signal", "zoom", "teams", "slack",
+            "spotify", "netflix", "youtube", "amazon",
+            "airbnb", "uber", "lyft", "doordash",
+            "shopify", "wordpress", "wix", "squarespace",
         ],
-        "domains": [".tech.", ".io", ".dev", ".cloud."],
+        "domains": [
+            ".tech.", ".io", ".dev", ".cloud.",
+            # Thai telecom full domains (safe substring)
+            "ais.co.th", "truecorp.co.th", "truemoveh.com",
+            "dtac.co.th", "dtac.com", "nt.co.th", "nt-tv.co.th",
+            "tot.co.th", "cattelecom.com",
+            # Short Thai telecom tokens (token-level match)
+            "ais", "dtac", "tot",
+            # Global IT brand full domains
+            "amazonaws.com", "azure.com", "microsoft.com",
+            "cloudflare.com", "github.com", "githubusercontent.com",
+        ],
         "threat_actors": ["APT41", "Winnti", "Barium"]
     },
     "general": {

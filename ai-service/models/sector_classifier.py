@@ -23,14 +23,17 @@ logger = logging.getLogger(__name__)
 
 # Thai TLD heuristics: registrable suffix → sector
 # These run before keyword matching so government-domain IOCs always classify.
+# Phase 1.17: ".mil.th" / ".mil" remapped from "defense" (non-existent sector key)
+#             to "government" (NCSA taxonomy = Substantive Public Services).
 TLD_SECTOR_HINTS = (
     (".go.th", "government", "tld_go_th"),
     (".gov.th", "government", "tld_gov_th"),
-    (".mil.th", "defense", "tld_mil_th"),
+    (".mi.th", "government", "tld_mi_th"),       # Phase 1.17: rtaf.mi.th, navy.mi.th, rta.mi.th
+    (".mil.th", "government", "tld_mil_th"),     # Phase 1.17: remapped from "defense"
     (".ac.th", "education", "tld_ac_th"),
     (".edu", "education", "tld_edu"),
     (".gov", "government", "tld_gov"),
-    (".mil", "defense", "tld_mil"),
+    (".mil", "government", "tld_mil"),            # Phase 1.17: remapped from "defense"
     (".bank", "financial", "tld_bank"),
 )
 
@@ -157,11 +160,27 @@ def classify_sector(
         score = keyword_score
 
         # 2. Domain pattern matching (weight: 0.3)
+        # Phase 1.17: dual-mode matching — legacy substring patterns (e.g. ".bank.",
+        # "scb.co.th") use case-insensitive substring; bare-token patterns (e.g.
+        # "scb", "kbank") are tested as exact labels split from hostname AND URL
+        # path, preventing false positives like "scbankside.com" while still
+        # catching brand impersonation in URL paths like "/scb/login.php".
         if ioc_type in ["domain", "url", "hostname", "fqdn", "uri"] and hostname:
+            hostname_tokens = set(re.split(r"[.\-_]+", hostname.lower())) - {""}
+            path_token_set = set(re.split(r"[/_\-.?=&]+", url_path.lower())) - {""} if url_path else set()
+            all_tokens = hostname_tokens | path_token_set
             for pattern in sector_config["domains"]:
-                if pattern.lower() in hostname:
-                    matched_domains.append(pattern)
-                    score += 0.15
+                p_lower = pattern.lower()
+                if "." in p_lower:
+                    # Legacy substring pattern (must contain a dot to be unambiguous)
+                    if p_lower in hostname:
+                        matched_domains.append(pattern)
+                        score += 0.15
+                else:
+                    # Bare token: must match an exact label in hostname OR url path
+                    if p_lower in all_tokens:
+                        matched_domains.append(pattern)
+                        score += 0.15
 
         # Cap domain contribution
         domain_score = min(len(matched_domains) * 0.15, 0.3)
