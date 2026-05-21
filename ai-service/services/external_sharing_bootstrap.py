@@ -221,6 +221,12 @@ class ExternalSharingState:
         payload = self.export_jobs.get(export_id)
         return deepcopy(payload) if payload else None
 
+    def delete_export_job(self, export_id: str) -> None:
+        """Remove a job + its file atomically (used by TTL expiry)."""
+        with self.lock:
+            self.export_jobs.pop(export_id, None)
+            self.export_files.pop(export_id, None)
+
     def get_export_file(self, export_id: str) -> Optional[Dict[str, Any]]:
         payload = self.export_files.get(export_id)
         if not payload:
