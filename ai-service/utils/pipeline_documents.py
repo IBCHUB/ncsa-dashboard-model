@@ -432,25 +432,16 @@ def build_enriched_ioc_document(ioc_docs: Sequence[Dict[str, Any]]) -> Dict[str,
             domain_age_candidates.append(int(doc_domain_age))
 
         # -----------------------------------------------------------
-        # Extract enrichment-level cross-source and domain-age data.
-        # The datalake enrichment object may contain:
-        #   enrichment.souce  — "Virustotal" or "Cyberint" (note: typo in field name)
+        # Extract enrichment-level WHOIS data for domain_age (display metadata).
+        # The enrichment object may contain:
         #   enrichment.whois.creation_date — domain registration date (ISO string)
-        # These provide genuine second-source corroboration and domain age
-        # that the primary adapter fields may not capture.
+        # Note: VirusTotal/Cyberint cross-source signals come from the proper
+        # extract_virustotal_evidence() / extract_cyberint_evidence() paths
+        # in datalake_adapters.py (they populate external_evidence_sources
+        # → wired into scoring_source_objects below).
         # -----------------------------------------------------------
         _enrichment = doc.get("enrichment")
         if isinstance(_enrichment, dict) and _enrichment:
-            # Cross-source: enrichment.souce is the enrichment provider name
-            _enrich_source = str(_enrichment.get("souce") or _enrichment.get("source") or "").strip()
-            if _enrich_source and _enrich_source not in source_names:
-                source_names.append(_enrich_source)
-                source_objects.append({
-                    "name": _enrich_source,
-                    "confidence": 50,  # moderate default — enrichment confirmed existence
-                    "type": "enrichment",
-                })
-
             # Domain age from WHOIS creation_date (fallback when domain_age_days not set)
             if doc_domain_age is None:
                 _whois = _enrichment.get("whois")

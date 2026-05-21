@@ -115,44 +115,6 @@ def test_raw_source_threat_types_are_mapped_before_ai_threat_types():
     assert "malware_payload" not in doc["ai_threat_types"]
 
 
-def test_enrichment_souce_is_added_as_cross_source():
-    """enrichment.souce ('Virustotal'/'Cyberint') should appear as an extra scoring source."""
-    result = build_enriched_ioc_document([
-        {
-            "_id": "cyb-1",
-            "_index": "cyberint_iocs-20260520",
-            "adapter_name": "cyberint_iocs",
-            "ioc_type": "domain",
-            "ioc_value": "evil-bank.com",
-            "source_name": "cyberint_iocs",
-            "source_type": "customer-datalake",
-            "description": "Phishing domain targeting banking customers",
-            "threat_type": ["phishing"],
-            "severity": "",
-            "confidence": 60,
-            "event_time": "2026-05-19T00:00:00+00:00",
-            "collect_time": "2026-05-20T00:00:00+00:00",
-            "enrichment": {
-                "souce": "Virustotal",
-                "whois": {
-                    "creation_date": "2026-05-10T00:00:00Z",
-                    "registrar": "Namecheap",
-                },
-            },
-        }
-    ])
-
-    doc = result["document"]
-    # Virustotal should appear as an additional source from enrichment
-    assert "Virustotal" in doc["sources"]
-    assert doc["source_count"] >= 2
-    # Score breakdown should reflect the cross-source enrichment
-    breakdown = doc.get("ai_score_breakdown", {})
-    cross_source = breakdown.get("cross_source", {})
-    assert cross_source.get("count", 0) >= 2
-    assert "Virustotal" in cross_source.get("sources_found", [])
-
-
 def test_enrichment_whois_domain_age_feeds_scorer():
     """When domain_age_days is None, WHOIS creation_date should be used for scoring."""
     result = build_enriched_ioc_document([
