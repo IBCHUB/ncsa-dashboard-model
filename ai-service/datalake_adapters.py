@@ -16,6 +16,33 @@ from typing import Any, Dict, List, Optional
 
 from utils.geoip_enrichment import enrich_geo_country
 
+try:
+    from utils.whois_enrichment import lookup_domain_age as _lookup_domain_age
+except ImportError:
+    _lookup_domain_age = None  # type: ignore[assignment]
+
+
+# Maps cyberint_iocs detected_activity values → MITRE ATT&CK technique IDs.
+# Each activity can map to 1-2 techniques. Used to populate
+# source_mitre_techniques so the scoring pipeline gets MITRE data
+# for the 10M cyberint_iocs docs that otherwise have no MITRE info.
+_CYBERINT_ACTIVITY_MITRE: Dict[str, List[str]] = {
+    "malware_payload":     ["T1587.001"],          # Develop Capabilities: Malware
+    "infecting_url":       ["T1189"],              # Drive-by Compromise
+    "phishing_website":    ["T1566.002"],          # Phishing: Spearphishing Link
+    "infected_machine":    ["T1204.002"],          # User Execution: Malicious File
+    "cnc_server":          ["T1102", "T1071"],     # Web Service + App Layer Protocol
+    "anonymization":       ["T1090"],              # Proxy
+    "infection_source":    ["T1190"],              # Exploit Public-Facing Application
+    "botnet":              ["T1583.005"],          # Acquire Infrastructure: Botnet
+    "malware":             ["T1587.001"],          # Develop Capabilities: Malware
+    "compromised_website": ["T1189"],              # Drive-by Compromise
+    "payload_delivery":    ["T1105"],              # Ingress Tool Transfer
+    "credential_theft":    ["T1539", "T1555"],     # Steal Web Session Cookie + Credentials
+    "data_exfiltration":   ["T1048"],              # Exfiltration Over Alternative Protocol
+    "ransomware":          ["T1486"],              # Data Encrypted for Impact
+}
+
 
 def _as_text(value: Any) -> str:
     return str(value or "").strip()
@@ -671,6 +698,10 @@ def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value)
     _sev_str = raw.get("severity_score")
     severity_score_raw: Optional[int] = _parse_int(_sev_str) if _sev_str is not None else None
     confidence_raw = _parse_int(raw.get("confidence"), 0)
+
+    # Map detected_activity → MITRE ATT&CK technique IDs
+    mitre_from_activity: List[str] = _CYBERINT_ACTIVITY_MITRE.get(activity, [])
+
     source_evidence = _compact_evidence({
         "evidence_type": "cyberint",
         "external_evidence_sources": ["cyberint_iocs"],
@@ -678,7 +709,15 @@ def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value)
         "source_actionable": severity_score_raw is not None and severity_score_raw >= 60,
         "source_confidence": confidence_raw,
         "source_threat_types": [activity] if activity else [],
+        "source_mitre_techniques": mitre_from_activity,
     })
+
+    # WHOIS domain age enrichment for URL/domain IOC types
+    ioc_type_val = _as_text(raw.get("ioc_type"))
+    ioc_value_val = _as_text(raw.get("ioc_value"))
+    domain_age: Optional[int] = None
+    if _lookup_domain_age is not None:
+        domain_age = _lookup_domain_age(ioc_value_val, ioc_type_val)
 
     return _finalize(
         hit,
@@ -702,7 +741,7 @@ def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value)
         source_url="",
         source_id=raw.get("id") or hit.get("_id"),
         enrichment=raw.get("enrichment") if isinstance(raw.get("enrichment"), dict) else {},
-        domain_age_days=None,
+        domain_age_days=domain_age,
         source_evidence=source_evidence,
     )
 

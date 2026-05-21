@@ -158,3 +158,33 @@ def test_related_entities_non_actor_types_ignored():
     }
     ev = _extract_related_entities_evidence(enrichment)
     assert ev.get("source_threat_actors", []) == []
+
+
+# ---------------------------------------------------------------------------
+# _CYBERINT_ACTIVITY_MITRE — activity → MITRE mapping
+# ---------------------------------------------------------------------------
+
+def test_malware_payload_maps_to_mitre():
+    """malware_payload activity should produce T1587.001."""
+    from datalake_adapters import _CYBERINT_ACTIVITY_MITRE
+    techs = _CYBERINT_ACTIVITY_MITRE.get("malware_payload", [])
+    assert "T1587.001" in techs
+
+def test_cnc_server_maps_to_two_techniques():
+    """cnc_server should map to both T1102 and T1071."""
+    from datalake_adapters import _CYBERINT_ACTIVITY_MITRE
+    techs = _CYBERINT_ACTIVITY_MITRE.get("cnc_server", [])
+    assert "T1102" in techs
+    assert "T1071" in techs
+
+def test_phishing_website_maps_to_mitre():
+    """phishing_website should map to T1566.002."""
+    from datalake_adapters import _CYBERINT_ACTIVITY_MITRE
+    techs = _CYBERINT_ACTIVITY_MITRE.get("phishing_website", [])
+    assert "T1566.002" in techs
+
+def test_unknown_activity_returns_empty():
+    """Unknown activity type should return empty list."""
+    from datalake_adapters import _CYBERINT_ACTIVITY_MITRE
+    techs = _CYBERINT_ACTIVITY_MITRE.get("nonexistent_activity", [])
+    assert techs == []

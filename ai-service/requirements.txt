@@ -28,3 +28,6 @@ elasticsearch==8.15.1
 
 # GeoIP Enrichment (MaxMind GeoLite2-Country)
 geoip2==4.8.1
+
+# WHOIS domain age enrichment
+python-whois==0.9.5
