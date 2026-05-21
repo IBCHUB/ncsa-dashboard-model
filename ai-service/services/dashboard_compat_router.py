@@ -36,7 +36,7 @@ def _compat_overview(overview: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "ActiveIOC": int(safe.get("active_ioc") or 0),
         "CriticalIOCActive": int(safe.get("critical_ioc_active") or 0),
         "NewIOC": int(safe.get("new_ioc") or 0),
-        "SourcesActive": str(safe.get("sources_active") or 0),
+        "SourcesActive": int(safe.get("sources_active") or 0),
     }
 
 
@@ -132,7 +132,7 @@ def compat_login(request: dashboard_router.LoginRequest):
         "user": payload["user"],
     }
     response = JSONResponse(response_payload)
-    response.set_cookie("token", payload["access_token"], httponly=False, samesite="strict")
+    response.set_cookie("token", payload["access_token"], httponly=True, samesite="strict")
     return response
 
 

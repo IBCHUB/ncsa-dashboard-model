@@ -1317,7 +1317,7 @@ def test_compat_operations_shapes(client):
         "ActiveIOC": 3,
         "CriticalIOCActive": 2,
         "NewIOC": 3,
-        "SourcesActive": "2",
+        "SourcesActive": 2,
     }
 
     incident = test_client.get("/incidentbyseverity?start_date=2026-03-10&end_date=2026-03-11")
@@ -1808,3 +1808,43 @@ def test_export_size_limit_rejected(client, monkeypatch):
         },
     )
     assert resp.status_code == 413, f"oversized export must return 413, got {resp.status_code}: {resp.text}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.8 — Compat Router regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_phase_2_8_login_cookie_is_httponly(client):
+    """BUG-2.8-1 regression: compat /login must set httponly=True on the token cookie."""
+    test_client, _ = client
+    resp = test_client.post("/login", json={"username": "admin", "password": "admin123!"})
+    assert resp.status_code == 200
+
+    # TestClient exposes Set-Cookie via the response headers.
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "httponly" in set_cookie.lower(), (
+        f"token cookie must carry HttpOnly flag but got: {set_cookie!r}"
+    )
+
+
+def test_phase_2_8_compat_overview_transformer_returns_int():
+    """BUG-2.8-2 regression: _compat_overview must return SourcesActive as int, not str."""
+    result = dashboard_compat_router._compat_overview({"sources_active": 5})
+    assert isinstance(result["SourcesActive"], int)
+    assert result["SourcesActive"] == 5
+
+    result_str_input = dashboard_compat_router._compat_overview({"sources_active": "3"})
+    assert isinstance(result_str_input["SourcesActive"], int)
+    assert result_str_input["SourcesActive"] == 3
+
+    result_none = dashboard_compat_router._compat_overview({"sources_active": None})
+    assert isinstance(result_none["SourcesActive"], int)
+    assert result_none["SourcesActive"] == 0
+
+    # All other fields must remain int too — full shape check.
+    full = dashboard_compat_router._compat_overview(
+        {"active_ioc": 10, "critical_ioc_active": 4, "new_ioc": 7, "sources_active": 2}
+    )
+    assert full == {"ActiveIOC": 10, "CriticalIOCActive": 4, "NewIOC": 7, "SourcesActive": 2}
+    assert all(isinstance(v, int) for v in full.values())
