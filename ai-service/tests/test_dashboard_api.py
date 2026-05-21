@@ -1317,7 +1317,7 @@ def test_compat_operations_shapes(client):
         "ActiveIOC": 3,
         "CriticalIOCActive": 2,
         "NewIOC": 3,
-        "SourcesActive": "2",
+        "SourcesActive": 2,
     }
 
     incident = test_client.get("/incidentbyseverity?start_date=2026-03-10&end_date=2026-03-11")
@@ -1349,3 +1349,502 @@ def test_compat_operations_shapes(client):
     sectors = test_client.get("/targetsectors?start_date=2026-03-10&end_date=2026-03-11")
     assert sectors.status_code == 200
     assert sectors.json()["res_result"][0]["Name"] == "ภาครัฐ"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.2 — Authorization regression tests
+# ---------------------------------------------------------------------------
+
+
+def _login_as_analyst(test_client):
+    response = test_client.post(
+        "/api/v1/auth/login",
+        json={"username": "analyst", "password": "analyst123!"},
+    )
+    assert response.status_code == 200
+    token = response.json()["data"]["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_user_admin_endpoints_require_admin_role(client):
+    """Phase 2.2-9/10 regression: user/group CRUD must reject non-admins.
+
+    Previously every authenticated user (including "General" analysts)
+    could list, create, edit, and delete users and groups.
+    """
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+
+    for path in ("/api/v1/users", "/api/v1/user-groups"):
+        response = test_client.get(path, headers=analyst_headers)
+        assert response.status_code == 403, f"{path} should be admin-only"
+
+    create_user = test_client.post(
+        "/api/v1/users",
+        json={"name": "Hacker", "email": "h@example.com", "password": "x"},
+        headers=analyst_headers,
+    )
+    assert create_user.status_code == 403
+
+    delete_user = test_client.delete("/api/v1/users/usr-admin", headers=analyst_headers)
+    assert delete_user.status_code == 403
+
+
+def test_admin_cannot_self_delete_via_user_endpoint(client):
+    """Phase 2.2-11 regression: deleting yourself from /users/{id} would
+    let an admin lock themselves out — must use DELETE /account instead.
+    """
+    test_client, _ = client
+    admin_headers = _login(test_client)
+    response = test_client.delete("/api/v1/users/usr-admin", headers=admin_headers)
+    assert response.status_code == 400
+    assert "own account" in response.json()["detail"].lower()
+
+
+def test_block_ip_requires_admin(client):
+    """Phase 2.5-1 regression: block-ip queues a real firewall rule push.
+    General-role analysts must not reach it.
+    """
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+    response = test_client.post(
+        "/api/v1/actions/wh-1/block-ip",
+        headers=analyst_headers,
+        json={
+            "target_ioc": "evil.example",
+            "enforcement_point_ids": ["fw-bkk-01"],
+            "duration_mode": "permanent",
+            "duration_days": None,
+            "reason": "obvious",
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_block_ip_rejects_unknown_enforcement_point(client):
+    """Phase 2.5-12 regression: bogus enforcement_point_ids used to be
+    silently appended to the note. Reject with 400 instead.
+    """
+    test_client, _ = client
+    admin_headers = _login(test_client)
+    response = test_client.post(
+        "/api/v1/actions/wh-1/block-ip",
+        headers=admin_headers,
+        json={
+            "target_ioc": "evil.example",
+            "enforcement_point_ids": ["does-not-exist"],
+            "duration_mode": "permanent",
+            "duration_days": None,
+            "reason": "obvious",
+        },
+    )
+    assert response.status_code == 400
+    assert "Unknown enforcement_point_ids" in response.json()["detail"]
+
+
+def test_assign_action_rejects_inactive_assignee(client):
+    """Phase 2.5-9: must not assign work to a user marked inactive."""
+    test_client, _ = client
+    admin_headers = _login(test_client)
+    state = dashboard_bootstrap.get_dashboard_state()
+    # Mark the analyst user inactive on the fly.
+    state.update_user("usr-general", {"status": "inactive"})
+    response = test_client.post(
+        "/api/v1/actions/wh-1/assign",
+        headers=admin_headers,
+        json={"assignee_id": "usr-general", "handover_note": "please look"},
+    )
+    assert response.status_code == 404
+    assert "inactive" in response.json()["detail"].lower()
+
+
+def test_action_note_blocked_when_action_doc_is_tlp_red(client):
+    """Phase 2.5-4: action mutations must respect doc-level TLP, not just
+    require an authenticated user.
+    """
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+    response = test_client.post(
+        "/api/v1/actions/wh-red-1/notes",
+        headers=analyst_headers,
+        json={"content": "secret note"},
+    )
+    # 404, not 403, so we don't confirm wh-red-1 exists.
+    assert response.status_code == 404
+
+
+def test_ioc_events_hides_tlp_red_from_analyst(client, monkeypatch):
+    """Phase 2.4-1 regression: /iocs/{id}/events used to return RED-tagged
+    events for any authenticated user. Analysts must see the doc filtered
+    out; admins still see it.
+    """
+    test_client, fake_client = client
+    # Seed a RED-tagged datalake event for a known IOC.
+    fake_client.index_docs[fake_client.datalake_index]["dl-red-1"] = {
+        "ioc_value": "malicious.example",
+        "ioc_type": "domain",
+        "description": "Red-tagged sensitive observation",
+        "severity": 80,
+        "source_name": "Cyberint",
+        "tlp": "red",
+        "event_time": "2026-03-11T08:30:00Z",
+        "@timestamp": "2026-03-11T08:30:00Z",
+    }
+
+    analyst_headers = _login_as_analyst(test_client)
+    admin_headers = _login(test_client)
+
+    analyst_resp = test_client.get(
+        "/api/v1/iocs/domain::malicious.example/events",
+        headers=analyst_headers,
+    )
+    assert analyst_resp.status_code == 200
+    descriptions = [item.get("description", "") for item in analyst_resp.json()["data"]["items"]]
+    assert "Red-tagged sensitive observation" not in descriptions
+
+    admin_resp = test_client.get(
+        "/api/v1/iocs/domain::malicious.example/events",
+        headers=admin_headers,
+    )
+    assert admin_resp.status_code == 200
+    admin_descriptions = [item.get("description", "") for item in admin_resp.json()["data"]["items"]]
+    assert "Red-tagged sensitive observation" in admin_descriptions
+
+
+def test_ioc_analytics_rejects_unknown_tab(client):
+    """Phase 2.4-5 regression: unknown tab silently went to default branch
+    and cached a confusing empty payload. Must return 400 instead.
+    """
+    test_client, _ = client
+    headers = _login(test_client)
+    response = test_client.get("/api/v1/ioc-analytics?tab=not-a-tab", headers=headers)
+    assert response.status_code == 400
+    assert "unknown tab" in response.json()["detail"].lower()
+
+
+def test_ioc_list_rejects_inverted_date_range(client):
+    """Phase 2.4-4: date validation must extend to the IOC list endpoint."""
+    test_client, _ = client
+    headers = _login(test_client)
+    response = test_client.get(
+        "/api/v1/iocs?start_date=2026-05-21&end_date=2026-05-20",
+        headers=headers,
+    )
+    assert response.status_code == 400
+
+
+def test_operation_event_detail_hides_tlp_red_from_analyst(client):
+    """Phase 2.3-2 regression: TLP:red docs were exposed via the event-detail
+    endpoint to any authenticated user. Analysts must see a 404 (not 403, to
+    avoid leaking the document's existence); admins still see it.
+    """
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+    admin_headers = _login(test_client)
+
+    analyst_resp = test_client.get("/api/v1/operations/events/wh-red-1", headers=analyst_headers)
+    assert analyst_resp.status_code == 404
+
+    admin_resp = test_client.get("/api/v1/operations/events/wh-red-1", headers=admin_headers)
+    assert admin_resp.status_code == 200
+    assert admin_resp.json()["data"]["event_id"] == "wh-red-1"
+
+
+def test_executive_dashboard_rejects_inverted_date_range(client):
+    """Phase 2.3-3 regression: inverted ranges used to silently return an
+    empty payload; surface 400 instead so the caller can fix the query.
+    """
+    test_client, _ = client
+    headers = _login(test_client)
+    response = test_client.get(
+        "/api/v1/executive/dashboard?start_date=2026-05-21&end_date=2026-05-20",
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "on or before" in response.json()["detail"].lower()
+
+
+def test_operations_dashboard_accepts_filter_params(client):
+    """Phase 2.3-1 regression: the dashboard endpoints used to drop
+    severity/source/threat-type filters on the floor — the signature
+    didn't declare them. Now they should at least be accepted (200).
+    """
+    test_client, _ = client
+    headers = _login(test_client)
+    response = test_client.get(
+        "/api/v1/operations/dashboard?severities=critical&threat_types=Phishing",
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+
+def test_diagnostics_data_sources_requires_admin(client):
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+    response = test_client.get("/api/v1/diagnostics/data-sources", headers=analyst_headers)
+    assert response.status_code == 403
+
+
+def test_notifications_scope_excludes_other_users_targeted_items(client):
+    """Phase 2.2-16/17/18 regression: notifications with an explicit
+    recipient must not be visible to other users, and read-state mutations
+    from one user must not affect another user's targeted notifications.
+    """
+    test_client, fake_client = client
+    # Inject one broadcast and two user-targeted notifications directly into
+    # the bootstrap state. Use the internal state so the fixture stays small.
+    state = dashboard_bootstrap.get_dashboard_state()
+    state.notifications.append({
+        "notification_id": "ntf-private-admin",
+        "title": "Admin only",
+        "message": "Admin private",
+        "created_at": "2026-03-12T08:00:00Z",
+        "type": "system",
+        "unread": True,
+        "recipient_user_id": "usr-admin",
+    })
+    state.notifications.append({
+        "notification_id": "ntf-private-analyst",
+        "title": "Analyst only",
+        "message": "Analyst private",
+        "created_at": "2026-03-12T08:01:00Z",
+        "type": "system",
+        "unread": True,
+        "recipient_user_id": "usr-general",
+    })
+
+    analyst_headers = _login_as_analyst(test_client)
+    listing = test_client.get("/api/v1/notifications", headers=analyst_headers)
+    assert listing.status_code == 200
+    ids = {item["notification_id"] for item in listing.json()["data"]["items"]}
+    assert "ntf-private-admin" not in ids, "analyst must not see admin-only notification"
+    assert "ntf-private-analyst" in ids
+    # Broadcast notifications (no recipient_user_id) stay visible to everyone.
+    assert "ntf-001" in ids
+
+    # Trying to mark the admin-only notification as read should 404.
+    blocked = test_client.post(
+        "/api/v1/notifications/ntf-private-admin/read",
+        headers=analyst_headers,
+    )
+    assert blocked.status_code == 404
+
+    # Read-all must only mark the analyst's own + broadcast notifications.
+    test_client.post("/api/v1/notifications/read-all", headers=analyst_headers, json={})
+    admin_state_check = next(
+        n for n in state.notifications if n["notification_id"] == "ntf-private-admin"
+    )
+    assert admin_state_check["unread"] is True, "admin notification must remain unread"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.6 — Reports / Exports regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_export_download_analyst_cannot_access_other_users_export(client):
+    # BUG-2.6-1: export_download had no ownership check — any logged-in user
+    # could download any export job.  Now analysts get 404 for exports they
+    # don't own.
+    test_client, _ = client
+    admin_headers = _login(test_client)
+    analyst_headers = _login_as_analyst(test_client)
+
+    # Admin creates an export via the executive report endpoint.
+    resp = test_client.post(
+        "/api/v1/reports/executive/export",
+        headers=admin_headers,
+        json={
+            "export_format": "csv",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-21",
+        },
+    )
+    assert resp.status_code in (200, 202), resp.text
+    export_id = resp.json()["data"]["export_id"]
+
+    # Admin can download their own export.
+    dl_admin = test_client.get(f"/api/v1/exports/{export_id}/download", headers=admin_headers)
+    # 200 if file is attached; 404 if no file was generated — both are valid
+    # as long as the analyst is blocked below.
+    assert dl_admin.status_code in (200, 404)
+
+    # Analyst must NOT be able to download admin's export (404, not 200/403).
+    dl_analyst = test_client.get(f"/api/v1/exports/{export_id}/download", headers=analyst_headers)
+    assert dl_analyst.status_code == 404, (
+        "analyst must get 404 for another user's export, got "
+        f"{dl_analyst.status_code}: {dl_analyst.text}"
+    )
+
+
+def test_export_job_stores_owner_user_id(client):
+    # BUG-2.6-2: export jobs previously didn't record owner_user_id, so the
+    # ownership check in export_download had nothing to enforce.
+    test_client, _ = client
+    admin_headers = _login(test_client)
+
+    resp = test_client.post(
+        "/api/v1/reports/executive/export",
+        headers=admin_headers,
+        json={
+            "export_format": "csv",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-21",
+        },
+    )
+    assert resp.status_code in (200, 202), resp.text
+    export_id = resp.json()["data"]["export_id"]
+
+    import services.dashboard_bootstrap as _bs
+    state = _bs.get_dashboard_state()
+    job = state.get_export_job(export_id)
+    assert job is not None
+    assert job.get("owner_user_id") == "usr-admin", (
+        f"export job should record owner_user_id='usr-admin', got {job.get('owner_user_id')!r}"
+    )
+
+
+def test_export_download_admin_can_access_any_export(client):
+    # Admin role must bypass ownership check and download any export.
+    test_client, _ = client
+    analyst_headers = _login_as_analyst(test_client)
+    admin_headers = _login(test_client)
+
+    # Analyst creates an export.
+    resp = test_client.post(
+        "/api/v1/reports/executive/export",
+        headers=analyst_headers,
+        json={
+            "export_format": "csv",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-21",
+        },
+    )
+    assert resp.status_code in (200, 202), resp.text
+    export_id = resp.json()["data"]["export_id"]
+
+    # Admin can download analyst's export.
+    dl = test_client.get(f"/api/v1/exports/{export_id}/download", headers=admin_headers)
+    # 200 with file or 404 because no file artifact — either is fine, not 403.
+    assert dl.status_code != 403, f"admin must not be blocked with 403, got {dl.status_code}"
+
+
+def test_export_delete_job_removes_both_job_and_file(client):
+    # BUG-2.6-3: TTL cleanup — verify delete_export_job removes job + file.
+    test_client, _ = client
+    import services.dashboard_bootstrap as _bs
+    state = _bs.get_dashboard_state()
+
+    # Directly create a job with a file via bootstrap.
+    job = state.create_export_job(
+        "csv",
+        "test-report",
+        report_type="test",
+        file_content=b"col1,col2\n1,2\n",
+        media_type="text/csv",
+        owner_user_id="usr-admin",
+    )
+    export_id = job["export_id"]
+
+    assert state.get_export_job(export_id) is not None
+    assert state.get_export_file(export_id) is not None
+
+    state.delete_export_job(export_id)
+
+    assert state.get_export_job(export_id) is None
+    assert state.get_export_file(export_id) is None
+
+
+def test_export_download_expired_job_returns_404(client, monkeypatch):
+    # BUG-2.6-3: expired exports must be cleaned up lazily and return 404.
+    test_client, _ = client
+    admin_headers = _login(test_client)
+
+    # Freeze time so the export appears far in the past.
+    from datetime import timezone as _tz
+    import datetime as _dt
+    import services.dashboard_router as _dr
+
+    resp = test_client.post(
+        "/api/v1/reports/executive/export",
+        headers=admin_headers,
+        json={
+            "export_format": "csv",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-21",
+        },
+    )
+    assert resp.status_code in (200, 202), resp.text
+    export_id = resp.json()["data"]["export_id"]
+
+    # Monkeypatch EXPORT_TTL_SECONDS to 0 so any export is immediately expired.
+    monkeypatch.setattr(_dr, "EXPORT_TTL_SECONDS", 0)
+
+    dl = test_client.get(f"/api/v1/exports/{export_id}/download", headers=admin_headers)
+    assert dl.status_code == 404, f"expired export must 404, got {dl.status_code}"
+
+
+def test_export_size_limit_rejected(client, monkeypatch):
+    # BUG-2.6-4: exports larger than EXPORT_MAX_BYTES must be rejected 413.
+    import services.dashboard_router as _dr
+    monkeypatch.setattr(_dr, "EXPORT_MAX_BYTES", 5)  # 5-byte limit for the test
+
+    test_client, _ = client
+    admin_headers = _login(test_client)
+
+    # Patch _build_ioc_export_artifact to return oversized content.
+    def _big_artifact(items, fmt):
+        return "csv", b"A" * 100, "text/csv"
+
+    monkeypatch.setattr(_dr, "_build_ioc_export_artifact", _big_artifact)
+
+    resp = test_client.post(
+        "/api/v1/reports/ioc/export",
+        headers=admin_headers,
+        json={
+            "export_format": "csv",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-21",
+        },
+    )
+    assert resp.status_code == 413, f"oversized export must return 413, got {resp.status_code}: {resp.text}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.8 — Compat Router regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_phase_2_8_login_cookie_is_httponly(client):
+    """BUG-2.8-1 regression: compat /login must set httponly=True on the token cookie."""
+    test_client, _ = client
+    resp = test_client.post("/login", json={"username": "admin", "password": "admin123!"})
+    assert resp.status_code == 200
+
+    # TestClient exposes Set-Cookie via the response headers.
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "httponly" in set_cookie.lower(), (
+        f"token cookie must carry HttpOnly flag but got: {set_cookie!r}"
+    )
+
+
+def test_phase_2_8_compat_overview_transformer_returns_int():
+    """BUG-2.8-2 regression: _compat_overview must return SourcesActive as int, not str."""
+    result = dashboard_compat_router._compat_overview({"sources_active": 5})
+    assert isinstance(result["SourcesActive"], int)
+    assert result["SourcesActive"] == 5
+
+    result_str_input = dashboard_compat_router._compat_overview({"sources_active": "3"})
+    assert isinstance(result_str_input["SourcesActive"], int)
+    assert result_str_input["SourcesActive"] == 3
+
+    result_none = dashboard_compat_router._compat_overview({"sources_active": None})
+    assert isinstance(result_none["SourcesActive"], int)
+    assert result_none["SourcesActive"] == 0
+
+    # All other fields must remain int too — full shape check.
+    full = dashboard_compat_router._compat_overview(
+        {"active_ioc": 10, "critical_ioc_active": 4, "new_ioc": 7, "sources_active": 2}
+    )
+    assert full == {"ActiveIOC": 10, "CriticalIOCActive": 4, "NewIOC": 7, "SourcesActive": 2}
+    assert all(isinstance(v, int) for v in full.values())

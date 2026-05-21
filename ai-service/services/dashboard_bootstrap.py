@@ -565,27 +565,60 @@ class DashboardState:
             self.groups.pop(group_id, None)
             return True
 
-    def list_notifications(self) -> List[Dict[str, Any]]:
-        return [deepcopy(item) for item in self.notifications]
+    @staticmethod
+    def _notification_visible_to(notification: Dict[str, Any], user_id: Optional[str]) -> bool:
+        """Notifications without an explicit recipient are broadcast to everyone.
 
-    def mark_notification_read(self, notification_id: str) -> Optional[Dict[str, Any]]:
+        When a notification carries a `recipient_user_id`, only that user
+        sees it — preventing other users from reading or mutating it.
+        """
+        recipient = notification.get("recipient_user_id")
+        if recipient is None:
+            return True
+        return user_id is not None and recipient == user_id
+
+    def list_notifications(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [
+            deepcopy(item)
+            for item in self.notifications
+            if self._notification_visible_to(item, user_id)
+        ]
+
+    def mark_notification_read(
+        self,
+        notification_id: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         with self.lock:
             for notification in self.notifications:
-                if notification["notification_id"] == notification_id:
-                    notification["unread"] = False
-                    return deepcopy(notification)
+                if notification["notification_id"] != notification_id:
+                    continue
+                if not self._notification_visible_to(notification, user_id):
+                    return None
+                notification["unread"] = False
+                return deepcopy(notification)
         return None
 
-    def mark_all_notifications_read(self, notification_type: Optional[str] = None) -> Dict[str, int]:
+    def mark_all_notifications_read(
+        self,
+        notification_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, int]:
         with self.lock:
             count = 0
             for notification in self.notifications:
+                if not self._notification_visible_to(notification, user_id):
+                    continue
                 if notification_type and notification.get("type") != notification_type:
                     continue
                 if notification.get("unread"):
                     notification["unread"] = False
                     count += 1
-            unread_count = sum(1 for item in self.notifications if item.get("unread"))
+            unread_count = sum(
+                1
+                for item in self.notifications
+                if self._notification_visible_to(item, user_id) and item.get("unread")
+            )
             return {"marked_count": count, "unread_count": unread_count}
 
     def list_assignees(self, query: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -626,6 +659,7 @@ class DashboardState:
         filters: Optional[Dict[str, Any]] = None,
         file_content: Optional[bytes] = None,
         media_type: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         with self.lock:
             export_id = f"exp-{secrets.token_hex(4)}"
@@ -641,6 +675,7 @@ class DashboardState:
                 "completed_at": _isoformat(created_at),
                 "report_type": report_type or file_prefix,
                 "filters": deepcopy(filters or {}),
+                "owner_user_id": owner_user_id,
             }
             if file_content is not None:
                 self.export_files[export_id] = {
@@ -653,6 +688,11 @@ class DashboardState:
     def get_export_job(self, export_id: str) -> Optional[Dict[str, Any]]:
         job = self.export_jobs.get(export_id)
         return deepcopy(job) if job else None
+
+    def delete_export_job(self, export_id: str) -> None:
+        with self.lock:
+            self.export_jobs.pop(export_id, None)
+            self.export_files.pop(export_id, None)
 
     def get_export_file(self, export_id: str) -> Optional[Dict[str, Any]]:
         export_file = self.export_files.get(export_id)

@@ -26,6 +26,7 @@ class FakeElasticClient:
                     "source_name": "AbuseIPDB,ThreatFox",
                     "ai_risk_score": 92,
                     "ai_severity": "critical",
+                    "severity": "critical",
                     "ai_threat_types": ["Phishing"],
                     "ai_threat_actors": ["Lazarus"],
                     "ai_top_factors": [
@@ -68,6 +69,7 @@ class FakeElasticClient:
                     "source_name": "ThreatFox",
                     "ai_risk_score": 81,
                     "ai_severity": "high",
+                    "severity": "high",
                     "ai_threat_types": ["Malware"],
                     "ai_threat_actors": ["APT28"],
                     "ai_top_factors": [
@@ -104,6 +106,7 @@ class FakeElasticClient:
                     "source_name": "AbuseIPDB",
                     "ai_risk_score": 88,
                     "ai_severity": "critical",
+                    "severity": "critical",
                     "ai_threat_types": ["Phishing"],
                     "ai_threat_actors": ["Lazarus"],
                     "ai_classification_confidence": 0.96,
@@ -127,6 +130,7 @@ class FakeElasticClient:
                     "source_name": "AbuseIPDB",
                     "ai_risk_score": 95,
                     "ai_severity": "critical",
+                    "severity": "critical",
                     "ai_threat_types": ["Phishing"],
                     "ai_threat_actors": ["APT29"],
                     "event_time": "2026-03-11T09:00:00Z",
@@ -338,7 +342,87 @@ class FakeElasticClient:
             {"_id": doc_id, "_source": deepcopy(doc)}
             for doc_id, doc in filtered[start:start + size]
         ]
-        return {"hits": {"total": {"value": len(filtered)}, "hits": hits}}
+        response = {"hits": {"total": {"value": len(filtered)}, "hits": hits}}
+        aggs = body.get("aggs") or body.get("aggregations")
+        if aggs:
+            response["aggregations"] = self._compute_aggs(aggs, [doc for _, doc in filtered])
+        return response
+
+    def _compute_aggs(self, aggs, docs):
+        """Compute a small subset of ES aggs the dashboard uses: terms + filter."""
+        result = {}
+        for name, spec in aggs.items():
+            if "terms" in spec:
+                field = spec["terms"].get("field")
+                size = spec["terms"].get("size", 10)
+                missing = spec["terms"].get("missing")
+                bucket_counts = {}
+                for doc in docs:
+                    value = self._extract_field(doc, field)
+                    if value is None:
+                        if missing is not None:
+                            bucket_counts[missing] = bucket_counts.get(missing, 0) + 1
+                        continue
+                    values = value if isinstance(value, list) else [value]
+                    for v in values:
+                        key = str(v) if not isinstance(v, str) else v
+                        bucket_counts[key] = bucket_counts.get(key, 0) + 1
+                ordered = sorted(bucket_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:size]
+                buckets = [{"key": k, "doc_count": c} for k, c in ordered]
+                sub_aggs = {k: v for k, v in spec.items() if k != "terms"}
+                if sub_aggs:
+                    for bucket in buckets:
+                        matching = [d for d in docs if self._doc_in_bucket(d, field, bucket["key"])]
+                        bucket.update(self._compute_aggs(sub_aggs, matching))
+                result[name] = {"buckets": buckets, "sum_other_doc_count": 0, "doc_count_error_upper_bound": 0}
+            elif "filter" in spec:
+                clause = spec["filter"]
+                matching = [d for d in docs if self._match_clause(d, clause)]
+                result[name] = {"doc_count": len(matching)}
+                sub_aggs = {k: v for k, v in spec.items() if k != "filter"}
+                if sub_aggs:
+                    result[name].update(self._compute_aggs(sub_aggs, matching))
+            elif "value_count" in spec or "cardinality" in spec:
+                field = (spec.get("value_count") or spec.get("cardinality") or {}).get("field")
+                values = set()
+                count = 0
+                for doc in docs:
+                    raw = self._extract_field(doc, field)
+                    if raw is None:
+                        continue
+                    items = raw if isinstance(raw, list) else [raw]
+                    for v in items:
+                        count += 1
+                        values.add(str(v))
+                if "cardinality" in spec:
+                    result[name] = {"value": len(values)}
+                else:
+                    result[name] = {"value": count}
+        return result
+
+    def _doc_in_bucket(self, doc, field, key):
+        value = self._extract_field(doc, field)
+        if value is None:
+            return False
+        if isinstance(value, list):
+            return any(str(v) == key for v in value)
+        return str(value) == key
+
+    def scroll_search(self, index, body, page_size=2000):
+        """In-memory equivalent of the real scroll API — return every match.
+
+        The real client returns a flat list of `_source` dicts wrapped with
+        `_id`; production callers iterate the list directly.
+        """
+        docs = self._select_docs(index)
+        query = body.get("query", {"match_all": {}})
+        if "bool" in query:
+            filtered = [(doc_id, doc) for doc_id, doc in docs if self._match_query(doc, query["bool"])]
+        elif "match_all" in query:
+            filtered = docs
+        else:
+            filtered = [(doc_id, doc) for doc_id, doc in docs if self._match_clause(doc, query)]
+        return [{"_id": doc_id, "_source": deepcopy(doc)} for doc_id, doc in filtered]
 
     def get_index_document(self, index, doc_id):
         document = self.index_docs.get(index, {}).get(doc_id)

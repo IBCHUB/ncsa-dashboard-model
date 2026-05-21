@@ -46,6 +46,17 @@ BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 UTC = timezone.utc
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "clean": 0}
 
+# Cyberint emits `severity` as a discrete numeric score in the datalake.
+# These bands mirror `_normalize_severity`'s numeric branch so that querying
+# the datalake with a normalized string label maps to the right numeric range.
+_CYBERINT_SEVERITY_BANDS: dict[str, Tuple[int, int]] = {
+    "critical": (80, 100),
+    "high": (60, 79),
+    "medium": (40, 59),
+    "low": (1, 39),
+    "clean": (0, 0),
+}
+
 # ---------------------------------------------------------------------------
 # Time-mode constants: each mode selects the semantically correct date fields
 # ---------------------------------------------------------------------------
@@ -65,7 +76,10 @@ DATALAKE_TIME_FIELDS: dict[str, list[str]] = {
     "observed": ["observation_date", "first_seen"],
     "processed": ["@timestamp", "processed_at"],
     "published": ["published_at"],
-    "changed": [],
+    # Datalake has no native "changed" timestamp; fall back to @timestamp so
+    # callers passing time_mode=changed against datalake don't silently bypass
+    # the date filter (would return entire index).
+    "changed": ["@timestamp"],
 }
 
 PYTHON_FILTER_FIELDS: dict[str, list[str]] = {
@@ -573,11 +587,55 @@ def _resolve_anchor_end(end_date: Optional[str]) -> datetime:
         parsed = _parse_dt(normalized)
         if parsed:
             return parsed.astimezone(UTC)
+        logger.warning("_resolve_anchor_end: malformed end_date %r, falling back to now()", end_date)
     return datetime.now(UTC)
 
 
+MAX_DASHBOARD_DATE_RANGE_DAYS = int(os.getenv("DASHBOARD_MAX_RANGE_DAYS", "366"))
+EXPORT_MAX_BYTES = int(os.getenv("DASHBOARD_EXPORT_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB
+EXPORT_TTL_SECONDS = int(os.getenv("DASHBOARD_EXPORT_TTL_SECONDS", str(4 * 3600)))  # 4 hours
+
+
+def _validate_dashboard_date_range(start_date: Optional[str], end_date: Optional[str]) -> None:
+    """Reject obviously bad date windows before they hit ES.
+
+    - Inverted ranges (start > end) used to return an empty payload silently;
+      surface a 400 so callers can correct their query.
+    - Very wide windows can DoS the cluster — cap at MAX_DASHBOARD_DATE_RANGE_DAYS
+      (configurable via DASHBOARD_MAX_RANGE_DAYS env, default 366).
+    - Malformed dates are caught here too so handlers see a clean 400 instead
+      of `_resolve_anchor_end` quietly substituting `now()`.
+    """
+    if start_date is None and end_date is None:
+        return
+    if start_date:
+        start_parsed = _parse_dt(start_date if "T" in start_date else f"{start_date}T00:00:00+07:00")
+        if not start_parsed:
+            raise HTTPException(status_code=400, detail=f"Invalid start_date: {start_date!r}")
+    else:
+        start_parsed = None
+    if end_date:
+        end_parsed = _parse_dt(end_date if "T" in end_date else f"{end_date}T23:59:59+07:00")
+        if not end_parsed:
+            raise HTTPException(status_code=400, detail=f"Invalid end_date: {end_date!r}")
+    else:
+        end_parsed = None
+    if start_parsed and end_parsed:
+        if start_parsed > end_parsed:
+            raise HTTPException(status_code=400, detail="start_date must be on or before end_date")
+        span_days = (end_parsed - start_parsed).total_seconds() / 86400
+        if span_days > MAX_DASHBOARD_DATE_RANGE_DAYS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Date range too wide ({int(span_days)} days); max is {MAX_DASHBOARD_DATE_RANGE_DAYS}",
+            )
+
+
 def _date_filter(range_query: Optional[Dict[str, str]], fields: Sequence[str]) -> Optional[Dict[str, Any]]:
-    if not range_query or not fields:
+    if not range_query:
+        return None
+    if not fields:
+        logger.warning("_date_filter called with empty fields but non-empty range — date filter dropped: %s", range_query)
         return None
     should = [{"range": {field: range_query}} for field in fields]
     return {"bool": {"should": should, "minimum_should_match": 1}}
@@ -669,6 +727,9 @@ SECTOR_DISPLAY_NAMES = {
 }
 
 
+_UNMAPPED_SECTOR_SEEN: set[str] = set()
+
+
 def _sector_display_name(value: Any) -> Optional[str]:
     raw = str(value or "").strip()
     if not raw:
@@ -676,7 +737,15 @@ def _sector_display_name(value: Any) -> Optional[str]:
     lowered = raw.lower()
     if lowered in {"none", "null", "unknown", "n/a", "-", "ไม่ระบุ"}:
         return "Other"
-    return SECTOR_DISPLAY_NAMES.get(lowered) or SECTOR_DISPLAY_NAMES.get(raw) or "Other"
+    mapped = SECTOR_DISPLAY_NAMES.get(lowered) or SECTOR_DISPLAY_NAMES.get(raw)
+    if mapped:
+        return mapped
+    # Log unique unmapped sector values once so operators can extend
+    # SECTOR_DISPLAY_NAMES instead of silently collapsing data into "Other".
+    if lowered not in _UNMAPPED_SECTOR_SEEN:
+        _UNMAPPED_SECTOR_SEEN.add(lowered)
+        logger.info("sector display name unmapped, falling back to 'Other': %r", raw)
+    return "Other"
 
 
 def _sector_info(doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -913,6 +982,55 @@ def require_dashboard_user(
     return user
 
 
+ADMIN_ROLE_NAMES = {"admin", "super admin", "superadmin"}
+
+
+def require_admin(
+    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+) -> Dict[str, Any]:
+    """Bearer + admin-role gate.
+
+    Used by user/group management, diagnostics, and other endpoints that
+    must not be reachable by ordinary analysts. `require_dashboard_user`
+    handles authentication; this layer enforces authorization on top.
+    """
+    role = str(current_user.get("role_name") or "").strip().lower()
+    if role not in ADMIN_ROLE_NAMES:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return current_user
+
+
+def _actor_display_name(user: Dict[str, Any]) -> str:
+    """Resolve a non-empty display name from a user payload.
+
+    Action endpoints used `user["name"]` directly, which raises KeyError
+    when an SSO identity arrives without a `name` field. Falls back to
+    email, username, and finally user_id so audit notes always have an
+    actor.
+    """
+    for key in ("name", "display_name", "email", "username"):
+        value = str(user.get(key) or "").strip()
+        if value:
+            return value
+    return str(user.get("user_id") or "unknown")
+
+
+def _ensure_doc_visible(doc: Optional[Dict[str, Any]], current_user: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the doc when the caller is allowed to see it; raise 404 otherwise.
+
+    Mirrors the analyst→404 / admin→200 pattern used by other detail
+    endpoints. Non-admins must not be able to mutate TLP:red docs even
+    when they happen to know the doc id.
+    """
+    if not doc:
+        raise HTTPException(status_code=404, detail="Action not found")
+    tlp = str(doc.get("tlp") or "amber").strip().lower()
+    role = str(current_user.get("role_name") or "").strip().lower()
+    if tlp == "red" and role not in ADMIN_ROLE_NAMES:
+        raise HTTPException(status_code=404, detail="Action not found")
+    return doc
+
+
 def require_internal_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")) -> str:
     allowed_keys = {
         key.strip()
@@ -930,12 +1048,30 @@ def require_internal_api_key(x_api_key: Optional[str] = Header(default=None, ali
     return x_api_key
 
 
+_ES_CONNECTION_ERROR_KEYWORDS = ("connection", "timeout", "unreachable", "refused", "transport")
+
+
 def _safe_search(index: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Run an ES search, distinguishing infra failures from query-level errors.
+
+    Connection-class errors are re-raised as HTTP 503 so the UI surfaces
+    an outage instead of silently rendering "no data". Query-level errors
+    (malformed body, missing index) still fall back to an empty result so
+    a single bad endpoint can't take down the whole dashboard.
+    """
     client = get_elastic_client()
     try:
         return client.search_index(index, body)
     except Exception as exc:
-        logger.error("Elasticsearch search failed for %s: %s", index, exc)
+        message = str(exc).lower()
+        is_connection_error = (
+            exc.__class__.__name__.lower().endswith(("connectionerror", "timeout", "transporterror"))
+            or any(keyword in message for keyword in _ES_CONNECTION_ERROR_KEYWORDS)
+        )
+        if is_connection_error:
+            logger.error("Elasticsearch connection error for %s: %s", index, exc)
+            raise HTTPException(status_code=503, detail="Search backend unavailable") from exc
+        logger.error("Elasticsearch query failed for %s: %s | body_keys=%s", index, exc, sorted(body.keys()))
         return {"hits": {"total": {"value": 0}, "hits": []}}
 
 
@@ -1008,10 +1144,13 @@ def _warehouse_search_filters(
     filters: List[Dict[str, Any]] = []
     if ioc_types:
         filters.append({"terms": {"ioc_type": [item.lower() for item in ioc_types]}})
-    if severities:
-        filters.append({"terms": {"severity": [_normalize_severity(item) for item in severities]}})
-    if risk_levels:
-        filters.append({"terms": {"severity": [_normalize_severity(item) for item in risk_levels]}})
+    # severities + risk_levels both target the AI severity field. Merge into a
+    # single terms clause so passing both doesn't AND them into an empty result.
+    merged_severities = [_normalize_severity(item) for item in (severities or [])] + [
+        _normalize_severity(item) for item in (risk_levels or [])
+    ]
+    if merged_severities:
+        filters.append({"terms": {"severity": sorted(set(merged_severities))}})
     if sources:
         filters.append({"terms": {"source_name": sources}})
     if threat_types:
@@ -1104,6 +1243,9 @@ def _scroll_all_warehouse_docs(
     ioc_types: Optional[List[str]] = None,
     risk_levels: Optional[List[str]] = None,
     min_risk_score: Optional[int] = None,
+    validation_statuses: Optional[List[str]] = None,
+    review_states: Optional[List[str]] = None,
+    warehouse_eligible_only: Optional[bool] = True,
     sort_by: str = "risk",
     time_mode: str = TIME_MODE_PROCESSED,
 ) -> List[Dict[str, Any]]:
@@ -1117,6 +1259,10 @@ def _scroll_all_warehouse_docs(
         end_date=end_date,
         sources=sources,
         threat_types=threat_types,
+        validation_statuses=validation_statuses,
+        review_states=review_states,
+        warehouse_eligible_only=warehouse_eligible_only,
+        min_risk_score=min_risk_score,
         time_mode=time_mode,
     )
     sort = (
@@ -1174,14 +1320,9 @@ def _scroll_all_news_docs(
         }
     ]
     if sources:
-        filters.append(
-            {
-                "bool": {
-                    "should": [{"match_phrase": {"source_name": source}} for source in sources],
-                    "minimum_should_match": 1,
-                }
-            }
-        )
+        # `source_name` is a keyword field — use `terms` rather than `match_phrase`
+        # so the analyzer can't tokenize the query and mismatch against the doc.
+        filters.append({"terms": {"source_name": list(sources)}})
     date_filter = _date_filter(_date_query_range(start_date, end_date), WAREHOUSE_TIME_FIELDS[TIME_MODE_PUBLISHED])
     if date_filter:
         filters.append(date_filter)
@@ -1208,9 +1349,26 @@ def _search_total(result: Dict[str, Any]) -> int:
         return 0
 
 
-def _warehouse_summary_stats(start_date: Optional[str], end_date: Optional[str], time_mode: str = TIME_MODE_PROCESSED) -> Dict[str, Any]:
+def _warehouse_summary_stats(
+    start_date: Optional[str],
+    end_date: Optional[str],
+    time_mode: str = TIME_MODE_PROCESSED,
+    *,
+    sources: Optional[List[str]] = None,
+    threat_types: Optional[List[str]] = None,
+    severities: Optional[List[str]] = None,
+    ioc_types: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     client = get_elastic_client()
-    filters = _warehouse_search_filters(start_date=start_date, end_date=end_date, time_mode=time_mode)
+    filters = _warehouse_search_filters(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        ioc_types=ioc_types,
+        time_mode=time_mode,
+    )
     severity_filters = {
         severity: {"term": {"severity": severity}}
         for severity in ("critical", "high", "medium", "low", "clean")
@@ -1528,15 +1686,15 @@ def _source_category(value: Any) -> str:
     source = str(value or "").strip().lower()
     if not source:
         return "other"
-    if source in {"cyberint_iocs", "sandbox"} or source.startswith("cyberint") or "cyble threat intelligence" in source or source.startswith("misp"):
-        return "trusted"
+    # Check news feeds first so a name containing both "cyberint" and "news"
+    # doesn't get mislabelled as trusted before the news check runs.
     if source in {"zone-h", "darkreading", "thehackernews", "the hacker news"} or "news" in source:
         return "news"
-    if "tcti-feeds-sandbox" in source or "tcti-feeds-cyberint" in source or "misp_attributes" in source or source == "tcti-feeds":
-        return "trusted"
     if "tcti-feeds-darkreading" in source or "tcti-feeds-bleeping" in source or "tcti-feeds-thehackernews" in source or "tcti-feeds-zoneh" in source:
         return "news"
-    if source.startswith("cyberint_iocs-"):
+    if source in {"cyberint_iocs", "sandbox"} or source.startswith("cyberint") or "cyble threat intelligence" in source or source.startswith("misp"):
+        return "trusted"
+    if "tcti-feeds-sandbox" in source or "tcti-feeds-cyberint" in source or "misp_attributes" in source or source == "tcti-feeds":
         return "trusted"
     return "other"
 
@@ -1992,7 +2150,19 @@ def _datalake_search_filters(
     if ioc_types:
         filters.append({"terms": {"ioc_type": [item.lower() for item in ioc_types]}})
     if severities:
-        filters.append({"terms": {"severity": [_normalize_severity(item) for item in severities]}})
+        # Datalake (Cyberint) stores `severity` as a numeric score (0/20/80/100),
+        # not the AI string label. Map the requested string buckets back to
+        # numeric bands so filtering by "critical" actually matches docs.
+        severity_clauses: List[Dict[str, Any]] = []
+        seen_bands: set[Tuple[int, int]] = set()
+        for item in severities:
+            normalized = _normalize_severity(item)
+            band = _CYBERINT_SEVERITY_BANDS.get(normalized)
+            if band and band not in seen_bands:
+                seen_bands.add(band)
+                severity_clauses.append({"range": {"severity": {"gte": band[0], "lte": band[1]}}})
+        if severity_clauses:
+            filters.append({"bool": {"should": severity_clauses, "minimum_should_match": 1}})
     if sources:
         filters.append({"terms": {"source_name": sources}})
     if threat_types:
@@ -2182,7 +2352,15 @@ def _hits_to_docs(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [{"_id": hit.get("_id"), **(hit.get("_source") or {})} for hit in result.get("hits", {}).get("hits", [])]
 
 
-def _fetch_datalake_by_indicators(indicators: Sequence[Tuple[str, str]]) -> List[Dict[str, Any]]:
+def _fetch_datalake_by_indicators(
+    indicators: Sequence[Tuple[str, str]],
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch datalake docs matching the given (ioc_type, ioc_value) pairs.
+
+    `limit` caps the total number of returned docs (most recent first).
+    `None` means no cap — the scroll fetches every match.
+    """
     unique = []
     seen = set()
     for ioc_type, ioc_value in indicators:
@@ -2236,6 +2414,8 @@ def _fetch_datalake_by_indicators(indicators: Sequence[Tuple[str, str]]) -> List
         key=lambda item: _datalake_event_time(item) or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
+    if limit is not None and limit > 0:
+        results = results[:limit]
     return results
 
 
@@ -3205,8 +3385,14 @@ def _filter_warehouse_docs(
 
 
 def _resolve_date_bounds(start_date: Optional[str], end_date: Optional[str]) -> Tuple[Optional[datetime], Optional[datetime]]:
-    start_bound = _parse_dt(f"{start_date}T00:00:00+07:00") if start_date else None
-    end_bound = _parse_dt(f"{end_date}T23:59:59+07:00") if end_date else None
+    def _normalize(value: Optional[str], time_suffix: str) -> Optional[datetime]:
+        if not value:
+            return None
+        text = value if "T" in value else f"{value}{time_suffix}"
+        return _parse_dt(text)
+
+    start_bound = _normalize(start_date, "T00:00:00+07:00")
+    end_bound = _normalize(end_date, "T23:59:59+07:00")
     return start_bound, end_bound
 
 
@@ -5841,14 +6027,9 @@ def _search_news_docs(
         }
     ]
     if sources:
-        filters.append(
-            {
-                "bool": {
-                    "should": [{"match_phrase": {"source_name": source}} for source in sources],
-                    "minimum_should_match": 1,
-                }
-            }
-        )
+        # `source_name` is a keyword field — use `terms` rather than `match_phrase`
+        # so the analyzer can't tokenize the query and mismatch against the doc.
+        filters.append({"terms": {"source_name": list(sources)}})
     date_filter = _date_filter(_date_query_range(start_date, end_date), WAREHOUSE_TIME_FIELDS[TIME_MODE_PUBLISHED])
     if date_filter:
         filters.append(date_filter)
@@ -5907,7 +6088,13 @@ def _queue_export_job(
     filters: Optional[Dict[str, Any]] = None,
     file_content: Optional[bytes] = None,
     media_type: Optional[str] = None,
+    owner_user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    if file_content is not None and len(file_content) > EXPORT_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Export too large ({len(file_content):,} bytes); max is {EXPORT_MAX_BYTES:,}",
+        )
     state = get_dashboard_state()
     return state.create_export_job(
         export_format,
@@ -5916,6 +6103,7 @@ def _queue_export_job(
         filters=filters or {},
         file_content=file_content,
         media_type=media_type,
+        owner_user_id=owner_user_id,
     )
 
 
@@ -6002,6 +6190,10 @@ def list_severities(active: bool = True, current_user: Dict[str, Any] = Depends(
 
 @router.get("/lookups/risk-levels", tags=["Lookups"])
 def list_risk_levels(active: bool = True, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+    # NOTE: this endpoint returns the same payload as /lookups/severities.
+    # It's kept as an alias because the frontend reads from both paths
+    # depending on which filter UI is rendering. Don't diverge the two
+    # without updating both call sites.
     items = [{"value": item["value"], "label": item["label"], "description": None, "active": active} for item in RISK_LEVELS]
     return _success({"items": items})
 
@@ -6017,10 +6209,15 @@ def list_sources(active: bool = True, query: Optional[str] = None, current_user:
     wh_buckets = _terms_only_agg(client.warehouse_index, "source_name", size=200, missing="unknown")
     dl_buckets = _terms_only_agg(client.datalake_index, "source_name", size=200, missing="unknown")
     counts = Counter()
-    for bucket in wh_buckets:
-        counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
-    for bucket in dl_buckets:
-        counts[str(bucket.get("key") or "")] += int(bucket.get("doc_count") or 0)
+    # source_name is sometimes comma-joined ("AbuseIPDB,ThreatFox") when an IOC
+    # crosses multiple feeds — split so each individual source appears in the
+    # lookup, mirroring the pipeline's comma-as-separator contract.
+    for bucket in (*wh_buckets, *dl_buckets):
+        raw_key = str(bucket.get("key") or "")
+        doc_count = int(bucket.get("doc_count") or 0)
+        parts = [part.strip() for part in raw_key.split(",") if part.strip()] or [raw_key]
+        for part in parts:
+            counts[part] += doc_count
     items = _lookup_items_from_counts(counts)
     # Group by display label so raw values like "cyberint_iocs", "tcti-feeds",
     # "cyberint iocs, tcti-feeds" all collapse into one "Cyberint IOC Feed"
@@ -6104,18 +6301,44 @@ def list_enforcement_points(query: Optional[str] = None, type: Optional[str] = N
 def executive_dashboard(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    sources: Optional[List[str]] = Query(default=None),
+    threat_types: Optional[List[str]] = Query(default=None),
+    severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     now = _resolve_anchor_end(end_date)
     if not end_date:
         end_date = _to_bangkok_date(now)
     if not start_date:
         start_date = _to_bangkok_date(now - timedelta(hours=24))
 
-    current_stats = _warehouse_summary_stats(start_date, end_date, time_mode=TIME_MODE_PROCESSED)
-    current_aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, include_trend=True, time_mode=TIME_MODE_PROCESSED)
+    current_stats = _warehouse_summary_stats(
+        start_date,
+        end_date,
+        time_mode=TIME_MODE_PROCESSED,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+    )
+    current_aggs = _warehouse_dashboard_aggs(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        include_trend=True,
+        time_mode=TIME_MODE_PROCESSED,
+    )
     previous_start_date, previous_end_date = _previous_date_window(start_date, end_date)
-    previous_stats = _warehouse_summary_stats(previous_start_date, previous_end_date, time_mode=TIME_MODE_PROCESSED) if previous_start_date and previous_end_date else None
+    previous_stats = _warehouse_summary_stats(
+        previous_start_date,
+        previous_end_date,
+        time_mode=TIME_MODE_PROCESSED,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+    ) if previous_start_date and previous_end_date else None
     severity_distribution = _build_severity_distribution_from_counts(current_stats.get("severity_counts") or {})
     treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("threat_types") or [])
     sector_treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("sector_terms") or [])
@@ -6133,6 +6356,9 @@ def executive_dashboard(
         hourly_aggs = _warehouse_dashboard_aggs(
             start_date=lookback_start,
             end_date=lookback_end,
+            sources=sources,
+            threat_types=threat_types,
+            severities=severities,
             include_trend=True,
             time_mode=TIME_MODE_PROCESSED,
         )
@@ -6180,6 +6406,9 @@ def executive_report_preview(request: ExecutiveReportRequest, current_user: Dict
     payload = executive_dashboard(
         start_date=request.start_date.isoformat(),
         end_date=request.end_date.isoformat(),
+        sources=request.sources or None,
+        threat_types=request.threat_types or None,
+        severities=request.severities or None,
         current_user=current_user,
     )["data"]
     payload["filters"] = {
@@ -6205,6 +6434,7 @@ def executive_report_export(request: ExportReportRequest, current_user: Dict[str
             "sources": request.sources,
             "severities": request.severities,
         },
+        owner_user_id=current_user["user_id"],
     )
     return _success(job)
 
@@ -6213,17 +6443,42 @@ def executive_report_export(request: ExportReportRequest, current_user: Dict[str
 def operations_dashboard(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    sources: Optional[List[str]] = Query(default=None),
+    threat_types: Optional[List[str]] = Query(default=None),
+    severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     anchor_end = _resolve_anchor_end(end_date) if end_date else None
-    aggs = _warehouse_dashboard_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_PROCESSED)
+    aggs = _warehouse_dashboard_aggs(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        time_mode=TIME_MODE_PROCESSED,
+    )
     recent_start = _to_bangkok_date((anchor_end or datetime.now(UTC)) - timedelta(days=1))
     recent_end = _to_bangkok_date(anchor_end or datetime.now(UTC))
-    recent_stats = _warehouse_summary_stats(recent_start, recent_end, time_mode=TIME_MODE_PROCESSED)
+    recent_stats = _warehouse_summary_stats(
+        recent_start,
+        recent_end,
+        time_mode=TIME_MODE_PROCESSED,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+    )
     payload = {
         "overview": _operations_overview_from_aggs(aggs, recent_stats=recent_stats),
         "incident_by_severity": _build_severity_distribution_from_counts(_severity_counts_from_filter_agg(aggs.get("severity_counts") or {})),
-        "attack_time_heatmap": _build_attack_time_heatmap_from_aggs(start_date=start_date, end_date=end_date, time_mode=TIME_MODE_PROCESSED),
+        "attack_time_heatmap": _build_attack_time_heatmap_from_aggs(
+            start_date=start_date,
+            end_date=end_date,
+            sources=sources,
+            threat_types=threat_types,
+            severities=severities,
+            time_mode=TIME_MODE_PROCESSED,
+        ),
         "top_intelligence_sources": _format_source_terms(_terms_items_from_buckets((aggs.get("sources") or {}).get("buckets") or [], total=aggs.get("total"), limit=25))[:5],
         "top_threat_types": _terms_items_from_buckets((aggs.get("threat_types") or {}).get("buckets") or [], limit=5),
         "top_attack_origins": _terms_items_from_buckets((aggs.get("countries") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
@@ -6379,6 +6634,7 @@ def attack_time_report_export(request: AttackTimeExportRequest, current_user: Di
             "page": request.page,
             "page_size": request.page_size,
         },
+        owner_user_id=current_user["user_id"],
     )
     return _success(job)
 
@@ -6397,6 +6653,7 @@ def operations_report_export(report_key: str, request: ExportReportRequest, curr
             "sources": request.sources,
             "severities": request.severities,
         },
+        owner_user_id=current_user["user_id"],
     )
     return _success(job)
 
@@ -6415,6 +6672,7 @@ def threat_intelligence_report_export(request: ThreatIntelligenceExportRequest, 
             "start_date": request.start_date.isoformat(),
             "end_date": request.end_date.isoformat(),
         },
+        owner_user_id=current_user["user_id"],
     )
     return _success(job)
 
@@ -6431,6 +6689,7 @@ def threat_trend_events(
     severities: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     cache_key = _cache_key("threat_trend_events", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, threat_types=threat_types, sources=sources, severities=severities)
     cached = _cache_get(cache_key)
     if cached:
@@ -6768,6 +7027,12 @@ def operation_event_detail(event_id: str, current_user: Dict[str, Any] = Depends
     document = client.get_index_document(client.warehouse_index, event_id) or client.get_index_document(client.datalake_index, event_id)
     if not document:
         raise HTTPException(status_code=404, detail="Event not found")
+    # TLP:red docs are restricted to admins; surface 404 (not 403) so we don't
+    # leak the existence of the document to ordinary analysts.
+    tlp = str(document.get("tlp") or "amber").strip().lower()
+    role = str(current_user.get("role_name") or "").strip().lower()
+    if tlp == "red" and role not in ADMIN_ROLE_NAMES:
+        raise HTTPException(status_code=404, detail="Event not found")
     formatted = _attack_time_event_row({"_id": event_id, **document}, TIME_MODE_OBSERVED)
     payload = {
         "event_id": event_id,
@@ -6790,6 +7055,7 @@ def list_actions(
     status: Optional[List[str]] = Query(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     cache_key = _cache_key("list_actions", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, threat_types=threat_types, sources=sources, severities=severities, status=status)
     cached = _cache_get(cache_key)
     if cached:
@@ -6880,6 +7146,7 @@ def action_report_export(request: ActionReportRequest, current_user: Dict[str, A
             "severities": request.severities,
             "statuses": request.statuses,
         },
+        owner_user_id=current_user["user_id"],
     )
     return _success(job)
 
@@ -6913,33 +7180,36 @@ def related_iocs(action_id: str, page: int = 1, page_size: int = 20, current_use
 
 @router.post("/actions/{action_id}/notes", tags=["Actions"], status_code=201)
 def create_action_note(action_id: str, request: ActionNoteRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    doc = _get_processed_doc(action_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Action not found")
-    note = get_dashboard_state().append_action_note(action_id, current_user["name"], request.content.strip())
+    doc = _ensure_doc_visible(_get_processed_doc(action_id), current_user)
+    note = get_dashboard_state().append_action_note(action_id, _actor_display_name(current_user), request.content.strip())
     return _success({"action_id": action_id, "note": note})
 
 
 @router.post("/actions/{action_id}/assign", tags=["Actions"])
 def assign_action(action_id: str, request: AssignRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
     state = get_dashboard_state()
-    assignee = next((item for item in state.list_assignees() if item["user_id"] == request.assignee_id), None)
+    assignee = next(
+        (
+            item for item in state.list_assignees()
+            if item["user_id"] == request.assignee_id and str(item.get("status") or "active").lower() == "active"
+        ),
+        None,
+    )
     if not assignee:
-        raise HTTPException(status_code=404, detail="Assignee not found")
+        raise HTTPException(status_code=404, detail="Assignee not found or inactive")
+    doc = _ensure_doc_visible(_get_processed_doc(action_id), current_user)
     state.assign_action(action_id, assignee, request.handover_note or "")
-    doc = _get_processed_doc(action_id)
-    if doc:
-        get_elastic_client().update_warehouse_document(
-            action_id,
-            {
-                "action_required": True,
-                "action_status": ACTION_IN_PROGRESS,
-                "action_updated_at": _utcnow_z(),
-                "action_opened_at": doc.get("action_opened_at") or doc.get("processed_at") or doc.get("event_time"),
-            },
-        )
+    get_elastic_client().update_warehouse_document(
+        action_id,
+        {
+            "action_required": True,
+            "action_status": ACTION_IN_PROGRESS,
+            "action_updated_at": _utcnow_z(),
+            "action_opened_at": doc.get("action_opened_at") or doc.get("processed_at") or doc.get("event_time"),
+        },
+    )
     if request.handover_note:
-        state.append_action_note(action_id, current_user["name"], request.handover_note)
+        state.append_action_note(action_id, _actor_display_name(current_user), request.handover_note)
     return _success({"action_id": action_id, "status": ACTION_IN_PROGRESS, "audit_id": f"audit-{_hash_id(action_id, assignee['user_id'])}", "message": "Action assigned"})
 
 
@@ -6951,41 +7221,52 @@ async def mark_false_positive(
     evidence_file: Optional[UploadFile] = File(default=None),
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    doc = _get_processed_doc(action_id)
-    if doc:
-        get_elastic_client().update_warehouse_document(
-            action_id,
-            {
-                "action_required": False,
-                "action_status": ACTION_CLOSED,
-                "action_closed_reason": "false_positive",
-                "action_closed_at": _utcnow_z(),
-                "action_updated_at": _utcnow_z(),
-            },
-        )
+    doc = _ensure_doc_visible(_get_processed_doc(action_id), current_user)
+    get_elastic_client().update_warehouse_document(
+        action_id,
+        {
+            "action_required": False,
+            "action_status": ACTION_CLOSED,
+            "action_closed_reason": "false_positive",
+            "action_closed_at": _utcnow_z(),
+            "action_updated_at": _utcnow_z(),
+        },
+    )
     note_content = justification
     if evidence_file is not None:
         note_content = f"{justification} (evidence: {evidence_file.filename})"
-    get_dashboard_state().append_action_note(action_id, current_user["name"], note_content)
+    logger.info("action.false_positive by=%s action=%s reason=%s", current_user.get("user_id"), action_id, reason_category)
+    get_dashboard_state().append_action_note(action_id, _actor_display_name(current_user), note_content)
     return _success({"action_id": action_id, "status": ACTION_CLOSED, "audit_id": f"audit-{_hash_id(action_id, reason_category)}", "message": "Marked as false positive"})
 
 
 @router.post("/actions/{action_id}/block-ip", tags=["Actions"])
-def block_ip(action_id: str, request: BlockIpRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def block_ip(action_id: str, request: BlockIpRequest, current_user: Dict[str, Any] = Depends(require_admin)):
+    """Queue a block-IP request against the named enforcement points.
+
+    Restricted to admins because this is a real-world network change
+    (firewall rule, blocklist push). Non-admin analysts who need to
+    request a block should use the notes endpoint to flag intent.
+    """
+    doc = _ensure_doc_visible(_get_processed_doc(action_id), current_user)
+    state = get_dashboard_state()
+    valid_enforcement_ids = {ep["enforcement_point_id"] for ep in state.list_enforcement_points()}
+    unknown = [pid for pid in request.enforcement_point_ids if pid not in valid_enforcement_ids]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown enforcement_point_ids: {unknown}")
     note = f"Block {request.target_ioc} on {', '.join(request.enforcement_point_ids)} ({request.duration_mode})"
-    get_dashboard_state().append_action_note(action_id, current_user["name"], note)
-    doc = _get_processed_doc(action_id)
-    if doc:
-        get_elastic_client().update_warehouse_document(
-            action_id,
-            {
-                "action_required": True,
-                "action_status": ACTION_IN_PROGRESS,
-                "action_reason": "block_ip",
-                "action_updated_at": _utcnow_z(),
-                "action_opened_at": doc.get("action_opened_at") or doc.get("processed_at") or doc.get("event_time"),
-            },
-        )
+    state.append_action_note(action_id, _actor_display_name(current_user), note)
+    logger.info("action.block_ip by=%s action=%s target=%s eps=%s", current_user.get("user_id"), action_id, request.target_ioc, request.enforcement_point_ids)
+    get_elastic_client().update_warehouse_document(
+        action_id,
+        {
+            "action_required": True,
+            "action_status": ACTION_IN_PROGRESS,
+            "action_reason": "block_ip",
+            "action_updated_at": _utcnow_z(),
+            "action_opened_at": doc.get("action_opened_at") or doc.get("processed_at") or doc.get("event_time"),
+        },
+    )
     return _success(
         {
             "action_id": action_id,
@@ -7020,11 +7301,16 @@ def list_iocs(
     sort_order: str = "desc",
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     cache_key = _cache_key("list_iocs", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, sources=sources, threat_types=threat_types, risk_levels=risk_levels, ioc_types=ioc_types, severities=severities, high_risk_only=high_risk_only, sort_by=sort_by, sort_order=sort_order)
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    min_risk_score = 80 if high_risk_only else None
+    # Phase 2.4-2: "high risk" matches the scoring-v3.0.0 cutoff of 50
+    # (the threshold for `high`/`critical`). The previous 80 floor only
+    # captured `critical` and made the toggle behave like a hidden
+    # "critical-only" filter from the user's perspective.
+    min_risk_score = 50 if high_risk_only else None
     search_result = _search_warehouse_docs(
         query_text=query or "*",
         start_date=start_date,
@@ -7160,7 +7446,7 @@ def ioc_events_by_query(
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
     """Events endpoint using query parameter (avoids %2F path decoding issues for URL IOCs)."""
-    return _ioc_events_impl(ioc_id, page, page_size, start_date, end_date)
+    return _ioc_events_impl(ioc_id, page, page_size, start_date, end_date, current_user=current_user)
 
 
 def _ioc_detail_impl(ioc_id: str):
@@ -7177,9 +7463,29 @@ def ioc_detail(ioc_id: str, current_user: Dict[str, Any] = Depends(require_dashb
     return _ioc_detail_impl(ioc_id)
 
 
-def _ioc_events_impl(ioc_id: str, page: int = 1, page_size: int = 20, start_date: Optional[str] = None, end_date: Optional[str] = None):
+IOC_EVENTS_MAX_FETCH = int(os.getenv("DASHBOARD_IOC_EVENTS_MAX_FETCH", "5000"))
+
+
+def _ioc_events_impl(
+    ioc_id: str,
+    page: int = 1,
+    page_size: int = 20,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: Optional[Dict[str, Any]] = None,
+):
+    _validate_dashboard_date_range(start_date, end_date)
     ioc_type, ioc_value = _split_indicator_id(ioc_id)
-    raw_docs = _fetch_datalake_by_indicators([(ioc_type, ioc_value)])
+    # Cap the datalake scroll so a hot IOC with 10K+ matching events doesn't
+    # pull megabytes into Python before pagination. The cap is configurable
+    # via DASHBOARD_IOC_EVENTS_MAX_FETCH.
+    raw_docs = _fetch_datalake_by_indicators([(ioc_type, ioc_value)], limit=IOC_EVENTS_MAX_FETCH)
+    # TLP:red events are admin-only; analysts must not see them through the
+    # IOC events feed. Drop them before date/page filtering so total counts
+    # match what the caller is allowed to see.
+    role = str((current_user or {}).get("role_name") or "").strip().lower()
+    if role not in ADMIN_ROLE_NAMES:
+        raw_docs = [d for d in raw_docs if str(d.get("tlp") or "amber").strip().lower() != "red"]
     start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
     docs = []
     for doc in raw_docs:
@@ -7218,7 +7524,10 @@ def ioc_events(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    return _ioc_events_impl(ioc_id, page, page_size, start_date, end_date)
+    return _ioc_events_impl(ioc_id, page, page_size, start_date, end_date, current_user=current_user)
+
+
+IOC_ANALYTICS_TABS = {"ioc-summary", "statistics-import"}
 
 
 @router.get("/ioc-analytics", tags=["IOCs"])
@@ -7228,6 +7537,9 @@ def ioc_analytics(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    if tab not in IOC_ANALYTICS_TABS:
+        raise HTTPException(status_code=400, detail=f"Unknown tab {tab!r}; expected one of {sorted(IOC_ANALYTICS_TABS)}")
+    _validate_dashboard_date_range(start_date, end_date)
     cache_key = _cache_key("ioc_analytics", tab=tab, start_date=start_date, end_date=end_date)
     cached = _cache_get(cache_key)
     if cached:
@@ -7504,6 +7816,7 @@ def ioc_report_export(
         filters,
         file_content=file_content,
         media_type=media_type,
+        owner_user_id=current_user["user_id"],
     )
     return _success(_public_export_job(job, http_request))
 
@@ -7586,6 +7899,18 @@ def export_download(export_id: str, current_user: Dict[str, Any] = Depends(requi
     job = state.get_export_job(export_id)
     if not job:
         raise HTTPException(status_code=404, detail="Export job not found")
+    # TTL check — treat expired jobs as not found to avoid accumulating stale files
+    created_at = _parse_dt(job.get("created_at"))
+    if created_at is not None:
+        age = (datetime.now(tz=UTC) - created_at).total_seconds()
+        if age > EXPORT_TTL_SECONDS:
+            state.delete_export_job(export_id)
+            raise HTTPException(status_code=404, detail="Export job not found")
+    # Ownership: admins may download any export; analysts may only download their own
+    role = str(current_user.get("role_name") or "").strip().lower()
+    owner_id = job.get("owner_user_id")
+    if role not in ADMIN_ROLE_NAMES and owner_id is not None and owner_id != current_user["user_id"]:
+        raise HTTPException(status_code=404, detail="Export job not found")
     export_file = state.get_export_file(export_id)
     if not export_file:
         raise HTTPException(status_code=404, detail="Export file not found")
@@ -7604,6 +7929,7 @@ def list_news(
     sort_by: str = "published_at",
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
+    _validate_dashboard_date_range(start_date, end_date)
     cache_key = _cache_key("list_news", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, sources=sources, sort_by=sort_by)
     cached = _cache_get(cache_key)
     if cached:
@@ -7637,9 +7963,22 @@ def news_detail(
     end_date: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    docs = _scroll_all_news_docs(start_date=start_date, end_date=end_date)
-    articles = {item["article_id"]: item for item in _build_news_articles(docs)}
-    article = articles.get(article_id)
+    _validate_dashboard_date_range(start_date, end_date)
+    # Try a direct doc lookup first — article_id is the doc id in the
+    # warehouse index. Falling back to a full scroll is O(N) and was the
+    # original behavior; keep it as a safety net but only when the direct
+    # lookup misses (e.g. derived article_id schemes from older fixtures).
+    client = get_elastic_client()
+    direct = client.get_index_document(client.warehouse_index, article_id)
+    if direct:
+        article_candidates = _build_news_articles([{"_id": article_id, **direct}])
+        article = next((item for item in article_candidates if item.get("article_id") == article_id), None)
+    else:
+        article = None
+    if not article:
+        docs = _scroll_all_news_docs(start_date=start_date, end_date=end_date)
+        articles = {item["article_id"]: item for item in _build_news_articles(docs)}
+        article = articles.get(article_id)
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
     related_ioc_records = []
@@ -7708,7 +8047,7 @@ def list_users(
     query: Optional[str] = None,
     status: Optional[str] = None,
     group_ids: Optional[List[str]] = Query(default=None),
-    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+    current_user: Dict[str, Any] = Depends(require_admin),
 ):
     items = get_dashboard_state().list_users()
     if query:
@@ -7721,29 +8060,34 @@ def list_users(
 
 
 @router.post("/users", tags=["Users"], status_code=201)
-def create_user(request: UserCreateRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def create_user(request: UserCreateRequest, current_user: Dict[str, Any] = Depends(require_admin)):
     payload = get_dashboard_state().create_user(request.model_dump())
+    logger.info("user.created by=%s target=%s", current_user.get("user_id"), payload.get("user_id"))
     return _success(payload)
 
 
 @router.patch("/users/{user_id}", tags=["Users"])
-def update_user(user_id: str, request: UserUpdateRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def update_user(user_id: str, request: UserUpdateRequest, current_user: Dict[str, Any] = Depends(require_admin)):
     payload = get_dashboard_state().update_user(user_id, request.model_dump(exclude_none=True))
     if not payload:
         raise HTTPException(status_code=404, detail="User not found")
+    logger.info("user.updated by=%s target=%s", current_user.get("user_id"), user_id)
     return _success(payload)
 
 
 @router.delete("/users/{user_id}", tags=["Users"])
-def delete_user(user_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def delete_user(user_id: str, current_user: Dict[str, Any] = Depends(require_admin)):
+    if user_id == current_user.get("user_id"):
+        raise HTTPException(status_code=400, detail="Cannot delete your own account from the admin endpoint; use DELETE /account instead")
     deleted = get_dashboard_state().delete_user(user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="User not found")
+    logger.info("user.deleted by=%s target=%s", current_user.get("user_id"), user_id)
     return _success({"success": True, "message": "User deleted"})
 
 
 @router.get("/user-groups", tags=["Users"])
-def list_user_groups(page: int = 1, page_size: int = 20, query: Optional[str] = None, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def list_user_groups(page: int = 1, page_size: int = 20, query: Optional[str] = None, current_user: Dict[str, Any] = Depends(require_admin)):
     items = get_dashboard_state().list_groups()
     if query:
         items = [item for item in items if query.lower() in item["name"].lower()]
@@ -7754,13 +8098,14 @@ def list_user_groups(page: int = 1, page_size: int = 20, query: Optional[str] = 
 
 
 @router.post("/user-groups", tags=["Users"], status_code=201)
-def create_user_group(request: UserGroupCreateRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def create_user_group(request: UserGroupCreateRequest, current_user: Dict[str, Any] = Depends(require_admin)):
     payload = get_dashboard_state().create_group({"name": request.name, "permissions": [item.model_dump() for item in request.permissions]})
+    logger.info("user_group.created by=%s group=%s", current_user.get("user_id"), payload.get("group_id"))
     return _success(payload)
 
 
 @router.patch("/user-groups/{group_id}", tags=["Users"])
-def update_user_group(group_id: str, request: UserGroupUpdateRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def update_user_group(group_id: str, request: UserGroupUpdateRequest, current_user: Dict[str, Any] = Depends(require_admin)):
     payload = {
         key: value
         for key, value in request.model_dump(exclude_none=True).items()
@@ -7775,10 +8120,11 @@ def update_user_group(group_id: str, request: UserGroupUpdateRequest, current_us
 
 
 @router.delete("/user-groups/{group_id}", tags=["Users"])
-def delete_user_group(group_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
+def delete_user_group(group_id: str, current_user: Dict[str, Any] = Depends(require_admin)):
     deleted = get_dashboard_state().delete_group(group_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="User group not found")
+    logger.info("user_group.deleted by=%s group=%s", current_user.get("user_id"), group_id)
     return _success({"success": True, "message": "User group deleted"})
 
 
@@ -7791,7 +8137,8 @@ def list_notifications(
     status: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    items = get_dashboard_state().list_notifications()
+    user_id = current_user.get("user_id")
+    items = get_dashboard_state().list_notifications(user_id=user_id)
     if unread_only:
         items = [item for item in items if item.get("unread")]
     if type:
@@ -7809,8 +8156,13 @@ def list_notifications(
 
 @router.post("/notifications/{notification_id}/read", tags=["Notifications"])
 def mark_notification_read(notification_id: str, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
-    payload = get_dashboard_state().mark_notification_read(notification_id)
+    payload = get_dashboard_state().mark_notification_read(
+        notification_id,
+        user_id=current_user.get("user_id"),
+    )
     if not payload:
+        # Either the notification doesn't exist or it's targeted at a different
+        # user — return 404 for both cases so we don't leak the distinction.
         raise HTTPException(status_code=404, detail="Notification not found")
     return _success(payload)
 
@@ -7818,7 +8170,10 @@ def mark_notification_read(notification_id: str, current_user: Dict[str, Any] = 
 @router.post("/notifications/read-all", tags=["Notifications"])
 def mark_all_notifications_read(payload: Optional[BulkNotificationReadRequest] = Body(default=None), current_user: Dict[str, Any] = Depends(require_dashboard_user)):
     notification_type = payload.type if payload else None
-    result = get_dashboard_state().mark_all_notifications_read(notification_type=notification_type)
+    result = get_dashboard_state().mark_all_notifications_read(
+        notification_type=notification_type,
+        user_id=current_user.get("user_id"),
+    )
     return _success(result)
 
 
@@ -7853,7 +8208,7 @@ def list_ml_feedback(
 
 @router.get("/diagnostics/data-sources", tags=["Diagnostics"])
 def data_source_diagnostics(
-    current_user: Dict[str, Any] = Depends(require_dashboard_user),
+    current_user: Dict[str, Any] = Depends(require_admin),
 ):
     """Return document counts and connectivity status for each ES index."""
     from elastic_client import DATALAKE_INDEX, WAREHOUSE_INDEX, PROCESSED_INDEX, QUARANTINE_INDEX

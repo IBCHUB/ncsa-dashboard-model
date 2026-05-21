@@ -15,6 +15,8 @@ from datetime import date, datetime
 import io
 import json
 import logging
+import os
+import re
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -36,6 +38,53 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/external")
 
 TLP_RANK = {value: index for index, value in enumerate(TLP_LEVELS)}
+# Phase 2.7-1: docs without an explicit TLP must NOT default to "amber" and
+# leak to amber-capped partners.  Fall back to the most restrictive level so
+# missing metadata fails closed.  Override only for staging fixtures.
+_MISSING_DOC_TLP_DEFAULT = os.getenv("DASHBOARD_EXTERNAL_TLP_DEFAULT", "red").strip().lower()
+if _MISSING_DOC_TLP_DEFAULT not in TLP_RANK:
+    _MISSING_DOC_TLP_DEFAULT = "red"
+# Phase 2.7-4: cap bulk submission size to bound memory + processing time.
+EXTERNAL_BULK_MAX_ITEMS = int(os.getenv("DASHBOARD_EXTERNAL_BULK_MAX_ITEMS", "500"))
+# Phase 2.7-5: cap export payload size + expire job artifacts after TTL.
+EXTERNAL_EXPORT_MAX_BYTES = int(os.getenv("DASHBOARD_EXTERNAL_EXPORT_MAX_BYTES", str(50 * 1024 * 1024)))
+EXTERNAL_EXPORT_TTL_SECONDS = int(os.getenv("DASHBOARD_EXTERNAL_EXPORT_TTL_SECONDS", str(4 * 3600)))
+
+# Phase 2.7-3: lightweight IOC format validators applied at submission time.
+_IOC_VALUE_PATTERNS: Dict[str, "re.Pattern[str]"] = {
+    "sha256": re.compile(r"^[a-fA-F0-9]{64}$"),
+    "sha1": re.compile(r"^[a-fA-F0-9]{40}$"),
+    "md5": re.compile(r"^[a-fA-F0-9]{32}$"),
+    "ip": re.compile(
+        r"^("
+        r"(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)"
+        r"|"
+        r"(?:[0-9a-fA-F:]+:+)+[0-9a-fA-F]+"
+        r")$"
+    ),
+    "domain": re.compile(r"^(?=.{1,253}$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$"),
+    "url": re.compile(r"^https?://[^\s<>\"']{3,2048}$", re.IGNORECASE),
+    "cve": re.compile(r"^CVE-\d{4}-\d{4,7}$", re.IGNORECASE),
+}
+
+
+def _validate_ioc_value(ioc_type: str, ioc_value: str) -> Optional[str]:
+    """Return an error message if value doesn't match the expected format for
+    its type, or None when valid / type has no registered pattern."""
+    ioc_type_normalized = (ioc_type or "").strip().lower()
+    value = (ioc_value or "").strip()
+    if not value:
+        return "IOC value is required"
+    if len(value) > 2048:
+        return "IOC value exceeds 2048 chars"
+    pattern = _IOC_VALUE_PATTERNS.get(ioc_type_normalized)
+    if pattern is None:
+        return None
+    if not pattern.match(value):
+        return f"IOC value does not match expected format for type '{ioc_type_normalized}'"
+    return None
+
+
 SEVERITY_BASE_SCORE = {
     "critical": 90,
     "high": 75,
@@ -202,6 +251,18 @@ def _normalize_tlp(value: Optional[str]) -> str:
     return normalized if normalized in TLP_RANK else "amber"
 
 
+def _derive_tlp_failclosed(value: Optional[str]) -> str:
+    """Fail-closed variant: unknown/missing TLP defaults to the MOST restrictive
+    level (`red`).  Used for ingested/warehouse docs whose `tlp` field may be
+    absent — those must NOT silently downgrade to `amber` and leak to amber-
+    capped partners.  Override via env DASHBOARD_EXTERNAL_TLP_DEFAULT.
+    """
+    normalized = str(value or "").strip().lower()
+    if normalized in TLP_RANK:
+        return normalized
+    return _MISSING_DOC_TLP_DEFAULT
+
+
 def _normalize_permissions(partner: Dict[str, Any]) -> List[str]:
     return [str(item).strip() for item in partner.get("permissions") or [] if str(item).strip()]
 
@@ -263,7 +324,11 @@ def _normalize_reference_list(values: Sequence[Any]) -> List[str]:
 
 
 def _derive_doc_tlp(doc: Dict[str, Any]) -> str:
-    return _normalize_tlp(doc.get("tlp") or doc.get("sharing_tlp") or doc.get("traffic_light_protocol"))
+    # Phase 2.7-1: fail closed — missing/unknown TLP must NOT silently become
+    # "amber".  Default to the most restrictive level so amber-capped partners
+    # don't accidentally see untagged docs.
+    raw = doc.get("tlp") or doc.get("sharing_tlp") or doc.get("traffic_light_protocol")
+    return _derive_tlp_failclosed(raw)
 
 
 def _derive_sharing_status(doc: Dict[str, Any]) -> str:
@@ -711,7 +776,16 @@ def external_changes(
     partner: Dict[str, Any] = Depends(_require_partner("read_feed")),
 ):
     effective_cursor = cursor or updated_after or since
-    cursor_dt = _parse_dt(effective_cursor) if effective_cursor else None
+    # Phase 2.7-6: a non-empty but unparseable cursor must NOT silently degrade
+    # to None and dump the full feed.  Reject with 400.
+    cursor_dt = None
+    if effective_cursor:
+        cursor_dt = _parse_dt(effective_cursor)
+        if cursor_dt is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid cursor/since/updated_after; expected ISO-8601 timestamp",
+            )
     docs = _collect_active_warehouse_docs(
         partner,
         query="*",
@@ -923,7 +997,15 @@ def submit_external_indicator(
     datalake_docs: List[Dict[str, Any]] = []
     warehouse_docs: List[Dict[str, Any]] = []
     normalized_indicator_ids: List[str] = []
+    # Phase 2.7-3: format-validate the IOC value before storage.
     if not validation_errors:
+        ioc_format_error = _validate_ioc_value(normalized_ioc_type, request.ioc_value)
+        if ioc_format_error:
+            validation_errors.append({"field": "ioc_value", "message": ioc_format_error})
+    if not validation_errors:
+        # Phase 2.7-2: cap requested TLP at partner.max_tlp.  A partner with
+        # max_tlp=green must not be able to inject red-tagged docs.
+        capped_tlp = _tlp_cap(partner, request.tlp)
         datalake_doc, warehouse_doc = _build_partner_submission_documents(
             partner=partner,
             ioc_value=request.ioc_value,
@@ -933,7 +1015,7 @@ def submit_external_indicator(
             threat_types=request.threat_types,
             severity=request.severity,
             confidence=request.confidence,
-            tlp=request.tlp,
+            tlp=capped_tlp,
             tags=request.tags,
             references=request.references,
             observed_at=request.observed_at,
@@ -965,13 +1047,16 @@ def submit_external_event(
     datalake_docs: List[Dict[str, Any]] = []
     warehouse_docs: List[Dict[str, Any]] = []
     normalized_indicator_ids: List[str] = []
+    # Phase 2.7-2: cap event TLP at partner.max_tlp once for the whole batch.
+    capped_event_tlp = _tlp_cap(partner, request.tlp)
     for index, indicator in enumerate(request.indicators):
         normalized_ioc_type = str(indicator.ioc_type).strip().lower()
         if normalized_ioc_type not in allowed_ioc_types:
             validation_errors.append({"field": f"indicators[{index}].ioc_type", "message": f"IOC type '{normalized_ioc_type}' is not allowed for this partner"})
             continue
-        if not str(indicator.ioc_value).strip():
-            validation_errors.append({"field": f"indicators[{index}].ioc_value", "message": "IOC value is required"})
+        ioc_format_error = _validate_ioc_value(normalized_ioc_type, indicator.ioc_value)
+        if ioc_format_error:
+            validation_errors.append({"field": f"indicators[{index}].ioc_value", "message": ioc_format_error})
             continue
         datalake_doc, warehouse_doc = _build_partner_submission_documents(
             partner=partner,
@@ -982,7 +1067,7 @@ def submit_external_event(
             threat_types=[],
             severity=request.severity,
             confidence=request.confidence,
-            tlp=request.tlp,
+            tlp=capped_event_tlp,
             tags=[],
             references=request.references,
             observed_at=request.observed_at,
@@ -1010,20 +1095,28 @@ def submit_external_bulk(
     request: ExternalBulkSubmissionRequest,
     partner: Dict[str, Any] = Depends(_require_partner("submit_data")),
 ):
+    # Phase 2.7-4: cap bulk size to bound memory + processing time.
+    if len(request.items) > EXTERNAL_BULK_MAX_ITEMS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Bulk submission exceeds max {EXTERNAL_BULK_MAX_ITEMS} items (got {len(request.items)})",
+        )
     validation_errors: List[Dict[str, Any]] = []
     datalake_docs: List[Dict[str, Any]] = []
     warehouse_docs: List[Dict[str, Any]] = []
     normalized_indicator_ids: List[str] = []
     allowed_ioc_types = set(partner.get("allowed_ioc_types") or [])
     for index, item in enumerate(request.items):
-        item_tlp = item.tlp or request.default_tlp
+        # Phase 2.7-2: cap per-item TLP at partner.max_tlp before storage.
+        item_tlp = _tlp_cap(partner, item.tlp or request.default_tlp)
         if item.kind == "indicator":
             normalized_ioc_type = str(item.ioc_type or "").strip().lower()
-            if not str(item.ioc_value or "").strip():
-                validation_errors.append({"field": f"items[{index}].ioc_value", "message": "IOC value is required"})
-                continue
             if normalized_ioc_type not in allowed_ioc_types:
                 validation_errors.append({"field": f"items[{index}].ioc_type", "message": f"IOC type '{normalized_ioc_type}' is not allowed for this partner"})
+                continue
+            ioc_format_error = _validate_ioc_value(normalized_ioc_type, str(item.ioc_value or ""))
+            if ioc_format_error:
+                validation_errors.append({"field": f"items[{index}].ioc_value", "message": ioc_format_error})
                 continue
             datalake_doc, warehouse_doc = _build_partner_submission_documents(
                 partner=partner,
@@ -1051,6 +1144,10 @@ def submit_external_bulk(
                 normalized_ioc_type = str(indicator.ioc_type).strip().lower()
                 if normalized_ioc_type not in allowed_ioc_types:
                     validation_errors.append({"field": f"items[{index}].indicators[{indicator_index}].ioc_type", "message": f"IOC type '{normalized_ioc_type}' is not allowed for this partner"})
+                    continue
+                ioc_format_error = _validate_ioc_value(normalized_ioc_type, indicator.ioc_value)
+                if ioc_format_error:
+                    validation_errors.append({"field": f"items[{index}].indicators[{indicator_index}].ioc_value", "message": ioc_format_error})
                     continue
                 datalake_doc, warehouse_doc = _build_partner_submission_documents(
                     partner=partner,
@@ -1174,6 +1271,12 @@ def external_export(
     )
     items = [_shared_indicator_payload(doc, datalake_docs, partner) for doc in docs]
     content, media_type = _render_export_content(items, normalized_format)
+    # Phase 2.7-5: reject oversized exports before persisting.
+    if len(content) > EXTERNAL_EXPORT_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Export too large ({len(content):,} bytes); max is {EXTERNAL_EXPORT_MAX_BYTES:,}",
+        )
     job = get_external_state().create_export_job(
         partner=partner,
         export_format=normalized_format,
@@ -1203,10 +1306,18 @@ def external_export_download(
     export_id: str,
     partner: Dict[str, Any] = Depends(_require_partner("export_feed")),
 ):
-    job = get_external_state().get_export_job(export_id)
+    state = get_external_state()
+    job = state.get_export_job(export_id)
     if not job or job.get("partner_id") != partner["partner_id"]:
         raise HTTPException(status_code=404, detail="Export job not found")
-    export_file = get_external_state().get_export_file(export_id)
+    # Phase 2.7-5: lazy TTL expiry — purge expired job+file and return 404.
+    created_at = _parse_dt(job.get("created_at"))
+    if created_at is not None:
+        age = (datetime.now(dashboard_router.UTC) - created_at).total_seconds()
+        if age > EXTERNAL_EXPORT_TTL_SECONDS:
+            state.delete_export_job(export_id)
+            raise HTTPException(status_code=404, detail="Export job not found")
+    export_file = state.get_export_file(export_id)
     if not export_file:
         raise HTTPException(status_code=404, detail="Export file not found")
     return Response(
