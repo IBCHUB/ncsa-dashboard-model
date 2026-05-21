@@ -809,12 +809,19 @@ def calculate_risk_score(
     }
     
     # ==========================================
-    # AI CLASSIFICATION FACTORS (NEW)
+    # AI CLASSIFICATION FACTORS
     # ==========================================
-    
-    # Get AI Confidence (Default 1.0 if not provided, to avoid zeroing out score)
-    ai_confidence = threat_classification.get("confidence", 1.0)
-    
+    # Note: Phase 1.16 — confidence multiplier removed.
+    # Rationale: Sources that deliver an IOC have already vouched for it
+    # (Cyberint validated before sending, MISP curators reviewed before
+    # publishing, sandbox ran the analysis). The act of delivery IS the
+    # confidence signal. source_quality + cross_source factors already
+    # capture trust differentiation. ML uncertainty is handled upstream
+    # by strict_ml_classification filtering low-confidence labels before
+    # they reach scoring. ai_confidence kept only for the separate
+    # Uncertainty Score dimension (not in Risk Score formula).
+    classifier_confidence = float(threat_classification.get("confidence", 1.0))
+
     # 7. Threat Type Severity
     threat_types = threat_classification.get("threat_types", [])
     threat_details = threat_classification.get("threat_details", [])
@@ -826,33 +833,14 @@ def calculate_risk_score(
     )
 
     threat_type_result = calculate_threat_type_score(threat_types, threat_details)
-    
-    if threat_type_result.get("using_granular_confidence"):
-        # Score is already weighted by individual confidences
-        threat_type_raw = float(threat_type_result["score"])
-        scoring_rule_text = "Sum(Severity * Specific Confidence)"
-        
-        # Format reason string for granular details
-        details_text = []
-        if threat_type_result.get('details'):
-            for d in threat_type_result['details']:
-                d_conf = int(d.get('confidence', 1.0) * 100)
-                details_text.append(f"{d['type']} ({d_conf}%)")
-        
-        reason_str = f"AI พบ: {', '.join(details_text)}" if details_text else "ไม่พบประเภทภัยคุกคาม"
-        reason_en_str = f"AI Found: {', '.join(details_text)}" if details_text else "No threats detected"
-        
-    else:
-        # Fallback: Apply Global Confidence Multiplier
-        # Logic: Risk = Severity * Global Confidence
-        threat_type_raw = float(threat_type_result["score"]) * ai_confidence
-        scoring_rule_text = "Raw: (Severity Score) * (Global AI Confidence %)"
-        
-        reason_str = f"AI มั่นใจ {int(ai_confidence*100)}% ว่าเป็น: {', '.join(threat_types)}" if threat_types else "ไม่พบประเภทภัยคุกคาม"
-        reason_en_str = f"AI Confidence {int(ai_confidence*100)}%: {', '.join(threat_types)}" if threat_types else "No threats detected"
 
+    # Use raw severity score — source delivered the threat type, we trust it
+    threat_type_raw = float(threat_type_result["score"])
     threat_type_score = _raw_to_score100(threat_type_raw, 100)
-    
+
+    reason_str = f"พบประเภทภัยคุกคาม: {', '.join(threat_types)}" if threat_types else "ไม่พบประเภทภัยคุกคาม"
+    reason_en_str = f"Threat types: {', '.join(threat_types)}" if threat_types else "No threats detected"
+
     breakdown["threat_type_severity"] = {
         **threat_type_result,
         "raw_score": round(threat_type_raw, 2),
@@ -860,23 +848,22 @@ def calculate_risk_score(
         "score": round(threat_type_score, 2),
         "maxScore": 100,
         "weighted_score": _weighted_points("threat_type_severity", threat_type_score, 100),
-        "confidence_used": ai_confidence,
         "description": f"ตรวจพบ {len(threat_types)} ประเภทภัยคุกคาม",
         "reason": reason_str,
         "reasonEn": reason_en_str,
-        "methodology": "AI (NLP) Threat Classification",
-        "methodologyEn": "AI (NLP) Threat Classification",
-        "scoringRules": scoring_rule_text
+        "methodology": "Source-delivered threat type severity (no confidence multiplier)",
+        "methodologyEn": "Source-delivered threat type severity (no confidence multiplier)",
+        "scoringRules": "Raw severity score (sources vouch via delivery)"
     }
-    
+
     # 8. Threat Actor Attribution
     threat_actors = threat_classification.get("threat_actors", [])
     threat_actor_result = calculate_threat_actor_score(threat_actors)
-    
-    # Apply Confidence Multiplier
-    threat_actor_raw = threat_actor_result["score"] * ai_confidence
+
+    # Use raw actor score — source delivered the actor attribution, we trust it
+    threat_actor_raw = threat_actor_result["score"]
     threat_actor_score = _raw_to_score100(threat_actor_raw, 100)
-    
+
     actor_names = [a.get('name', a) if isinstance(a, dict) else a for a in threat_actors]
     breakdown["threat_actor"] = {
         **threat_actor_result,
@@ -885,24 +872,23 @@ def calculate_risk_score(
         "score": round(threat_actor_score, 2),
         "maxScore": 100,
         "weighted_score": _weighted_points("threat_actor", threat_actor_score, 100),
-        "confidence_used": ai_confidence,
         "actors_found": actor_names,
-        "description": f"กลุ่มผู้โจมตี: {', '.join(actor_names) if actor_names else 'ไม่ระบุ'} (Conf: {int(ai_confidence*100)}%)",
-        "reason": f"AI มั่นใจ {int(ai_confidence*100)}% พบกลุ่ม: {', '.join(actor_names)}" if actor_names else "ไม่พบกลุ่มผู้โจมตี",
-        "reasonEn": f"AI Conf {int(ai_confidence*100)}% found: {', '.join(actor_names)}" if actor_names else "No threat actors found",
-        "methodology": "Attribution Score x AI Confidence",
-        "methodologyEn": "Attribution Score x AI Confidence",
-        "scoringRules": "Raw: (Actor Score) * (AI Confidence %)"
+        "description": f"กลุ่มผู้โจมตี: {', '.join(actor_names) if actor_names else 'ไม่ระบุ'}",
+        "reason": f"พบกลุ่ม: {', '.join(actor_names)}" if actor_names else "ไม่พบกลุ่มผู้โจมตี",
+        "reasonEn": f"Found actors: {', '.join(actor_names)}" if actor_names else "No threat actors found",
+        "methodology": "Attribution from source/MITRE mapping (no confidence multiplier)",
+        "methodologyEn": "Attribution from source/MITRE mapping (no confidence multiplier)",
+        "scoringRules": "Raw actor score × activity_status (sources vouch via delivery)"
     }
-    
+
     # 9. MITRE ATT&CK Techniques
     mitre_techniques = threat_classification.get("mitre_techniques", [])
     mitre_result = calculate_mitre_score(mitre_techniques)
-    
-    # Apply Confidence Multiplier
-    mitre_raw = mitre_result["score"] * ai_confidence
+
+    # Use raw MITRE score — source/mapping delivered the techniques, we trust them
+    mitre_raw = mitre_result["score"]
     mitre_score = _raw_to_score100(mitre_raw, 100)
-    
+
     breakdown["mitre_techniques"] = {
         **mitre_result,
         "raw_score": round(mitre_raw, 2),
@@ -910,17 +896,17 @@ def calculate_risk_score(
         "score": round(mitre_score, 2),
         "maxScore": 100,
         "weighted_score": _weighted_points("mitre_techniques", mitre_score, 100),
-        "confidence_used": ai_confidence,
         "techniques_found": mitre_techniques,
-        "description": f"MITRE tactics: {mitre_result['sophistication']} (Conf: {int(ai_confidence*100)}%)",
-        "reason": f"AI มั่นใจ {int(ai_confidence*100)}% พบ {len(mitre_techniques)} tactics" if mitre_techniques else "ไม่พบ MITRE tactics",
-        "reasonEn": f"AI Conf {int(ai_confidence*100)}% found {len(mitre_techniques)} tactics" if mitre_techniques else "No MITRE tactics found",
-        "methodology": "MITRE Score x AI Confidence",
-        "methodologyEn": "MITRE Score x AI Confidence",
-        "scoringRules": "Raw: 20 points per confirmed technique × AI Confidence % (cap 100)"
+        "description": f"MITRE tactics: {mitre_result['sophistication']}",
+        "reason": f"พบ {len(mitre_techniques)} tactics" if mitre_techniques else "ไม่พบ MITRE tactics",
+        "reasonEn": f"Found {len(mitre_techniques)} tactics" if mitre_techniques else "No MITRE tactics found",
+        "methodology": "MITRE technique mapping (no confidence multiplier)",
+        "methodologyEn": "MITRE technique mapping (no confidence multiplier)",
+        "scoringRules": "Raw: 20 points per confirmed technique (cap 100)"
     }
-    
-    # REMOVED: Separate AI Confidence Bonus (now integrated as multiplier)
+
+    # Note: classifier_confidence is preserved for the separate Uncertainty Score
+    # dimension below — it is NOT used as a multiplier in the Risk Score formula.
     
     # ==========================================
     # CALCULATE TOTAL SCORE
@@ -933,7 +919,7 @@ def calculate_risk_score(
         "threat_type_severity": breakdown["threat_type_severity"]["weighted_score"],
         "threat_actor": breakdown["threat_actor"]["weighted_score"],
         "mitre_techniques": breakdown["mitre_techniques"]["weighted_score"]
-        # ai_confidence is removed from weighted sum (already applied)
+        # Phase 1.16: confidence multiplier removed entirely; raw factor scores used
     }
 
     weighted_total = round(sum(weighted_components.values()), 3)
@@ -1149,7 +1135,7 @@ def calculate_risk_score(
     # Measures "how confident are we in this risk assessment?"
     # NOT the same as risk — high risk + high uncertainty = "investigate more"
     
-    confidence_component = ai_confidence * 40  # AI confidence contributes 40%
+    confidence_component = classifier_confidence * 40  # Classifier confidence contributes 40% (Uncertainty dimension only)
     source_component = min(source_count, 5) / 5 * 30  # Source count contributes 30%
     diversity_component = min(source_diversity, 3) / 3 * 30  # Diversity contributes 30%
     
