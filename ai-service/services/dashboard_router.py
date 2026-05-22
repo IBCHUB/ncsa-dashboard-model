@@ -1009,6 +1009,11 @@ def _warehouse_summary_stats(
                 "filter": {"term": {"ai_severity": "high"}},
             },
             "thailand_threat": {
+                # นับ IOC ที่ "ประเทศไทยเป็นผู้ถูกโจมตี" — ไม่นับ geo_country=TH
+                # (geo_country คือที่ตั้งของ IP malicious ตัวเอง ≠ เป้าหมาย)
+                # ปัจจุบัน Cyberint feed ไม่มี target_country/victim_country field →
+                # ผลจะเป็น 0 หรือใกล้ 0 ซึ่งถูกต้องกว่าการแสดงตัวเลขผิดความหมาย
+                # Phase 4+: เพิ่ม target_country ใน ingestion pipeline แล้ว filter นี้จะมีค่า
                 "filter": {
                     "bool": {
                         "should": [
@@ -1020,7 +1025,6 @@ def _warehouse_summary_stats(
                             {"term": {"target_country": "Thailand"}},
                             {"term": {"victim_country": "TH"}},
                             {"term": {"victim_country": "Thailand"}},
-                            {"term": {"geo_country": "TH"}},
                         ],
                         "minimum_should_match": 1,
                     }
