@@ -989,10 +989,7 @@ def _warehouse_summary_stats(
         time_mode=time_mode,
         warehouse_eligible_only=warehouse_eligible_only,
     )
-    severity_filters = {
-        severity: {"term": {"ai_severity": severity}}
-        for severity in ("critical", "high", "medium", "low", "clean")
-    }
+    severity_filters = _severity_filters_config()
     base_query = {
         "bool": {
             "must": [{"match_all": {}}],
@@ -2290,7 +2287,7 @@ def _build_threat_level(docs: List[Dict[str, Any]], now: Optional[datetime] = No
     total_today = len(todays_docs)
     baseline_avg = (sum(counts_by_day.values()) / len(counts_by_day)) if counts_by_day else 0
     spike_ratio = total_today / baseline_avg if baseline_avg > 0 else (3 if total_today > 0 else 0)
-    high_critical = [doc for doc in todays_docs if _source_severity(doc) in {"critical", "high"}]
+    high_critical = [doc for doc in todays_docs if _ai_severity(doc) in {"critical", "high"}]
     severity_ratio = len(high_critical) / total_today if total_today else 0
 
     cii_sectors = {"critical_infrastructure", "government", "healthcare", "financial", "technology"}
@@ -2405,7 +2402,7 @@ def _build_threat_level(docs: List[Dict[str, Any]], now: Optional[datetime] = No
 
 
 def _build_severity_distribution(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    counts = Counter(_source_severity(doc) for doc in docs)
+    counts = Counter(_ai_severity(doc) for doc in docs)
     total = sum(counts.values()) or 1
     color_map = {
         "critical": "#E31B54",
@@ -2458,7 +2455,7 @@ def _primary_threat_type(doc: Dict[str, Any]) -> Optional[str]:
 def _group_severity_label(docs: Sequence[Dict[str, Any]]) -> str:
     highest = "clean"
     for doc in docs:
-        severity = _source_severity(doc)
+        severity = _ai_severity(doc)
         if SEVERITY_ORDER[severity] > SEVERITY_ORDER[highest]:
             highest = severity
     return _severity_label(highest)
@@ -2483,10 +2480,10 @@ def _build_exposure_summary(
             "total_threats": len(visible_docs),
             "ioc_active": len(active_list),
             "critical_active": sum(
-                1 for doc in active_list if _source_severity(doc) == "critical"
+                1 for doc in active_list if _ai_severity(doc) == "critical"
             ),
             "high_active": sum(
-                1 for doc in active_list if _source_severity(doc) == "high"
+                1 for doc in active_list if _ai_severity(doc) == "high"
             ),
         }
     )
@@ -2497,10 +2494,10 @@ def _build_exposure_summary(
             "total_threats": len(previous_visible_list),
             "ioc_active": len(previous_active_list),
             "critical_active": sum(
-                1 for doc in previous_active_list if _source_severity(doc) == "critical"
+                1 for doc in previous_active_list if _ai_severity(doc) == "critical"
             ),
             "high_active": sum(
-                1 for doc in previous_active_list if _source_severity(doc) == "high"
+                1 for doc in previous_active_list if _ai_severity(doc) == "high"
             ),
         }
     )
@@ -2657,7 +2654,7 @@ def _attack_time_event_row(
     return {
         "event_id": doc["_id"],
         "timestamp": timestamp.isoformat().replace("+00:00", "Z") if timestamp else None,
-        "severity": _severity_label(_normalize_severity(doc.get("severity"))),
+        "severity": _severity_label(_normalize_severity(doc.get("ai_severity") or doc.get("severity"))),
         "threat_types": threat_types,
         "ioc_value": doc.get("ioc_value") or doc.get("value"),
         "source_attacker": doc.get("source_ip") or _country_from_doc(doc),
@@ -2859,7 +2856,7 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
             continue
         docs = origin_docs[country]
         severity_counts = Counter(
-            _source_severity(doc)
+            _ai_severity(doc)
             for doc in docs
         )
         display_severity = _origin_display_severity(severity_counts)
@@ -2889,7 +2886,7 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
         source_counter = Counter(
             source
             for doc in docs
-            if _source_severity(doc) in {"high", "critical"}
+            if _ai_severity(doc) in {"high", "critical"}
             for source in _normalize_sources(doc)
             if _is_high_confidence_source(source) or _safe_float(doc.get("confidence"), 0.0) >= 9.0
         )
@@ -2930,10 +2927,10 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
     }
 
 
-def _severity_breakdown_counts(docs: Sequence[Dict[str, Any]], severity_field: str = "severity") -> Dict[str, int]:
+def _severity_breakdown_counts(docs: Sequence[Dict[str, Any]], severity_field: str = "ai_severity") -> Dict[str, int]:
     counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "clean": 0}
     for doc in docs:
-        severity = _normalize_severity(doc.get(severity_field) or doc.get("severity"))
+        severity = _normalize_severity(doc.get(severity_field) or doc.get("ai_severity") or doc.get("severity"))
         counts[severity] = counts.get(severity, 0) + 1
     return counts
 
@@ -2984,7 +2981,7 @@ def _filter_warehouse_docs(
             if not doc_sources.intersection(allowed_sources):
                 continue
         if allowed_severities:
-            severity = _source_severity(doc)
+            severity = _ai_severity(doc)
             if severity not in allowed_severities:
                 continue
         if allowed_risk_levels:
@@ -3387,7 +3384,7 @@ def _build_report_ranking(
         group_values = _group_dimension_values(report_key, doc, datalake_candidates)
         event_time = _pick_event_time(doc)
         threat_types = [str(item) for item in (doc.get("ai_threat_types") or doc.get("threat_type") or []) if str(item).strip()]
-        severity = _source_severity(doc)
+        severity = _ai_severity(doc)
         for label in group_values:
             current = grouped.setdefault(
                 label,
@@ -3959,7 +3956,7 @@ def _build_trend_analytics(
         hour_key = _to_bangkok_hour(event_time)
         if hour_key not in training_keys:
             continue
-        severity = _source_severity(doc)
+        severity = _ai_severity(doc)
         training_point = training_buckets.setdefault(hour_key, {"hour": hour_key, "label": hour_key[5:], "total": 0, "critical": 0, "high": 0})
         training_point["total"] += 1
         if severity == "critical":
@@ -4423,7 +4420,7 @@ def _operations_overview(docs: List[Dict[str, Any]], anchor_end: Optional[dateti
     See `_operations_overview_from_aggs` for the label-to-field rationale.
     Values follow the same semantic so the two paths agree.
     """
-    severities = [_source_severity(doc) for doc in docs]
+    severities = [_ai_severity(doc) for doc in docs]
     unique_sources = {source for doc in docs for source in _normalize_sources(doc)}
     unique_canonical = {
         (doc.get("canonical_ioc_key") or doc.get("ioc_value"))
@@ -4452,7 +4449,7 @@ def _action_status(doc: Dict[str, Any], assignment: Optional[Dict[str, Any]]) ->
 
 
 def _build_action_ticket(doc: Dict[str, Any], assignment: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    severity = _severity_label(_source_severity(doc))
+    severity = _severity_label(_ai_severity(doc))
     sector = _sector_info(doc)
     action_meta = derive_action_metadata(doc)
     country = _country_from_doc(doc)
@@ -4580,7 +4577,7 @@ def _build_ioc_record(rank: int, doc: Dict[str, Any]) -> Dict[str, Any]:
         "ioc_value": doc.get("ioc_value"),
         "ioc_type": ioc_type,
         "ioc_type_label": IOC_TYPE_LABELS.get(ioc_type, ioc_type.upper()),
-        "severity": _severity_label(_source_severity(doc)),
+        "severity": _severity_label(_ai_severity(doc)),
         "risk_score": int(doc.get("ai_risk_score") or 0),
         "threat_types": doc.get("ai_threat_types") or doc.get("threat_type") or [],
         "sources": _display_sources(_normalize_sources(doc)),
@@ -4675,7 +4672,7 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
             "ioc_value": warehouse_doc.get("ioc_value"),
             "ioc_type": warehouse_doc.get("ioc_type"),
             "ioc_type_label": IOC_TYPE_LABELS.get(str(warehouse_doc.get("ioc_type", "")).lower(), str(warehouse_doc.get("ioc_type", "")).upper()),
-            "severity": _severity_label(_source_severity(warehouse_doc)),
+            "severity": _severity_label(_ai_severity(warehouse_doc)),
             "sources": _display_sources(_normalize_sources(warehouse_doc)),
             "first_seen": warehouse_doc.get("first_seen") or warehouse_doc.get("event_time") or warehouse_doc.get("collect_time"),
             "threat_types": warehouse_doc.get("ai_threat_types") or warehouse_doc.get("threat_type") or [],
@@ -4684,7 +4681,7 @@ def _build_ioc_detail(warehouse_doc: Dict[str, Any], datalake_docs: List[Dict[st
             "model": warehouse_doc.get("score_model_version") or "ai-scoring",
             "risk_score": int(warehouse_doc.get("ai_risk_score") or 0),
             "risk_level": _severity_label(_ai_severity(warehouse_doc)),
-            "severity": _severity_label(_source_severity(warehouse_doc)),
+            "severity": _severity_label(_ai_severity(warehouse_doc)),
             "summary": ", ".join(warehouse_doc.get("ai_threat_types") or []) or None,
             "contributing_factors": breakdown_factors,
         },
@@ -4974,7 +4971,7 @@ def _build_ioc_relationship_graph(
         "ioc",
         warehouse_doc.get("ioc_value"),
         ioc_type=warehouse_doc.get("ioc_type"),
-        severity=_severity_label(_source_severity(warehouse_doc)),
+        severity=_severity_label(_ai_severity(warehouse_doc)),
         risk_score=int(warehouse_doc.get("ai_risk_score") or 0),
     )
     if ioc_node["id"] not in seen_nodes:
@@ -5132,7 +5129,7 @@ def _build_ioc_relationship_graph(
             "ioc",
             related_doc.get("ioc_value"),
             ioc_type=related_doc.get("ioc_type"),
-            severity=_severity_label(_source_severity(related_doc)),
+            severity=_severity_label(_ai_severity(related_doc)),
             risk_score=int(related_doc.get("ai_risk_score") or 0),
         )
         rel_first = related_doc.get("first_seen") or related_doc.get("event_time")
@@ -5307,7 +5304,7 @@ def _build_threat_type_detail_payload(
     sector_counts = Counter(_sector_info(doc)["sector_name"] for doc in docs if _sector_info(doc).get("sector_name"))
     actor_counts = Counter(actor for doc in docs for actor in (doc.get("ai_threat_actors") or []) if str(actor).strip())
     source_counts = Counter(source for doc in docs for source in _normalize_sources(doc))
-    severity_counts = Counter(_source_severity(doc) for doc in docs)
+    severity_counts = Counter(_ai_severity(doc) for doc in docs)
     mitre_values = []
     for doc in docs:
         for technique in doc.get("ai_mitre_techniques") or []:
@@ -5406,7 +5403,7 @@ def _build_trend_event_rows(
 ) -> List[Dict[str, Any]]:
     grouped: Dict[tuple, Dict[str, Any]] = {}
     for doc in docs:
-        severity = _source_severity(doc)
+        severity = _ai_severity(doc)
         if severity == "clean":
             continue
         display_time = _pick_display_time_in_range(doc, time_mode, start_date, end_date)
@@ -5486,7 +5483,7 @@ def _build_cve_records(
         warehouse_related = bucket["warehouse_docs"]
         risk_score = max((int(doc.get("ai_risk_score") or 0) for doc in warehouse_related), default=0)
         severity = max(
-            (_source_severity(doc) for doc in all_docs),
+            (_ai_severity(doc) for doc in all_docs),
             key=lambda item: SEVERITY_ORDER.get(item, 0),
             default="low",
         )
@@ -5628,7 +5625,7 @@ def _build_threat_landscape_payload(
     source_counts = Counter(source for doc in list(warehouse_docs) + list(datalake_docs) for source in _normalize_sources(doc))
     country_counts = Counter(country for country in (_country_from_doc(doc) for doc in list(datalake_docs) + list(warehouse_docs)) if country)
     ioc_type_counts = Counter(str(doc.get("ioc_type") or "").lower() for doc in warehouse_docs if doc.get("ioc_type"))
-    severity_counts = Counter(_source_severity(doc) for doc in warehouse_docs)
+    severity_counts = Counter(_ai_severity(doc) for doc in warehouse_docs)
     total = len(warehouse_docs)
     high_risk = sum(1 for doc in warehouse_docs if int(doc.get("ai_risk_score") or 0) >= 80)
     return {
