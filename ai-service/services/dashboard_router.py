@@ -4764,31 +4764,60 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _operations_overview_from_aggs(aggs: Dict[str, Any], recent_stats: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Phase 3.2 BUG-3.2-1: Operations Dashboard frontend ใช้ label ที่ไม่ตรงกับชื่อ
+    field ของ backend. Frontend (`lib/dashboard.ts:285-289`) นำมาแสดงตาม mapping:
+
+      - "Total Threat"  label ← payload.active_ioc
+      - "Active IOC"    label ← payload.critical_ioc_active
+      - "Critical IOCs" label ← payload.new_ioc
+      - "High IOCs"     label ← payload.high_ioc_active
+
+    Per scope rule (Phase 3 ห้ามแก้ frontend) — backend จึง map value ให้ตรงกับ
+    label ที่ user เห็น โดยคง response key เดิม (frontend อ่าน key เดิม):
+
+      - active_ioc           → total doc count       (= "Total Threat")
+      - critical_ioc_active  → unique active IOCs     (= "Active IOC")
+      - new_ioc              → unique critical IOCs   (= "Critical IOCs")
+      - high_ioc_active      → unique high IOCs       (= "High IOCs", เดิมใช้ doc_count
+                                                       — เปลี่ยนเป็น cardinality เพื่อ
+                                                       consistency)
+
+    `recent_stats` parameter ไม่ได้ใช้แล้วใน path นี้ (เคยใช้ตอน new_ioc = 24h count)
+    คงไว้เพื่อ backward-compat ของ signature.
+    """
+    _ = recent_stats  # intentionally unused (kept for signature compatibility)
+    critical_aggs = aggs.get("critical_active") or {}
+    high_aggs = aggs.get("high_active") or {}
     return {
-        "active_ioc": int((aggs.get("active_iocs") or {}).get("value") or aggs.get("total") or 0),
-        "critical_ioc_active": int((aggs.get("critical_active") or {}).get("doc_count") or 0),
-        "new_ioc": int((recent_stats or {}).get("total_threats") or 0),
+        "active_ioc": int(aggs.get("total") or 0),
+        "critical_ioc_active": int((aggs.get("active_iocs") or {}).get("value") or 0),
+        "new_ioc": int((critical_aggs.get("active_iocs") or {}).get("value") or critical_aggs.get("doc_count") or 0),
         "sources_active": int((aggs.get("source_count") or {}).get("value") or 0),
-        "high_ioc_active": int((aggs.get("high_active") or {}).get("doc_count") or 0),
+        "high_ioc_active": int((high_aggs.get("active_iocs") or {}).get("value") or high_aggs.get("doc_count") or 0),
     }
 
 
 def _operations_overview(docs: List[Dict[str, Any]], anchor_end: Optional[datetime] = None) -> Dict[str, Any]:
+    """Fallback Python-side overview (dead path — only kept as reference).
+
+    See `_operations_overview_from_aggs` for the label-to-field rationale.
+    Values follow the same semantic so the two paths agree.
+    """
     severities = [_source_severity(doc) for doc in docs]
     unique_sources = {source for doc in docs for source in _normalize_sources(doc)}
-    anchor = anchor_end or datetime.now(UTC)
-    recent_cutoff = anchor - timedelta(days=1)
-    new_ioc = 0
-    for doc in docs:
-        event_time = _pick_event_time(doc)
-        if event_time and recent_cutoff <= event_time <= anchor:
-            new_ioc += 1
+    unique_canonical = {
+        (doc.get("canonical_ioc_key") or doc.get("ioc_value"))
+        for doc in docs
+        if (doc.get("canonical_ioc_key") or doc.get("ioc_value"))
+    }
+    _ = anchor_end  # not needed under new label semantics
     return {
-        "active_ioc": len(docs),
-        "critical_ioc_active": sum(1 for severity in severities if severity == "critical"),
-        "new_ioc": new_ioc,
+        "active_ioc": len(docs),  # "Total Threat" — total docs in window
+        "critical_ioc_active": len(unique_canonical),  # "Active IOC" — unique active IOCs
+        "new_ioc": sum(1 for severity in severities if severity == "critical"),  # "Critical IOCs"
         "sources_active": len(unique_sources),
-        "high_ioc_active": sum(1 for severity in severities if severity == "high"),
+        "high_ioc_active": sum(1 for severity in severities if severity == "high"),  # "High IOCs"
     }
 
 
