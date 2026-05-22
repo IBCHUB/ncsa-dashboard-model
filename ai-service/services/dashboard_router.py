@@ -4196,11 +4196,15 @@ def _build_threat_level_from_aggregations(
             })
     weighted_sector_count = sector_count * (1.5 if cii_present else 1.0)
 
-    actor_counts: Dict[str, int] = {}
-    for bucket in ((aggs.get("threat_types") or {}).get("buckets") or []):
-        key = str(bucket.get("key") or "").strip().lower()
-        if key in {"apt", "apt group", "threat actor", "named actor"}:
-            actor_counts[key] = int(bucket.get("doc_count") or 0)
+    # Named Threat Actors: นับจาก ai_threat_actors field (เช่น Lazarus, APT28)
+    # ไม่ใช่จาก ai_threat_types (ซึ่งเป็นชนิดภัย เช่น Malware, Phishing)
+    actor_buckets = (aggs.get("threat_actors") or {}).get("buckets") or []
+    actor_counts: Dict[str, int] = {
+        str(bucket.get("key") or "").strip(): int(bucket.get("doc_count") or 0)
+        for bucket in actor_buckets
+        if int(bucket.get("doc_count") or 0) > 0
+        and str(bucket.get("key") or "").strip()
+    }
     named_actor_count = len(actor_counts)
 
     def volume_score(value: float) -> Dict[str, Any]:
@@ -6013,7 +6017,19 @@ def executive_dashboard(
     severity_distribution = _build_severity_distribution_from_counts(current_stats.get("severity_counts") or {})
     treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("threat_types") or [])
     sector_treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("sector_terms") or [])
-    threat_level = _build_threat_level_from_aggregations(current_stats, current_aggs, now=now)
+    # Threat Level ต้องใช้ trend 14 วันย้อนหลังตาม spec (ไม่ใช่ date range ที่ user เลือก)
+    threat_level_lookback_start = _to_bangkok_date(now - timedelta(days=14))
+    threat_level_lookback_end = _to_bangkok_date(now)
+    threat_level_aggs = _warehouse_dashboard_aggs(
+        start_date=threat_level_lookback_start,
+        end_date=threat_level_lookback_end,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        include_trend=True,
+        time_mode=TIME_MODE_PROCESSED,
+    )
+    threat_level = _build_threat_level_from_aggregations(current_stats, threat_level_aggs, now=now)
     primary_sector = threat_level["top_sectors"][0] if threat_level["top_sectors"] else {"sector_name": None, "count": 0}
     attack_origin_map = _build_attack_origin_map_from_aggs(current_aggs)
     is_single_day = start_date == end_date
@@ -6052,7 +6068,11 @@ def executive_dashboard(
             "level": threat_level["level"],
             "level_th": threat_level["level_th"],
             "score": threat_level["score"],
-            "delta_percent": round(threat_level["inputs"]["spike_ratio"] * 10, 2),
+            # delta_percent = % เปลี่ยนแปลงจากค่าเฉลี่ย 14 วัน
+            # spike_ratio=2.0 → +100% (มากกว่าปกติ 2 เท่า)
+            # spike_ratio=1.0 → 0% (ปกติ)
+            # spike_ratio=0.5 → -50% (น้อยกว่าปกติ)
+            "delta_percent": round((threat_level["inputs"]["spike_ratio"] - 1) * 100, 2),
             "primary_sector": {
                 "name": primary_sector.get("sector_name") or None,
                 "value": primary_sector.get("count", 0),
