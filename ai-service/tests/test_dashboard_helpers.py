@@ -128,11 +128,12 @@ def test_normalize_severity_string_inputs(value, expected):
     [
         ("100", "critical"),
         ("80", "critical"),
-        ("79", "high"),
-        ("60", "high"),
-        ("59", "medium"),
-        ("40", "medium"),
-        ("39", "low"),
+        ("75", "critical"),
+        ("74", "high"),
+        ("50", "high"),
+        ("49", "medium"),
+        ("25", "medium"),
+        ("24", "low"),
         ("1", "low"),
         ("0", "clean"),
     ],
@@ -164,10 +165,10 @@ def test_highest_severity_from_buckets_returns_clean_when_all_empty():
 
 
 def test_source_display_name_known_aliases():
-    assert r._source_display_name("cyberint_iocs") == "Cyberint IOC Feed"
+    assert r._source_display_name("cyberint_iocs") == "Cyberint Threat Intelligence"
     assert r._source_display_name("The Hacker News") == "The Hacker News"
     assert r._source_display_name("thehackernews") == "The Hacker News"
-    assert r._source_display_name("zone-h") == "Zone-H Defacement Feed"
+    assert r._source_display_name("zone-h") == "Zone-H"
 
 
 def test_source_display_name_picks_priority_when_comma_joined():
@@ -229,8 +230,8 @@ def test_datalake_filters_map_severity_strings_to_numeric_bands():
     assert bool_clauses, "expected a bool/should clause for severity bands"
     should = bool_clauses[0]["bool"]["should"]
     bands = [(clause["range"]["severity"]["gte"], clause["range"]["severity"]["lte"]) for clause in should]
-    assert (80, 100) in bands
-    assert (60, 79) in bands
+    assert (75, 100) in bands
+    assert (50, 74) in bands
 
 
 def test_scroll_all_warehouse_docs_propagates_min_risk_score(monkeypatch):

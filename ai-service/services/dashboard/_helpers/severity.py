@@ -34,10 +34,10 @@ SEVERITY_ORDER: Dict[str, int] = {
 # querying the datalake with a normalized string label maps to the right
 # numeric range.
 CYBERINT_SEVERITY_BANDS: Dict[str, Tuple[int, int]] = {
-    "critical": (80, 100),
-    "high": (60, 79),
-    "medium": (40, 59),
-    "low": (1, 39),
+    "critical": (75, 100),
+    "high": (50, 74),
+    "medium": (25, 49),
+    "low": (1, 24),
     "clean": (0, 0),
 }
 
@@ -57,14 +57,15 @@ def normalize_severity(value: Optional[str]) -> str:
         return "medium"
     if text in {"clean", "info"}:
         return "clean"
-    # Handle numeric severity scores (e.g. cyberint sends "100", "80", "20", "0")
+    # Handle numeric severity scores — thresholds aligned with scorer.py
+    # (75/50/25/0) so dashboard display matches the AI scoring engine.
     if text.isdigit():
         score = int(text)
-        if score >= 80:
+        if score >= 75:
             return "critical"
-        if score >= 60:
+        if score >= 50:
             return "high"
-        if score >= 40:
+        if score >= 25:
             return "medium"
         if score == 0:
             return "clean"
