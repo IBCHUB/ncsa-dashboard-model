@@ -1,31 +1,21 @@
-# Phase 3 — ตรวจสอบความถูกต้องเชิงความหมายของข้อมูล (Semantic Data Correctness Audit)
+# Phase 3 — ตรวจสอบความถูกต้องของตัวเลขบน Dashboard
 
-ตรวจสอบว่า **ทุก label/ตัวเลขที่แสดงบนหน้า dashboard** ตรงกับข้อมูลที่ดึงมาจาก data warehouse (`.43`) ผ่าน ES query ที่ถูกต้องจริงๆ
+ตรวจสอบว่า **ตัวเลข/chart/list ที่แสดงบนหน้าเว็บ ตรงกับสูตรที่ควรเป็น** หรือไม่ —
+ดึงข้อมูลถูก field ไหม นับถูกหลักเกณฑ์ไหม
 
-**ขอบเขต:** แก้เฉพาะ backend (`ai-service`) — **ห้ามแก้ frontend (`ncsa-dashboard-web`) ใดๆ ทุกหน้า**
-ถ้า label บนหน้าเว็บไม่ชัดเจน → ถามผู้ใช้ก่อน อย่าตัดสินใจเอง
+**ขอบเขต:** แก้ backend (`ai-service`) เท่านั้น — **ห้ามแก้ frontend ใดๆ**
 
 **Branch:** `audit/phase3-semantic-data`
 
-**Ground truth fixtures (ดึงจาก ES จริง):** `ai-service/tests/semantic/fixtures/`
-
-| ไฟล์ | คำอธิบาย |
-|------|---------|
-| `es_mapping_warehouse.json` | Field types ของ warehouse (.43) |
-| `es_mapping_datalake.json` | Field types ของ datalake (.41) |
-| `sample_warehouse.json` | ตัวอย่าง 5 documents ล่าสุดจาก warehouse |
-| `sample_datalake.json` | ตัวอย่าง 5 documents ล่าสุดจาก datalake |
-| `warehouse_field_distribution.json` | การกระจายค่าของ field สำคัญ จากข้อมูล 11.09M docs |
-
 ## ความคืบหน้า
 
-| Sub | หน้า | สถานะ | เอกสาร | Bugs ที่แก้ |
-|-----|------|--------|--------|------------|
-| 3.0 | Cross-cutting helpers | ✅ เสร็จ | [3.0-cross-cutting-helpers.md](./3.0-cross-cutting-helpers.md) | 3 (1 CRITICAL, 1 HIGH, 1 MED) |
-| 3.1 | Executive Dashboard | ⏳ รอ | — | — |
-| 3.2 | Operations Dashboard | ⏳ รอ | — | — |
-| 3.3 | TI Overview + IOC Summary | ⏳ รอ | — | — |
-| 3.4 | Threat Landscape | ⏳ รอ | — | — |
+| Sub | หน้า / สิ่งที่ตรวจ | สถานะ | เอกสาร | Bugs ที่แก้ |
+|-----|-------------------|--------|--------|------------|
+| 3.0 | สูตรกลาง / helper ที่หลายหน้าใช้ร่วมกัน | ✅ เสร็จ | [3.0-cross-cutting-helpers.md](./3.0-cross-cutting-helpers.md) | 3 (CRITICAL 1, HIGH 1, MED 1) |
+| 3.1 | Executive Dashboard (`/admin/executive`) | ⏳ รอ | — | — |
+| 3.2 | Operations Dashboard (`/admin/operations`) | ⏳ รอ | — | — |
+| 3.3 | Threat Intelligence — Overview + IOC Summary (`/admin/threatintelligence`) | ⏳ รอ | — | — |
+| 3.4 | Threat Landscape (`/admin/threatlandscape`) | ⏳ รอ | — | — |
 | 3.5 | IOC Datalake / Analytics / Threat Hunting | ⏳ รอ | — | — |
 | 3.6 | TI sub-pages (×6) | ⏳ รอ | — | — |
 | 3.7 | Action Center / Reports / News / CVE | ⏳ รอ | — | — |
@@ -33,63 +23,59 @@
 
 ## รูปแบบเอกสารต่อหน้า (per-page document format)
 
-ทุกไฟล์ `3.X-<page>.md` ใช้ section headers ภาษาอังกฤษคงเดิมเหล่านี้ (เนื้อหาภายในเป็นไทย) — เพื่อให้เทียบ UI ได้สะดวกและ search ข้ามไฟล์ได้:
+ทุกไฟล์ `3.X-<page>.md` ใช้โครงสร้างเดียวกัน — มุมมอง **product/QA** ไม่ใช่ dev:
 
 ```
 # 3.X — <ชื่อหน้า>
 
-## Routes audited
-- Frontend (.tsx): <path>
-- API endpoints: <list>
+## หน้าเว็บที่ตรวจ
+- ชื่อหน้า: <ชื่อตรงตามที่แสดงบน UI>
+- URL: /admin/...
 
-## Label inventory
+## รายการตัวเลข/chart ที่ตรวจ
 
-| UI label | Response path | Backend fn | ES field | ES agg | สูตรคำนวณ / ความหมาย | Verified | Bug? |
-|----------|---------------|------------|----------|--------|---------------------|----------|------|
+| Label บนหน้าเว็บ | ที่แสดงเป็นอะไร | สูตรคำนวณ (ภาษาคน) | แหล่งข้อมูล | ถูกไหม | หมายเหตุ |
+|----------------|----------------|--------------------|-------------|--------|---------|
 
-## Bugs found
+## Bugs ที่พบ
+| # | Severity | Label ที่กระทบ | ปัญหา | สถานะ |
 
-| # | Severity | สรุป (1 บรรทัด) | Fix commit |
-
-## Deferred / data-quality notes
-
-| # | Severity | ปัญหา | เหตุผลที่เลื่อน |
-
-## Regression tests
-## Commits ที่เกี่ยวข้อง
+## ข้อสังเกต / Data quality
+| # | ประเด็น | ผลต่อหน้าเว็บ |
 ```
 
-**คอลัมน์ "UI label"** ต้องคัดลอกข้อความตรงๆ จากหน้าเว็บ (ทั้ง Thai/English ตามที่แสดงจริง) เพื่อให้ทีมเทียบ UI ↔ doc ได้ทันที
+### หลักการเขียน "สูตรคำนวณ (ภาษาคน)"
 
-## Baseline ของข้อมูลจริง (จาก `warehouse_field_distribution.json` — 11.09M docs)
+เขียนให้คน non-dev อ่านเข้าใจ — เช่น:
+- ✅ **ดี**: "นับ IOC ที่ AI ประเมินว่าเป็น Critical และยังไม่ถูกปิด"
+- ❌ **ไม่ดี**: "count(docs WHERE ai_severity='critical' AND action_status='open')"
 
-ค่าจริงในตอนนี้บนระบบ — ใช้เป็นจุดอ้างอิงเวลา trace label ↔ query
+ถ้าจำเป็นต้องใช้ field name ให้ใส่ในวงเล็บท้าย เช่น
+"นับ IOC severity = Critical ที่ status ยังเปิดอยู่ *(severity=critical, action_status=open)*"
 
-- **severity** (และ `ai_severity`): `low` 11M / `medium` 40K / `critical` 8.6K / `high` **มีแค่ 1 doc**
-- **ioc_type**: `sha256` 90% / `url` 6% / `ip` 2.6% / `domain` 1.4% / md5+sha1 รวม 4 docs
-- **source_name**: `cyberint_iocs` 99.99% (แทบเป็น single-source)
-- **validation_status**: `validated` 96.6% / `rejected` 3.4%
-- **review_state**: `not_required` 99.99% / `pending_review` 1 doc
-- **action_status**: `open` 96.7% / MISSING 3.3% (ไม่มี `closed`/`in_progress` — workflow ไม่ถูกใช้)
-- **tlp**: `amber` 100% (ระบบ TLP gating ที่ Phase 2 อุดไว้ — ยังไม่เคยมีข้อมูล non-amber)
-- **warehouse_eligible**: `true` 96.6% / `false` 3.4% (= 1:1 กับ `validation_status`)
-- **geo_country**: ค่า `"None"` (string) 97.3% / MISSING 2.0% / ISO codes จริง **เพียง 0.4%**
-- **target_sector**: MISSING 97.9% / `general` 1.9% / อื่นๆ <0.1%
-- **target_sector_name**: MISSING 97.9% / `Other` 1.9% / อื่นๆ <0.1%
-- **ai_threat_types**: `Malware` 96.7% / `Phishing` 3.3% / smaller types ปนกัน case
-- **threat_type**: snake_case ครอง (`malware_payload` 94%) แต่ปนกับ Title Case (`Phishing` 894, `Malware` 61) — **data inconsistency จาก ingestion**
+### หลักการเขียน "ถูกไหม"
 
-⚠️ **ผลกระทบ:** chart ที่แสดง "Top Attack Origins" หรือ "Target Sectors" จริงๆ จะเห็นข้อมูลจาก doc ส่วนน้อยมาก (0.4% และ 2%) — UI สวยแต่ representativeness ต่ำ
+- ✅ ตรงตามที่ label หน้าเว็บสื่อความหมาย
+- ⚠️ ตรงแต่มี caveat (เช่น nullable field → coverage ต่ำ)
+- ❌ ผิด — ดู Bugs ที่พบ
 
-## Time fields ที่มีจริงในระบบ (เช็ค existence จาก 11.09M docs)
+## ข้อจำกัดของข้อมูลจริงในปัจจุบัน (ใช้อ้างอิงตอนตรวจทุกหน้า)
 
-| Field | จำนวน docs ที่มีค่า | Mode | สถานะ |
-|-------|---------------------|------|------|
-| `event_time` | 11,094,748 (100%) | observed | ✅ ใช้ได้ |
-| `first_seen` | 11,094,748 (100%) | observed | ✅ ใช้ได้ |
-| `last_seen` | 11,094,748 (100%) | observed | ✅ ใช้ได้ |
-| `last_shared_at` | 11,094,748 (100%) | changed | ✅ ใช้ได้ |
-| `action_updated_at` | 10,725,075 (96.7%) | changed | ✅ ใช้ได้ |
-| `reviewed_at` | 0 (ไม่มีค่าเลยสักตัว!) | — | ❌ field ว่างเสมอ |
-| `revoked_at` | **ไม่อยู่ใน mapping** | — | ❌ ไม่มี field |
-| `updated_at` | **ไม่อยู่ใน mapping** | — | ❌ ไม่มี field |
+ข้อมูลใน warehouse 11.09M docs ปัจจุบัน:
+
+| เรื่อง | สิ่งที่เห็น | ผลต่อ dashboard |
+|------|-----------|----------------|
+| **severity** | low 11M / medium 40K / critical 8.6K / high **มีแค่ 1 doc** | บัตเชอวร์ "High" บนหน้าเว็บจะแสดงตัวเลขใกล้ศูนย์เสมอ |
+| **TLP** | amber 100% | ระบบ TLP gating ที่ Phase 2 อุดไว้ — ยังไม่เคย filter ข้อมูลจริง |
+| **ประเทศ (geo_country)** | 99.4% เป็น "None"/MISSING — ค่าจริงแค่ 0.4% | "Top Attack Origins" แสดงจาก doc 0.4% ของทั้งหมด |
+| **Sector** | 97.9% MISSING — มีค่าจริงแค่ 2% | "Target Sectors" แสดงจาก doc 2% ของทั้งหมด |
+| **Source** | cyberint_iocs 99.99% | "Top Intelligence Sources" = Cyberint แทบจะอย่างเดียว |
+| **Action status** | open 96.7% / MISSING 3.3% (ไม่มี closed/in_progress) | workflow "Action Center" ไม่ถูกใช้งานจริง |
+
+## Ground truth fixtures ที่ใช้อ้างอิง
+
+`ai-service/tests/semantic/fixtures/`
+- `es_mapping_warehouse.json` — โครงสร้าง field warehouse จริง
+- `es_mapping_datalake.json` — โครงสร้าง field datalake จริง
+- `sample_warehouse.json` — 5 documents ล่าสุด
+- `warehouse_field_distribution.json` — จำนวนค่าแต่ละ field
