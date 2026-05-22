@@ -768,7 +768,7 @@ def _warehouse_search_filters(
         _normalize_severity(item) for item in (risk_levels or [])
     ]
     if merged_severities:
-        filters.append({"terms": {"severity": sorted(set(merged_severities))}})
+        filters.append({"terms": {"ai_severity": sorted(set(merged_severities))}})
     if sources:
         filters.append({"terms": {"source_name": sources}})
     if threat_types:
@@ -990,7 +990,7 @@ def _warehouse_summary_stats(
         warehouse_eligible_only=warehouse_eligible_only,
     )
     severity_filters = {
-        severity: {"term": {"severity": severity}}
+        severity: {"term": {"ai_severity": severity}}
         for severity in ("critical", "high", "medium", "low", "clean")
     }
     base_query = {
@@ -1006,13 +1006,28 @@ def _warehouse_summary_stats(
         "aggs": {
             "severity_counts": {"filters": {"filters": severity_filters}},
             "critical_active": {
-                "filter": {"term": {"severity": "critical"}},
+                "filter": {"term": {"ai_severity": "critical"}},
             },
             "high_active": {
-                "filter": {"term": {"severity": "high"}},
+                "filter": {"term": {"ai_severity": "high"}},
             },
             "thailand_threat": {
-                "filter": {"term": {"geo_country": "TH"}},
+                "filter": {
+                    "bool": {
+                        "should": [
+                            {"match_phrase": {"description": "Thailand"}},
+                            {"match_phrase": {"description": "Thai"}},
+                            {"match_phrase": {"title": "Thailand"}},
+                            {"match_phrase": {"title": "Thai"}},
+                            {"term": {"target_country": "TH"}},
+                            {"term": {"target_country": "Thailand"}},
+                            {"term": {"victim_country": "TH"}},
+                            {"term": {"victim_country": "Thailand"}},
+                            {"term": {"geo_country": "TH"}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                },
             },
         },
     }
@@ -1027,11 +1042,11 @@ def _warehouse_summary_stats(
         "aggs": {
             "threat_types": {
                 "terms": {"field": "ai_threat_types", "size": 12, "missing": "Other"},
-                "aggs": {"severity": {"terms": {"field": "severity", "size": 5, "missing": "low"}}},
+                "aggs": {"severity": {"terms": {"field": "ai_severity", "size": 5, "missing": "low"}}},
             },
             "sectors": {
                 "terms": {"field": "target_sector_name", "size": 12, "missing": "Other"},
-                "aggs": {"severity": {"terms": {"field": "severity", "size": 5, "missing": "low"}}},
+                "aggs": {"severity": {"terms": {"field": "ai_severity", "size": 5, "missing": "low"}}},
             },
         },
     }
@@ -1632,10 +1647,10 @@ def _warehouse_dashboard_aggs(
     aggs: Dict[str, Any] = {
         "active_iocs": {"cardinality": {"field": "canonical_ioc_key.keyword", "precision_threshold": 40000}},
         "source_count": {"cardinality": {"field": "source_name", "precision_threshold": 40000}},
-        "severity_counts": {"filters": {"filters": _severity_filters_config("severity")}},
-        "risk_level_counts": {"filters": {"filters": _severity_filters_config("ai_severity")}},
+        "severity_counts": {"filters": {"filters": _severity_filters_config()}},
+        "risk_level_counts": {"filters": {"filters": _severity_filters_config()}},
         "critical_active": {
-            "filter": {"term": {"severity": "critical"}},
+            "filter": {"term": {"ai_severity": "critical"}},
             "aggs": {
                 "active_iocs": {
                     "cardinality": {
@@ -1646,7 +1661,7 @@ def _warehouse_dashboard_aggs(
             },
         },
         "high_active": {
-            "filter": {"term": {"severity": "high"}},
+            "filter": {"term": {"ai_severity": "high"}},
             "aggs": {
                 "active_iocs": {
                     "cardinality": {
@@ -1656,7 +1671,7 @@ def _warehouse_dashboard_aggs(
                 }
             },
         },
-        "clean_count": {"filter": {"term": {"severity": "clean"}}},
+        "clean_count": {"filter": {"term": {"ai_severity": "clean"}}},
         "risk_score_ranges": {
             "range": {
                 "field": "ai_risk_score",
@@ -1678,7 +1693,7 @@ def _warehouse_dashboard_aggs(
                         {"exists": {"field": "ioc_value"}},
                         {"exists": {"field": "ioc_type"}},
                         {"exists": {"field": "source_name"}},
-                        {"exists": {"field": "severity"}},
+                        {"exists": {"field": "ai_severity"}},
                     ]
                 }
             }
@@ -1692,30 +1707,30 @@ def _warehouse_dashboard_aggs(
         "countries": {
             "terms": {"field": "geo_country", "size": 25, "missing": "unknown"},
             "aggs": {
-                "severity": {"filters": {"filters": _severity_filters_config("severity")}},
+                "severity": {"filters": {"filters": _severity_filters_config()}},
                 "sources": {"terms": {"field": "source_name", "size": 10}},
                 "high_severity_sources": {
-                    "filter": {"terms": {"severity": ["high", "critical"]}},
+                    "filter": {"terms": {"ai_severity": ["high", "critical"]}},
                     "aggs": {"sources": {"terms": {"field": "source_name", "size": 10}}},
                 },
                 "sectors": {"terms": {"field": "target_sector_name", "size": 5, "missing": "Other"}},
             },
         },
         "high_severity_sources": {
-            "filter": {"terms": {"severity": ["high", "critical"]}},
+            "filter": {"terms": {"ai_severity": ["high", "critical"]}},
             "aggs": {"sources": {"terms": {"field": "source_name", "size": 25, "missing": "unknown"}}},
         },
         "sectors": {
             "terms": {"field": "target_sector_name", "size": 25, "missing": "Other"},
-            "aggs": {"severity": {"terms": {"field": "severity", "size": 5, "missing": "low"}}},
+            "aggs": {"severity": {"terms": {"field": "ai_severity", "size": 5, "missing": "low"}}},
         },
         "severity_by_source": {
             "terms": {"field": "source_name", "size": 25, "missing": "unknown"},
-            "aggs": {"severity": {"filters": {"filters": _severity_filters_config("severity")}}},
+            "aggs": {"severity": {"filters": {"filters": _severity_filters_config()}}},
         },
         "severity_by_type": {
             "terms": {"field": "ioc_type", "size": 25, "missing": "unknown"},
-            "aggs": {"severity": {"filters": {"filters": _severity_filters_config("severity")}}},
+            "aggs": {"severity": {"filters": {"filters": _severity_filters_config()}}},
         },
     }
     if include_heatmap:
@@ -1724,7 +1739,7 @@ def _warehouse_dashboard_aggs(
         aggs["trend"] = {
             "date_histogram": date_histogram,
             "aggs": {
-                "severity": {"filters": {"filters": _severity_filters_config("severity")}},
+                "severity": {"filters": {"filters": _severity_filters_config()}},
                 "sources": {"terms": {"field": "source_name", "size": 25, "missing": "unknown"}},
             },
         }
@@ -3642,7 +3657,7 @@ def _build_aggregated_report_payload(
         },
         "aggs": {
             "group_count": {"cardinality": {"field": field}},
-            "severity_total": {"terms": {"field": "severity", "size": 10, "missing": "clean"}},
+            "severity_total": {"terms": {"field": "ai_severity", "size": 10, "missing": "clean"}},
             "top_threat_total": {"terms": {"field": "ai_threat_types", "size": 1, "missing": "Unknown"}},
             "top_iocs_total": {
                 "top_hits": {
@@ -3657,7 +3672,7 @@ def _build_aggregated_report_payload(
             "groups": {
                 "terms": terms_config,
                 "aggs": {
-                    "severity": {"terms": {"field": "severity", "size": 10, "missing": "clean"}},
+                    "severity": {"terms": {"field": "ai_severity", "size": 10, "missing": "clean"}},
                     "top_threat": {"terms": {"field": "ai_threat_types", "size": 1, "missing": "Unknown"}},
                     "latest_seen": {"max": {"field": report_time_field, "format": "strict_date_optional_time"}},
                     "top_iocs": {

@@ -99,7 +99,7 @@ def highest_severity_from_buckets(buckets: Sequence[Dict[str, Any]]) -> str:
     return severity_label(highest)
 
 
-def severity_filters_config(field: str = "severity") -> Dict[str, Dict[str, Any]]:
+def severity_filters_config(field: str = "ai_severity") -> Dict[str, Dict[str, Any]]:
     """Build the ``filters`` agg dict for splitting docs by severity.
 
     *field* defaults to ``"severity"`` for backwards compatibility — pass

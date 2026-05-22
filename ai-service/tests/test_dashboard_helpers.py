@@ -215,9 +215,9 @@ def test_warehouse_filters_merge_severities_and_risk_levels():
         risk_levels=["high"],
         warehouse_eligible_only=None,
     )
-    severity_terms = [f for f in filters if "terms" in f and "severity" in f["terms"]]
+    severity_terms = [f for f in filters if "terms" in f and "ai_severity" in f["terms"]]
     assert len(severity_terms) == 1
-    assert sorted(severity_terms[0]["terms"]["severity"]) == ["critical", "high"]
+    assert sorted(severity_terms[0]["terms"]["ai_severity"]) == ["critical", "high"]
 
 
 def test_datalake_filters_map_severity_strings_to_numeric_bands():
