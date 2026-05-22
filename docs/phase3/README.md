@@ -17,7 +17,7 @@
 | 3.3 | Threat Intelligence — Overview + IOC Summary (`/admin/threatintelligence`) | ✅ เสร็จ (audit only) | [3.3-ti-overview-ioc-summary.md](./3.3-ti-overview-ioc-summary.md) | 0 (Phase 3.0/3.2 ครอบคลุม) |
 | 3.4 | Threat Landscape (`/admin/threatlandscape`) | ✅ เสร็จ | [3.4-threat-landscape.md](./3.4-threat-landscape.md) | 1 (CRITICAL — Intelligence Sources name leak) |
 | 3.5 | IOC Datalake / Analytics / Threat Hunting | ✅ เสร็จ (audit only) | [3.5-ioc-pages.md](./3.5-ioc-pages.md) | 0 (Phase 2.4 ครอบคลุม) |
-| 3.6 | TI sub-pages (×6) | ⏳ รอ | — | — |
+| 3.6 | TI sub-pages (×6) | ✅ เสร็จ (audit only) | [3.6-ti-sub-pages.md](./3.6-ti-sub-pages.md) | 0 (Phase 2.3/3.0 ครอบคลุม) |
 | 3.7 | Action Center / Reports / News / CVE | ⏳ รอ | — | — |
 | 3.8 | Settings / lookups / auth | ⏳ รอ | — | — |
 
