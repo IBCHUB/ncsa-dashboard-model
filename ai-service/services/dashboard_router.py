@@ -44,53 +44,25 @@ router = APIRouter(prefix="/api/v1")
 
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 UTC = timezone.utc
-SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "clean": 0}
+# Severity constants live in services/dashboard/_helpers/severity.py.
+from services.dashboard._helpers.severity import (  # noqa: E402, F401  (re-exported)
+    _CYBERINT_SEVERITY_BANDS,
+    SEVERITY_ORDER,
+)
 
-# Cyberint emits `severity` as a discrete numeric score in the datalake.
-# These bands mirror `_normalize_severity`'s numeric branch so that querying
-# the datalake with a normalized string label maps to the right numeric range.
-_CYBERINT_SEVERITY_BANDS: dict[str, Tuple[int, int]] = {
-    "critical": (80, 100),
-    "high": (60, 79),
-    "medium": (40, 59),
-    "low": (1, 39),
-    "clean": (0, 0),
-}
-
-# ---------------------------------------------------------------------------
-# Time-mode constants: each mode selects the semantically correct date fields
-# ---------------------------------------------------------------------------
-TIME_MODE_OBSERVED = "observed"
-TIME_MODE_PROCESSED = "processed"
-TIME_MODE_PUBLISHED = "published"
-TIME_MODE_CHANGED = "changed"
-
-WAREHOUSE_TIME_FIELDS: dict[str, list[str]] = {
-    "observed": ["event_time", "first_seen", "last_seen"],
-    "processed": ["processed_at", "created_at", "collect_time"],
-    "published": ["published_at"],
-    # Warehouse mapping has no `revoked_at` or `updated_at` field. The two
-    # populated change-timestamps are `last_shared_at` (set on every doc) and
-    # `action_updated_at` (set when the action workflow advances).
-    "changed": ["last_shared_at", "action_updated_at"],
-}
-
-DATALAKE_TIME_FIELDS: dict[str, list[str]] = {
-    "observed": ["observation_date", "first_seen"],
-    "processed": ["@timestamp", "processed_at"],
-    "published": ["published_at"],
-    # Datalake has no native "changed" timestamp; fall back to @timestamp so
-    # callers passing time_mode=changed against datalake don't silently bypass
-    # the date filter (would return entire index).
-    "changed": ["@timestamp"],
-}
-
-PYTHON_FILTER_FIELDS: dict[str, list[str]] = {
-    "observed": ["event_time", "first_seen", "last_seen", "observation_date"],
-    "processed": ["processed_at", "created_at", "collect_time"],
-    "published": ["published_at"],
-    "changed": ["last_shared_at", "action_updated_at"],
-}
+# Time-mode constants + warehouse/datalake/python time-field maps live in
+# services/dashboard/_helpers/time.py — re-imported here so tests and other
+# call sites (e.g. tests that import these from dashboard_router) keep
+# working unchanged.
+from services.dashboard._helpers.time import (  # noqa: E402, F401  (re-exported)
+    DATALAKE_TIME_FIELDS,
+    PYTHON_FILTER_FIELDS,
+    TIME_MODE_CHANGED,
+    TIME_MODE_OBSERVED,
+    TIME_MODE_PROCESSED,
+    TIME_MODE_PUBLISHED,
+    WAREHOUSE_TIME_FIELDS,
+)
 RISK_LEVELS = [
     {"value": "critical", "label": "Critical"},
     {"value": "high", "label": "High"},
@@ -129,46 +101,20 @@ REPORT_KEY_ALIASES = {
     "sectors": "target-sectors",
 }
 HTTP_BEARER = HTTPBearer(auto_error=False)
-DASHBOARD_CACHE_TTL_SECONDS = int(os.getenv("DASHBOARD_CACHE_TTL_SECONDS", "120"))
-_DASHBOARD_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_DASHBOARD_CACHE_LOCK = threading.Lock()
-COUNTRY_CODE_MAP = {
-    "afghanistan": "AF", "albania": "AL", "algeria": "DZ", "argentina": "AR",
-    "armenia": "AM", "australia": "AU", "austria": "AT", "azerbaijan": "AZ",
-    "bahrain": "BH", "bangladesh": "BD", "belarus": "BY", "belgium": "BE",
-    "bolivia": "BO", "bosnia and herzegovina": "BA", "brazil": "BR",
-    "brunei": "BN", "bulgaria": "BG", "cambodia": "KH", "cameroon": "CM",
-    "canada": "CA", "chile": "CL", "china": "CN", "colombia": "CO",
-    "costa rica": "CR", "croatia": "HR", "cuba": "CU", "cyprus": "CY",
-    "czech republic": "CZ", "czechia": "CZ", "denmark": "DK",
-    "dominican republic": "DO", "ecuador": "EC", "egypt": "EG",
-    "el salvador": "SV", "estonia": "EE", "ethiopia": "ET", "finland": "FI",
-    "france": "FR", "georgia": "GE", "germany": "DE", "ghana": "GH",
-    "greece": "GR", "guatemala": "GT", "honduras": "HN", "hong kong": "HK",
-    "hungary": "HU", "iceland": "IS", "india": "IN", "indonesia": "ID",
-    "iran": "IR", "iraq": "IQ", "ireland": "IE", "israel": "IL",
-    "italy": "IT", "jamaica": "JM", "japan": "JP", "jordan": "JO",
-    "kazakhstan": "KZ", "kenya": "KE", "kuwait": "KW", "kyrgyzstan": "KG",
-    "laos": "LA", "latvia": "LV", "lebanon": "LB", "libya": "LY",
-    "lithuania": "LT", "luxembourg": "LU", "macau": "MO", "malaysia": "MY",
-    "maldives": "MV", "malta": "MT", "mexico": "MX", "moldova": "MD",
-    "mongolia": "MN", "montenegro": "ME", "morocco": "MA", "mozambique": "MZ",
-    "myanmar": "MM", "nepal": "NP", "netherlands": "NL", "new zealand": "NZ",
-    "nicaragua": "NI", "nigeria": "NG", "north korea": "KP",
-    "north macedonia": "MK", "norway": "NO", "oman": "OM", "pakistan": "PK",
-    "palestine": "PS", "panama": "PA", "paraguay": "PY", "peru": "PE",
-    "philippines": "PH", "poland": "PL", "portugal": "PT", "qatar": "QA",
-    "romania": "RO", "russia": "RU", "russian federation": "RU",
-    "saudi arabia": "SA", "senegal": "SN", "serbia": "RS", "singapore": "SG",
-    "slovakia": "SK", "slovenia": "SI", "south africa": "ZA",
-    "south korea": "KR", "spain": "ES", "sri lanka": "LK", "sudan": "SD",
-    "sweden": "SE", "switzerland": "CH", "syria": "SY", "taiwan": "TW",
-    "tajikistan": "TJ", "tanzania": "TZ", "thailand": "TH", "tunisia": "TN",
-    "turkey": "TR", "turkmenistan": "TM", "uganda": "UG", "ukraine": "UA",
-    "united arab emirates": "AE", "united kingdom": "GB", "united states": "US",
-    "uruguay": "UY", "uzbekistan": "UZ", "venezuela": "VE", "vietnam": "VN",
-    "yemen": "YE", "zambia": "ZM", "zimbabwe": "ZW",
-}
+# Process-local TTL cache used by dashboard endpoints. The module-level
+# constants/state live in services/dashboard/_helpers/cache.py — re-imported
+# here so existing call sites (including tests that monkey-patch them) keep
+# working unchanged.
+from services.dashboard._helpers.cache import (  # noqa: E402, F401  (re-exported)
+    DASHBOARD_CACHE_TTL_SECONDS,
+    _DASHBOARD_CACHE,
+    _DASHBOARD_CACHE_LOCK,
+)
+# Country code map + lookup helpers live in services/dashboard/_helpers/geo.py.
+from services.dashboard._helpers.geo import (  # noqa: E402, F401  (re-exported)
+    _COUNTRY_NAME_FROM_CODE,
+    COUNTRY_CODE_MAP,
+)
 HIGH_CONFIDENCE_SOURCE_NAMES = {
     "VirusTotal",
     "AbuseIPDB",
@@ -392,206 +338,53 @@ class MLFeedbackRequest(BaseModel):
     source: str = "dashboard"
 
 
-def _meta(**extra: Any) -> Dict[str, Any]:
-    return {
-        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "timezone": "Asia/Bangkok",
-        **extra,
-    }
+# Response envelope helpers (_meta / _success / _paged) live in
+# services/dashboard/_helpers/response.py — re-imported here so existing
+# call sites continue to work unchanged.
+from services.dashboard._helpers.response import _meta, _paged, _success  # noqa: F401  (re-exported)
 
 
-def _success(data: Any, **meta_extra: Any) -> Dict[str, Any]:
-    return {"data": data, "meta": _meta(**meta_extra), "error": None}
+# Cache helpers (_cache_key / _cache_get / _cache_set) live in
+# services/dashboard/_helpers/cache.py — re-imported here so existing
+# call sites continue to work unchanged.
+from services.dashboard._helpers.cache import (  # noqa: F401  (re-exported)
+    _cache_get,
+    _cache_key,
+    _cache_set,
+)
 
 
-def _paged(data: Any, page: int, page_size: int, total: int, **meta_extra: Any) -> Dict[str, Any]:
-    total_pages = max(1, (total + page_size - 1) // page_size) if page_size > 0 else 1
-    return {"data": data, "meta": _meta(page=page, page_size=page_size, total=total, total_pages=total_pages, **meta_extra), "error": None}
+# Datetime parsing + Bangkok formatting helpers live in
+# services/dashboard/_helpers/time.py.
+from services.dashboard._helpers.time import (  # noqa: F401  (re-exported)
+    _parse_dt,
+    _start_bangkok_day,
+    _start_bangkok_hour,
+    _to_bangkok_date,
+    _to_bangkok_hour,
+)
 
 
-def _cache_key(name: str, **params: Any) -> str:
-    return json.dumps({"name": name, "params": params}, sort_keys=True, default=str, ensure_ascii=True)
+# Severity normalization helpers live in services/dashboard/_helpers/severity.py.
+from services.dashboard._helpers.severity import (  # noqa: F401  (re-exported)
+    _ai_severity,
+    _highest_severity_from_buckets,
+    _normalize_severity,
+    _severity_label,
+    _source_severity,
+)
 
 
-def _cache_get(key: str) -> Optional[Dict[str, Any]]:
-    if DASHBOARD_CACHE_TTL_SECONDS <= 0:
-        return None
-    now = time.monotonic()
-    with _DASHBOARD_CACHE_LOCK:
-        cached = _DASHBOARD_CACHE.get(key)
-        if not cached:
-            return None
-        expires_at, payload = cached
-        if expires_at <= now:
-            _DASHBOARD_CACHE.pop(key, None)
-            return None
-        return payload
-
-
-def _cache_set(key: str, payload: Dict[str, Any], ttl: Optional[int] = None) -> Dict[str, Any]:
-    effective_ttl = DASHBOARD_CACHE_TTL_SECONDS if ttl is None else ttl
-    if effective_ttl > 0:
-        with _DASHBOARD_CACHE_LOCK:
-            _DASHBOARD_CACHE[key] = (time.monotonic() + effective_ttl, payload)
-            if len(_DASHBOARD_CACHE) > 512:
-                oldest_keys = sorted(_DASHBOARD_CACHE, key=lambda item: _DASHBOARD_CACHE[item][0])[:128]
-                for old_key in oldest_keys:
-                    _DASHBOARD_CACHE.pop(old_key, None)
-    return payload
-
-
-def _parse_dt(value: Any) -> Optional[datetime]:
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
-    text = str(value).strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-
-
-def _to_bangkok_date(value: datetime) -> str:
-    return value.astimezone(BANGKOK_TZ).strftime("%Y-%m-%d")
-
-
-def _to_bangkok_hour(value: datetime) -> str:
-    return value.astimezone(BANGKOK_TZ).strftime("%Y-%m-%d %H:00")
-
-
-def _start_bangkok_day(value: datetime) -> datetime:
-    localized = value.astimezone(BANGKOK_TZ)
-    return datetime(localized.year, localized.month, localized.day, tzinfo=BANGKOK_TZ)
-
-
-def _start_bangkok_hour(value: datetime) -> datetime:
-    localized = value.astimezone(BANGKOK_TZ)
-    return datetime(localized.year, localized.month, localized.day, localized.hour, tzinfo=BANGKOK_TZ)
-
-
-def _normalize_severity(value: Optional[str]) -> str:
-    text = str(value or "").strip().lower()
-    if text in {"critical", "very high"}:
-        return "critical"
-    if text == "high":
-        return "high"
-    if text == "medium":
-        return "medium"
-    if text in {"clean", "info"}:
-        return "clean"
-    # Handle numeric severity scores (e.g. cyberint sends "100", "80", "20", "0")
-    if text.isdigit():
-        score = int(text)
-        if score >= 80:
-            return "critical"
-        if score >= 60:
-            return "high"
-        if score >= 40:
-            return "medium"
-        if score == 0:
-            return "clean"
-        return "low"
-    return "low"
-
-
-def _source_severity(doc: Dict[str, Any]) -> str:
-    return _normalize_severity(doc.get("severity"))
-
-
-def _ai_severity(doc: Dict[str, Any]) -> str:
-    # Use ai_severity field (AI-computed) — fall back to severity if absent
-    return _normalize_severity(doc.get("ai_severity") or doc.get("severity"))
-
-
-def _severity_label(value: str) -> str:
-    return value.capitalize() if value else "Low"
-
-
-def _highest_severity_from_buckets(buckets: Sequence[Dict[str, Any]]) -> str:
-    highest = "clean"
-    for bucket in buckets:
-        if int(bucket.get("doc_count") or 0) <= 0:
-            continue
-        severity = _normalize_severity(bucket.get("key"))
-        if SEVERITY_ORDER[severity] > SEVERITY_ORDER[highest]:
-            highest = severity
-    return _severity_label(highest)
-
-
-def _pick_activity_time(doc: Dict[str, Any]) -> Optional[datetime]:
-    return _parse_dt(
-        doc.get("last_seen")
-        or doc.get("event_time")
-        or doc.get("observation_date")
-        or doc.get("collect_time")
-        or doc.get("processed_at")
-        or doc.get("first_seen")
-        or doc.get("@timestamp")
-        or doc.get("created_at")
-    )
-
-
-def _pick_event_time(doc: Dict[str, Any]) -> Optional[datetime]:
-    return _parse_dt(doc.get("event_time") or doc.get("observation_date") or doc.get("first_seen") or doc.get("@timestamp") or doc.get("collect_time") or doc.get("processed_at") or doc.get("created_at"))
-
-
-def _pick_display_time(doc: Dict[str, Any], time_mode: str = "processed") -> Optional[datetime]:
-    """Mode-aware timestamp for display — matches the filter semantics so users see consistent data."""
-    fields = PYTHON_FILTER_FIELDS.get(time_mode, PYTHON_FILTER_FIELDS["processed"])
-    for field in fields:
-        result = _parse_dt(doc.get(field))
-        if result:
-            return result
-    return _pick_event_time(doc)
-
-
-def _pick_display_time_in_range(
-    doc: Dict[str, Any],
-    time_mode: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-) -> Optional[datetime]:
-    """Prefer the timestamp that actually made the record match the selected range."""
-    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
-    fields = PYTHON_FILTER_FIELDS.get(time_mode, PYTHON_FILTER_FIELDS["processed"])
-    if start_bound or end_bound:
-        for field in fields:
-            result = _parse_dt(doc.get(field))
-            if result is None:
-                continue
-            if start_bound and result < start_bound:
-                continue
-            if end_bound and result > end_bound:
-                continue
-            return result
-    return _pick_display_time(doc, time_mode)
-
-
-def _date_query_range(start_date: Optional[str], end_date: Optional[str]) -> Optional[Dict[str, str]]:
-    if not start_date and not end_date:
-        return None
-    range_query: Dict[str, str] = {}
-    if start_date:
-        range_query["gte"] = start_date if "T" in start_date else f"{start_date}T00:00:00+07:00"
-    if end_date:
-        range_query["lte"] = end_date if "T" in end_date else f"{end_date}T23:59:59+07:00"
-    return range_query
-
-
-def _resolve_anchor_end(end_date: Optional[str]) -> datetime:
-    if end_date:
-        normalized = end_date if "T" in end_date else f"{end_date}T23:59:59+07:00"
-        parsed = _parse_dt(normalized)
-        if parsed:
-            return parsed.astimezone(UTC)
-        logger.warning("_resolve_anchor_end: malformed end_date %r, falling back to now()", end_date)
-    return datetime.now(UTC)
+# Document-time pickers + date-range helpers live in
+# services/dashboard/_helpers/time.py.
+from services.dashboard._helpers.time import (  # noqa: F401  (re-exported)
+    _date_query_range,
+    _pick_activity_time,
+    _pick_display_time,
+    _pick_display_time_in_range,
+    _pick_event_time,
+    _resolve_anchor_end,
+)
 
 
 MAX_DASHBOARD_DATE_RANGE_DAYS = int(os.getenv("DASHBOARD_MAX_RANGE_DAYS", "366"))
@@ -658,199 +451,21 @@ def _normalize_sources(doc: Dict[str, Any]) -> List[str]:
     return [item.strip() for item in source_name.split(",") if item.strip()]
 
 
-SECTOR_DISPLAY_NAMES = {
-    "national security": "National Security",
-    "security": "National Security",
-    "ความมั่นคงของรัฐ": "National Security",
-    "ด้านความมั่นคงของรัฐ": "National Security",
-    "government": "Substantive Public Services",
-    "public service": "Substantive Public Services",
-    "public services": "Substantive Public Services",
-    "essential government services": "Substantive Public Services",
-    "substantive public services": "Substantive Public Services",
-    "ภาครัฐ": "Substantive Public Services",
-    "บริการภาครัฐ": "Substantive Public Services",
-    "บริการภาครัฐที่สำคัญ": "Substantive Public Services",
-    "ด้านบริการภาครัฐที่สำคัญ": "Substantive Public Services",
-    "finance": "Banking and Finance",
-    "financial": "Banking and Finance",
-    "financial services": "Banking and Finance",
-    "banking": "Banking and Finance",
-    "banking and finance": "Banking and Finance",
-    "finance and banking": "Banking and Finance",
-    "ภาคการเงิน": "Banking and Finance",
-    "การเงิน": "Banking and Finance",
-    "การเงินการธนาคาร": "Banking and Finance",
-    "ด้านการเงินการธนาคาร": "Banking and Finance",
-    "technology": "Information Technology and Telecommunications",
-    "telecom": "Information Technology and Telecommunications",
-    "telecommunications": "Information Technology and Telecommunications",
-    "information technology": "Information Technology and Telecommunications",
-    "information technology and telecommunications": "Information Technology and Telecommunications",
-    "เทคโนโลยี": "Information Technology and Telecommunications",
-    "โทรคมนาคม": "Information Technology and Telecommunications",
-    "เทคโนโลยีสารสนเทศและโทรคมนาคม": "Information Technology and Telecommunications",
-    "ด้านเทคโนโลยีสารสนเทศและโทรคมนาคม": "Information Technology and Telecommunications",
-    "transportation": "Transportation and Logistics",
-    "transport": "Transportation and Logistics",
-    "logistics": "Transportation and Logistics",
-    "transportation and logistics": "Transportation and Logistics",
-    "ขนส่ง": "Transportation and Logistics",
-    "คมนาคม": "Transportation and Logistics",
-    "การขนส่งและโลจิสติกส์": "Transportation and Logistics",
-    "ด้านการขนส่งและโลจิสติกส์": "Transportation and Logistics",
-    "energy": "Energy and Public Utilities",
-    "utilities": "Energy and Public Utilities",
-    "energy and public utilities": "Energy and Public Utilities",
-    "พลังงาน": "Energy and Public Utilities",
-    "สาธารณูปโภค": "Energy and Public Utilities",
-    "พลังงานและสาธารณูปโภค": "Energy and Public Utilities",
-    "ด้านพลังงานและสาธารณูปโภค": "Energy and Public Utilities",
-    "health": "Public Health",
-    "healthcare": "Public Health",
-    "public health": "Public Health",
-    "สาธารณสุข": "Public Health",
-    "ด้านสาธารณสุข": "Public Health",
-    "critical infrastructure": "Other",
-    "โครงสร้างพื้นฐาน": "Other",
-    "โครงสร้างพื้นฐานสำคัญ": "Other",
-    "other": "Other",
-    "other designated cii": "Other",
-    "อื่นๆ": "Other",
-    "อื่น ๆ": "Other",
-    "general": "Other",
-    "general/multiple": "Other",
-    "ทั่วไป": "Other",
-    "education": "Other",
-    "ภาคการศึกษา": "Other",
-    "การศึกษา": "Other",
-    "manufacturing": "Other",
-    "retail": "Other",
-    "private sector": "Other",
-}
+# Sector display / info helpers live in services/dashboard/_helpers/sector.py.
+from services.dashboard._helpers.sector import (  # noqa: F401  (re-exported)
+    SECTOR_DISPLAY_NAMES,
+    _UNMAPPED_SECTOR_SEEN,
+    _sector_display_name,
+    _sector_info,
+)
 
 
-_UNMAPPED_SECTOR_SEEN: set[str] = set()
-
-
-def _sector_display_name(value: Any) -> Optional[str]:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    lowered = raw.lower()
-    if lowered in {"none", "null", "unknown", "n/a", "-", "ไม่ระบุ"}:
-        return "Other"
-    mapped = SECTOR_DISPLAY_NAMES.get(lowered) or SECTOR_DISPLAY_NAMES.get(raw)
-    if mapped:
-        return mapped
-    # Log unique unmapped sector values once so operators can extend
-    # SECTOR_DISPLAY_NAMES instead of silently collapsing data into "Other".
-    if lowered not in _UNMAPPED_SECTOR_SEEN:
-        _UNMAPPED_SECTOR_SEEN.add(lowered)
-        logger.info("sector display name unmapped, falling back to 'Other': %r", raw)
-    return "Other"
-
-
-def _sector_info(doc: Dict[str, Any]) -> Dict[str, Any]:
-    if doc.get("target_sector") or doc.get("target_sector_name") or doc.get("target_sector_name_th"):
-        sector_name = _sector_display_name(doc.get("target_sector_name") or doc.get("target_sector") or doc.get("target_sector_name_th"))
-        return {
-            "sector": doc.get("target_sector"),
-            "sector_name": sector_name,
-            "sector_name_th": doc.get("target_sector_name_th"),
-            "icon": doc.get("target_sector_icon"),
-        }
-    sector = (((doc.get("ai_score_breakdown") or {}).get("target_sector") or {}) if isinstance(doc.get("ai_score_breakdown"), dict) else {}) or {}
-    sector_name = _sector_display_name(sector.get("sector_name") or sector.get("sector") or sector.get("sector_name_th"))
-    return {
-        "sector": sector.get("sector"),
-        "sector_name": sector_name,
-        "sector_name_th": sector.get("sector_name_th"),
-        "icon": sector.get("icon"),
-    }
-
-
-def _country_from_doc(doc: Dict[str, Any]) -> Optional[str]:
-    enrichment = doc.get("enrichment") or {}
-    ip_info = enrichment.get("ip_info") if isinstance(enrichment, dict) and isinstance(enrichment.get("ip_info"), dict) else {}
-    asn_data = (doc.get("asn_data") or {}) if isinstance(doc.get("asn_data"), dict) else {}
-    geo_info = (doc.get("geo_info") or {}) if isinstance(doc.get("geo_info"), dict) else {}
-    direct_ip = (doc.get("ip_info") or {}) if isinstance(doc.get("ip_info"), dict) else {}
-    geo_ip = enrichment.get("geo_ip") if isinstance(enrichment, dict) and isinstance(enrichment.get("geo_ip"), dict) else {}
-    source_geo = (((doc.get("source") or {}).get("geo") or {}) if isinstance(doc.get("source"), dict) else {}) or {}
-    destination_geo = (((doc.get("destination") or {}).get("geo") or {}) if isinstance(doc.get("destination"), dict) else {}) or {}
-    victim_geo = (((doc.get("victim") or {}).get("geo") or {}) if isinstance(doc.get("victim"), dict) else {}) or {}
-    target_geo = (((doc.get("target") or {}).get("geo") or {}) if isinstance(doc.get("target"), dict) else {}) or {}
-    country = (
-        ip_info.get("country")
-        or direct_ip.get("country")
-        or geo_ip.get("country_code")
-        or geo_ip.get("country")
-        or asn_data.get("country_code")
-        or asn_data.get("country")
-        or geo_info.get("country")
-        or geo_info.get("country_code")
-        or doc.get("geo_country")
-        or doc.get("country")
-        or doc.get("country_code")
-        or doc.get("victim_country")
-        or doc.get("victim_country_name")
-        or doc.get("source_country")
-        or doc.get("source_country_name")
-        or doc.get("target_country")
-        or doc.get("target_country_name")
-        or doc.get("destination_country")
-        or doc.get("destination_country_name")
-        or doc.get("dst_country")
-        or doc.get("dst_country_name")
-        or source_geo.get("country_code")
-        or source_geo.get("country_name")
-        or source_geo.get("country")
-        or destination_geo.get("country_code")
-        or destination_geo.get("country_name")
-        or destination_geo.get("country")
-        or victim_geo.get("country_code")
-        or victim_geo.get("country_name")
-        or victim_geo.get("country")
-        or target_geo.get("country_code")
-        or target_geo.get("country_name")
-        or target_geo.get("country")
-    )
-    normalized = str(country or "").strip()
-    if not normalized or normalized.lower() in {"none", "null", "unknown", "n/a", "-"}:
-        return None
-    return _country_name_from_code_or_raw(normalized)
-
-
-def _country_code_from_name(country_name: Optional[str]) -> Optional[str]:
-    if not country_name:
-        return None
-    raw = str(country_name).strip()
-    if len(raw) == 2 and raw.isalpha():
-        return raw.upper()
-    normalized = raw.lower()
-    return COUNTRY_CODE_MAP.get(normalized)
-
-
-_COUNTRY_NAME_FROM_CODE: Dict[str, str] = {code: name.title() for name, code in COUNTRY_CODE_MAP.items()}
-
-
-def _country_name_from_code_or_raw(raw_value: Optional[str]) -> str:
-    """Return a human-readable country name.
-
-    If *raw_value* is a 2-letter ISO code that we recognise, return the
-    full name (e.g. ``"US"`` → ``"United States"``).  Otherwise return
-    the original value unchanged.
-    """
-    if not raw_value:
-        return "Unknown"
-    trimmed = str(raw_value).strip()
-    if len(trimmed) == 2 and trimmed.isalpha():
-        return _COUNTRY_NAME_FROM_CODE.get(trimmed.upper(), trimmed.upper())
-    normalized = trimmed.lower()
-    if normalized in COUNTRY_CODE_MAP:
-        return _COUNTRY_NAME_FROM_CODE.get(COUNTRY_CODE_MAP[normalized], trimmed.title())
-    return trimmed
+# Country / geo helpers live in services/dashboard/_helpers/geo.py.
+from services.dashboard._helpers.geo import (  # noqa: F401  (re-exported)
+    _country_code_from_name,
+    _country_from_doc,
+    _country_name_from_code_or_raw,
+)
 
 
 def _indicator_id(ioc_type: str, ioc_value: str) -> str:
@@ -1471,11 +1086,8 @@ def _warehouse_summary_stats(
     }
 
 
-def _severity_filters_config(field: str = "severity") -> Dict[str, Dict[str, Any]]:
-    return {
-        severity: {"term": {field: severity}}
-        for severity in ("critical", "high", "medium", "low", "clean")
-    }
+# `_severity_filters_config` lives in services/dashboard/_helpers/severity.py.
+from services.dashboard._helpers.severity import _severity_filters_config  # noqa: F401  (re-exported)
 
 
 def _severity_counts_from_filter_agg(agg: Dict[str, Any]) -> Dict[str, int]:
@@ -3380,16 +2992,8 @@ def _filter_warehouse_docs(
     return filtered
 
 
-def _resolve_date_bounds(start_date: Optional[str], end_date: Optional[str]) -> Tuple[Optional[datetime], Optional[datetime]]:
-    def _normalize(value: Optional[str], time_suffix: str) -> Optional[datetime]:
-        if not value:
-            return None
-        text = value if "T" in value else f"{value}{time_suffix}"
-        return _parse_dt(text)
-
-    start_bound = _normalize(start_date, "T00:00:00+07:00")
-    end_bound = _normalize(end_date, "T23:59:59+07:00")
-    return start_bound, end_bound
+# `_resolve_date_bounds` lives in services/dashboard/_helpers/time.py.
+from services.dashboard._helpers.time import _resolve_date_bounds  # noqa: F401  (re-exported)
 
 
 def _ioc_doc_matches_date_range(
