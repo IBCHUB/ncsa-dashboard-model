@@ -3879,6 +3879,7 @@ def _build_aggregated_report_payload(
     # --- Rank change: compare current ranking with previous period ranking ---
     prev_start, prev_end = _previous_date_window(start_date, end_date)
     prev_rank_by_label: Dict[str, int] = {}
+    prev_volume_by_label: Dict[str, int] = {}
     if prev_start and prev_end:
         prev_filters = _warehouse_search_filters(
             severities=severities,
@@ -3910,23 +3911,33 @@ def _build_aggregated_report_payload(
             if plabel and plabel not in prev_rank_by_label:
                 prev_rank_by_label[plabel] = prev_rank
                 prev_rank += 1
+            if plabel:
+                prev_volume_by_label[plabel] = prev_volume_by_label.get(plabel, 0) + int(pb.get("doc_count") or 0)
 
     for item in ranking_items:
         current_rank = item["rank"]
         prev_r = prev_rank_by_label.get(item["label"])
         if prev_r is None:
-            # New entry — wasn't in previous period ranking
             item["change_direction"] = "new"
             item["change_percent"] = 0
         elif prev_r < current_rank:
             item["change_direction"] = "down"
-            item["change_percent"] = current_rank - prev_r  # dropped N positions
+            item["change_percent"] = current_rank - prev_r
         elif prev_r > current_rank:
             item["change_direction"] = "up"
-            item["change_percent"] = prev_r - current_rank  # climbed N positions
+            item["change_percent"] = prev_r - current_rank
         else:
             item["change_direction"] = "flat"
             item["change_percent"] = 0
+        # Volume change: % increase/decrease compared to previous period
+        prev_vol = prev_volume_by_label.get(item["label"], 0)
+        cur_vol = item["total_events"]
+        if prev_vol > 0:
+            item["volume_change_percent"] = round(((cur_vol - prev_vol) / prev_vol) * 100, 1)
+        elif cur_vol > 0:
+            item["volume_change_percent"] = 100.0
+        else:
+            item["volume_change_percent"] = 0.0
 
     def _top_chart_item(item: Dict[str, Any]) -> Dict[str, Any]:
         # Pick the *highest-ranked* severity that has at least 1 IOC,
@@ -4733,6 +4744,7 @@ def _build_ioc_record(rank: int, doc: Dict[str, Any]) -> Dict[str, Any]:
         "severity": _severity_label(sev),
         "color": _severity_color(sev),
         "risk_score": int(doc.get("ai_risk_score") or 0),
+        "threat_actors": doc.get("ai_threat_actors") or [],
         "threat_types": doc.get("ai_threat_types") or doc.get("threat_type") or [],
         "sources": _display_sources(_normalize_sources(doc)),
         "first_seen": doc.get("first_seen") or doc.get("event_time") or doc.get("collect_time"),
