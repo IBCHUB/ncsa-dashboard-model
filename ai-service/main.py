@@ -713,16 +713,25 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 ]
                 cluster_results = cluster_iocs(batch_docs)
                 cluster_lookup = {r["ioc_value"]: r for r in cluster_results}
+                # Collect all cluster updates first, then write them in a
+                # single bulk request. Per-doc _update calls used to dominate
+                # iteration time — ~95% of every batch gets clustered, which
+                # meant ~1900 round-trips × 50 ms ≈ 95 s wasted per iteration.
+                cluster_updates: List[Tuple[str, Dict[str, Any]]] = []
                 for item in warehouse_items:
                     doc = item["document"]
                     cr = cluster_lookup.get(doc.get("ioc_value"))
                     if cr and cr["cluster_label"] >= 0:
-                        update_body = {
-                            "cluster_label": cr["cluster_label"],
-                            "cluster_probability": round(cr["cluster_probability"], 4),
-                        }
-                        if es_client.update_warehouse_document(item["doc_id"], update_body):
-                            clustered_count += 1
+                        cluster_updates.append((
+                            item["doc_id"],
+                            {
+                                "cluster_label": cr["cluster_label"],
+                                "cluster_probability": round(cr["cluster_probability"], 4),
+                            },
+                        ))
+                if cluster_updates:
+                    result = es_client.bulk_update_warehouse_documents(cluster_updates)
+                    clustered_count = int(result.get("success", 0) or 0)
             except Exception as _cluster_exc:
                 logger.warning(f"Incremental clustering failed (non-fatal): {_cluster_exc}")
 

@@ -12,7 +12,7 @@ import os
 import copy
 import json
 import logging
-from typing import Dict, Any, List, Optional, Sequence
+from typing import Dict, Any, List, Optional, Sequence, Tuple
 from datetime import datetime, timezone
 import hashlib
 import base64
@@ -1417,6 +1417,45 @@ class ElasticClient:
         except Exception as e:
             logger.error(f"Failed to update warehouse document {doc_id}: {e}")
             return False
+
+    def bulk_update_warehouse_documents(
+        self, updates: Sequence[Tuple[str, Dict[str, Any]]]
+    ) -> Dict[str, Any]:
+        """Apply partial updates to many warehouse documents in a single bulk call.
+
+        Each entry is ``(doc_id, fields_dict)``. Uses ES ``_bulk`` with the
+        ``update`` action so behaviour matches ``_update_document`` (merge,
+        not replace). Returns the same shape as ``bulk_save_to_warehouse``
+        for symmetry with the rest of the bulk-write callsites.
+
+        This exists because the clustering pass in ``main._run_pipeline_once_sync``
+        otherwise issues N individual ``_update`` HTTP requests per batch —
+        with HDBSCAN clustering ~95% of every 2000-doc batch, that's
+        ~1900 round-trips at ~50 ms each (~95 s wasted per iteration).
+        One bulk request collapses that into a single round-trip.
+        """
+        if not updates:
+            return {"success": 0, "failed": 0, "failed_ids": [], "errors": False}
+        operations: List[Dict[str, Any]] = []
+        for doc_id, fields in updates:
+            if not doc_id or not isinstance(fields, dict) or not fields:
+                continue
+            operations.append({
+                "action": {"update": {"_index": self.warehouse_index, "_id": doc_id}},
+                "source": {"doc": fields},
+            })
+        if not operations:
+            return {"success": 0, "failed": 0, "failed_ids": [], "errors": False}
+        try:
+            return self._bulk_request_chunked(self.warehouse_index, operations)
+        except Exception as e:
+            logger.error("Bulk warehouse update failed: %s", e)
+            failed_ids = [
+                doc_id
+                for doc_id in (self._bulk_operation_id(operation) for operation in operations)
+                if doc_id
+            ]
+            return {"success": 0, "failed": len(failed_ids), "failed_ids": failed_ids, "errors": True}
 
 
 
