@@ -15,7 +15,7 @@
 | 3.1 | Executive Dashboard (`/admin/executive`) | ✅ เสร็จ (audit only, ไม่มี bug ใหม่) | [3.1-executive-dashboard.md](./3.1-executive-dashboard.md) | 0 (Phase 3.0 ครอบคลุมแล้ว) |
 | 3.2 | Operations Dashboard (`/admin/operations`) | ✅ เสร็จ | [3.2-operations-dashboard.md](./3.2-operations-dashboard.md) | 1 (CRITICAL — 3/4 KPI labels mismatch) |
 | 3.3 | Threat Intelligence — Overview + IOC Summary (`/admin/threatintelligence`) | ✅ เสร็จ (audit only) | [3.3-ti-overview-ioc-summary.md](./3.3-ti-overview-ioc-summary.md) | 0 (Phase 3.0/3.2 ครอบคลุม) |
-| 3.4 | Threat Landscape (`/admin/threatlandscape`) | ⏳ รอ | — | — |
+| 3.4 | Threat Landscape (`/admin/threatlandscape`) | ✅ เสร็จ | [3.4-threat-landscape.md](./3.4-threat-landscape.md) | 1 (CRITICAL — Intelligence Sources name leak) |
 | 3.5 | IOC Datalake / Analytics / Threat Hunting | ⏳ รอ | — | — |
 | 3.6 | TI sub-pages (×6) | ⏳ รอ | — | — |
 | 3.7 | Action Center / Reports / News / CVE | ⏳ รอ | — | — |

@@ -5892,6 +5892,22 @@ def _build_cve_records(
     return sorted(records, key=lambda item: (item["risk_score"], item["last_seen"] or ""), reverse=True)
 
 
+# Pattern matches the date suffix on datalake daily-rotated indices, e.g.
+# `cyberint_iocs-2025.09.03` → `cyberint_iocs`. Phase 3.4 BUG-3.4-1.
+_DATALAKE_INDEX_DATE_SUFFIX = re.compile(r"-\d{4}\.\d{2}\.\d{2}$")
+
+
+def _normalize_datalake_source_key(key: str) -> str:
+    """Strip date suffix from datalake `_index` bucket keys.
+
+    Datalake aggregates over `_index` because `source_name` is 100% missing.
+    Daily-rotated indices like `cyberint_iocs-2025.09.03` would otherwise
+    appear as separate sources in the UI; normalize to the base name so all
+    daily shards collapse into one source.
+    """
+    return _DATALAKE_INDEX_DATE_SUFFIX.sub("", str(key or "unknown").strip()) or "unknown"
+
+
 def _build_threat_landscape_payload_from_aggs(
     warehouse_aggs: Dict[str, Any],
     datalake_aggs: Dict[str, Any],
@@ -5921,12 +5937,22 @@ def _build_threat_landscape_payload_from_aggs(
         sector_totals[display] = sector_totals.get(display, 0) + int(b.get("doc_count") or 0)
     sectors_list = [{"label": k, "value": v} for k, v in sorted(sector_totals.items(), key=lambda kv: kv[1], reverse=True)[:10]]
 
-    # Union sources (warehouse + datalake buckets)
+    # Union sources (warehouse + datalake buckets).
+    #
+    # Phase 3.4 BUG-3.4-1: datalake `source_name` field is 100% MISSING, so the
+    # datalake agg falls back to `_index`. The datalake uses daily-rotated indices
+    # named like `cyberint_iocs-2025.09.03`, so the raw `_index` keys leak the
+    # date suffix into the UI "Intelligence Sources" list — user sees ~10 entries
+    # for what is really one source. Normalize the datalake side by stripping
+    # the `-YYYY.MM.DD` suffix before merging.
     wh_source_buckets = (warehouse_aggs.get("sources") or {}).get("buckets") or []
     dl_source_buckets = (datalake_aggs.get("sources") or {}).get("buckets") or []
     source_totals: Dict[str, int] = {}
-    for b in list(wh_source_buckets) + list(dl_source_buckets):
+    for b in wh_source_buckets:
         key = str(b.get("key") or "unknown")
+        source_totals[key] = source_totals.get(key, 0) + int(b.get("doc_count") or 0)
+    for b in dl_source_buckets:
+        key = _normalize_datalake_source_key(str(b.get("key") or "unknown"))
         source_totals[key] = source_totals.get(key, 0) + int(b.get("doc_count") or 0)
     sources_list = [{"label": k, "value": v} for k, v in sorted(source_totals.items(), key=lambda kv: kv[1], reverse=True)[:10]]
 
