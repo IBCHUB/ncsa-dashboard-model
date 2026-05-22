@@ -19,9 +19,19 @@ from typing import Any, Dict, List, Optional
 
 from utils.geoip_enrichment import enrich_geo_country
 
-try:
-    from utils.whois_enrichment import lookup_domain_age as _lookup_domain_age
-except ImportError:
+# WHOIS lookups are gated by env var. They were dropped from risk scoring in
+# Phase 1.10 (config.SCORING_WEIGHTS comment: "domain_age coverage is only
+# 3-4% even after WHOIS enrichment") and only used for the IOC Detail display
+# panel. In production containers without outbound DNS, every lookup hangs
+# for up to ~30s on a socket timeout per domain/url IOC, which dominates
+# pipeline latency. Default OFF; set WHOIS_ENRICHMENT_ENABLED=true to re-enable.
+import os as _os
+if _os.getenv("WHOIS_ENRICHMENT_ENABLED", "false").strip().lower() in ("true", "1", "yes"):
+    try:
+        from utils.whois_enrichment import lookup_domain_age as _lookup_domain_age
+    except ImportError:
+        _lookup_domain_age = None  # type: ignore[assignment]
+else:
     _lookup_domain_age = None  # type: ignore[assignment]
 
 try:
