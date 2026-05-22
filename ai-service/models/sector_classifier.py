@@ -18,6 +18,14 @@ import re
 
 from config import SECTORS, SECTOR_RISK_BONUS
 
+try:
+    # Official NCSA sector + agency mapping (Phase 1.18). Imported lazily so
+    # the classifier still works in test environments that don't ship the
+    # data module (e.g. some legacy fixtures).
+    from models.ncsa_agencies import match_ncsa_agency
+except Exception:  # pragma: no cover - defensive import
+    match_ncsa_agency = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -137,6 +145,35 @@ def classify_sector(
     # Combine all text for analysis — include URL path tokens so e.g.
     # https://attacker/bank/login matches the financial sector keywords.
     combined_text = f"{title} {description} {' '.join(tags)} {hostname} {path_tokens}".lower()
+
+    # Phase 1.18: NCSA official agency-name match.
+    # The CSVs published by NCSA list every CII / regulated agency by sector.
+    # When an IOC's description / title / tag set mentions one of those
+    # agencies verbatim (or contains a distinctive sector token like
+    # "กองทัพ" / "การไฟฟ้า"), we can classify with high confidence without
+    # falling through to fuzzy keyword scoring.
+    if match_ncsa_agency is not None:
+        ncsa_hit = match_ncsa_agency(combined_text)
+        if ncsa_hit:
+            sector_key, matched_value, match_type = ncsa_hit
+            # Only honour the hit if the sector is configured (defensive).
+            if sector_key in SECTORS:
+                sector_config = SECTORS[sector_key]
+                confidence = 0.9 if match_type == "agency" else 0.75
+                return {
+                    "sector": sector_key,
+                    "sector_name": sector_config["name"],
+                    "sector_name_th": sector_config["name_th"],
+                    "icon": sector_config["icon"],
+                    "confidence": confidence,
+                    "matched_keywords": [matched_value],
+                    "matched_actors": [],
+                    "matched_domains": [],
+                    "matched_agencies": [matched_value] if match_type == "agency" else [],
+                    "ncsa_match_type": match_type,
+                    "risk_bonus": SECTOR_RISK_BONUS.get(sector_key, 0),
+                    "weight": sector_config["weight"],
+                }
 
     sector_scores: Dict[str, Dict[str, Any]] = {}
 

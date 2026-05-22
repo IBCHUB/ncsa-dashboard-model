@@ -480,6 +480,75 @@ SECTORS = {
         ],
         "threat_actors": ["APT41", "Winnti", "Barium"]
     },
+    "state_security": {
+        # NCSA: ด้านความมั่นคงของรัฐ (military, police, intelligence, DSI, NSC)
+        "name": "National Security",
+        "name_th": "ด้านความมั่นคงของรัฐ",
+        "icon": "🛡️",
+        "weight": 1.5,  # Highest impact alongside critical_infrastructure
+        "keywords": [
+            # English
+            "national security", "military", "armed forces", "defense", "defence",
+            "police", "law enforcement", "intelligence", "counterintelligence",
+            "border patrol", "dsi", "nsc",
+            # Thai (from NCSA agency CSV)
+            "ความมั่นคงของรัฐ", "ด้านความมั่นคงของรัฐ",
+            "กองทัพ", "กองทัพบก", "กองทัพเรือ", "กองทัพอากาศ",
+            "กองทัพไทย", "ทหาร", "กลาโหม",
+            "ตำรวจ", "ตำรวจแห่งชาติ", "ตำรวจภูธร",
+            "สอบสวนคดีพิเศษ", "ข่าวกรอง", "ข่าวกรองแห่งชาติ",
+            "สภาความมั่นคงแห่งชาติ", "รักษาความมั่นคง",
+            "ตำรวจตระเวนชายแดน", "ศาลปกครอง",
+        ],
+        "domains": [
+            # Distinctive Thai gov/military domains for state security
+            ".mi.th", ".mil.th",
+            "police.go.th", "royalthaipolice.go.th",
+            "dsi.go.th", "nia.go.th",
+            "rta.mi.th", "navy.mi.th", "rtaf.mi.th",
+            "isoc.go.th", "mod.go.th",
+            "admincourt.go.th",
+            "police", "rtp", "dsi", "isoc",
+        ],
+        "threat_actors": ["APT28", "APT29", "Sandworm", "Turla",
+                          "Equation Group", "MuddyWater", "Mustang Panda"]
+    },
+    "transportation": {
+        # NCSA: ด้านการขนส่งและโลจิสติกส์ (airlines, rail, port, road, aviation)
+        "name": "Transportation and Logistics",
+        "name_th": "ด้านการขนส่งและโลจิสติกส์",
+        "icon": "🚆",
+        "weight": 1.2,
+        "keywords": [
+            # English
+            "transportation", "transport", "logistics", "airline", "airport",
+            "aviation", "railway", "rail", "metro", "port", "shipping",
+            "freight", "cargo", "airways",
+            # Thai (from NCSA agency CSV)
+            "การขนส่งและโลจิสติกส์", "ด้านการขนส่งและโลจิสติกส์",
+            "ขนส่ง", "คมนาคม", "การบิน", "การบินพลเรือน",
+            "การรถไฟ", "การท่าเรือ", "การท่าอากาศยาน",
+            "การบินไทย", "ไทยแอร์เอเชีย", "ไทยเวียตเจ็ท",
+            "นกแอร์", "การบินกรุงเทพ", "วิทยุการบิน",
+            "รถไฟฟ้า", "ระบบขนส่งมวลชน",
+            "อุตุนิยมวิทยา",
+            # Brand tokens >= 4 chars
+            "airasia", "vietjet", "nokair", "thaiairways", "bangkokair",
+        ],
+        "domains": [
+            # Full domain substrings
+            "thaiairways.com", "airasia.com", "bangkokair.com",
+            "nokair.com", "vietjetair.com",
+            "airportthai.co.th", "aot.co.th",
+            "srt.or.th", "mrta.co.th", "bts.co.th",
+            "dlt.go.th", "drr.go.th", "doh.go.th",
+            "caat.or.th", "md.go.th", "port.co.th",
+            # Bare tokens
+            "thai-airways", "aot", "srt", "mrta", "bts",
+            "dlt", "doh", "caat",
+        ],
+        "threat_actors": ["APT41", "Lazarus", "Carbanak"]
+    },
     "general": {
         "name": "Other",
         "name_th": "อื่นๆ",
@@ -493,10 +562,12 @@ SECTORS = {
 
 # Sector impact on scoring
 SECTOR_RISK_BONUS = {
+    "state_security": 15,
     "government": 12,
     "critical_infrastructure": 15,
     "healthcare": 10,
     "financial": 10,
+    "transportation": 10,
     "technology": 5,
     "education": 0,
     "general": 0
