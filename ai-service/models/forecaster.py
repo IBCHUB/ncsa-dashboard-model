@@ -22,6 +22,44 @@ def seasonal_average(
     return [max(0, round(season[index % len(season)])) for index in range(horizon)]
 
 
+def holt_linear_forecast(
+    values: list[int | float],
+    horizon: int,
+    alpha: float = 0.5,
+    beta: float = 0.2,
+    damping: float = 0.9,
+) -> list[int]:
+    """
+    Holt's double exponential smoothing (level + damped trend, no seasonality).
+
+    Used when the historical window is too short to fit a full seasonal model
+    (n < 2 * season_length). Damping (phi) keeps the trend from extrapolating
+    a single spike into an unbounded ramp.
+    """
+    if not values:
+        return [0 for _ in range(horizon)]
+    if len(values) == 1:
+        return [max(0, round(values[0])) for _ in range(horizon)]
+
+    level = float(values[0])
+    trend = float(values[1]) - float(values[0])
+    for i in range(1, len(values)):
+        value = float(values[i])
+        level_new = alpha * value + (1 - alpha) * (level + damping * trend)
+        trend_new = beta * (level_new - level) + (1 - beta) * damping * trend
+        level = level_new
+        trend = trend_new
+
+    result: list[int] = []
+    damped_sum = 0.0
+    factor = 1.0
+    for _ in range(horizon):
+        factor *= damping
+        damped_sum += factor
+        result.append(max(0, round(level + damped_sum * trend)))
+    return result
+
+
 def holt_winters_forecast(
     values: list[int | float],
     horizon: int,
@@ -58,8 +96,13 @@ def holt_winters_forecast(
 
     n = len(values)
 
+    # Full Holt-Winters needs at least two complete seasonal cycles to fit
+    # level + trend + seasonal components. With less data, drop seasonality
+    # and fall back to Holt's damped linear trend instead of repeating the
+    # last season verbatim (which produced an exact copy of the historical
+    # shape as the "forecast").
     if n < 2 * season_length:
-        return seasonal_average(values, horizon, season_length)
+        return holt_linear_forecast(values, horizon)
 
     # --- Initialisation ---
     first_season = values[:season_length]
