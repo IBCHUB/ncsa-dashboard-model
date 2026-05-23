@@ -1265,7 +1265,12 @@ class ElasticClient:
     def save_to_warehouse(self, ioc_data: Dict[str, Any]) -> Optional[str]:
         warehouse_doc = self._prepare_warehouse_document(ioc_data)
         try:
-            doc_id = self._build_warehouse_doc_id(warehouse_doc)
+            # 1:1 observation mode — every datalake observation becomes its own
+            # warehouse doc. Earlier this used canonical_ioc_key (dedupe by IOC),
+            # which collapsed re-observations of the same IOC into a single row
+            # and undercounted attack events; per-event uniqueness uses the
+            # source-fingerprinted datalake doc id instead.
+            doc_id = self._build_datalake_doc_id(warehouse_doc)
             client = self._get_client(self.warehouse_index)
             if ES_CLIENT_AVAILABLE and client:
                 result = client.index(
@@ -1298,7 +1303,7 @@ class ElasticClient:
         operations: List[Dict[str, Any]] = []
         for item in items:
             warehouse_doc = self._prepare_warehouse_document(dict(item["document"]))
-            doc_id = str(item.get("doc_id") or self._build_warehouse_doc_id(warehouse_doc))
+            doc_id = str(item.get("doc_id") or self._build_datalake_doc_id(warehouse_doc))
             operations.append({
                 "action": {"index": {"_index": self.warehouse_index, "_id": doc_id}},
                 "source": warehouse_doc,
