@@ -6338,11 +6338,15 @@ def executive_dashboard(
     severity_distribution = _build_severity_distribution_from_counts(current_stats.get("severity_counts") or {})
     treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("threat_types") or [])
     sector_treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("sector_terms") or [])
-    # Threat Level: per spec, all 4 factors use TODAY's data.
-    # - Volume: compare today vs 14-day baseline → needs 14-day trend
-    # - Severity/Sector/Actor: today only → needs today-specific stats & aggs
-    today_str = _to_bangkok_date(now)
-    threat_level_lookback_start = _to_bangkok_date(now - timedelta(days=14))
+    # Threat Level: per spec, all 4 factors use TODAY's data — REAL today,
+    # not the filter's end_date. Anchoring on `now` (= filter end_date) made
+    # the level change every time the user picked a different date range
+    # (e.g. "Last Month" → "today" = Apr 30 → Guarded; "This Month" →
+    # "today" = May 31, no data yet → Low). The level is meant to reflect
+    # the current state of the threat landscape, independent of the filter.
+    threat_level_now = datetime.now(UTC)
+    today_str = _to_bangkok_date(threat_level_now)
+    threat_level_lookback_start = _to_bangkok_date(threat_level_now - timedelta(days=14))
     threat_level_lookback_end = today_str
     threat_level_aggs = _warehouse_dashboard_aggs(
         start_date=threat_level_lookback_start,
@@ -6371,7 +6375,7 @@ def executive_dashboard(
         time_mode=TIME_MODE_OBSERVED,
     )
     threat_level = _build_threat_level_from_aggregations(
-        today_stats, threat_level_aggs, today_aggs=today_aggs, now=now,
+        today_stats, threat_level_aggs, today_aggs=today_aggs, now=threat_level_now,
     )
     primary_sector = threat_level["top_sectors"][0] if threat_level["top_sectors"] else {"sector_name": None, "count": 0}
     attack_origin_map = _build_attack_origin_map_from_aggs(current_aggs)
