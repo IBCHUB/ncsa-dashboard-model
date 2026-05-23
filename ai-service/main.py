@@ -45,6 +45,7 @@ PIPELINE_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("PIPELINE_SCHEDULER_INTERVAL
 PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS = int(os.getenv("PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS", "60"))
 PIPELINE_SCHEDULER_LIMIT = int(os.getenv("PIPELINE_SCHEDULER_LIMIT", "100"))
 _pipeline_lock = threading.Lock()
+_pipeline_locks: Dict[int, threading.Lock] = {}
 _pipeline_scheduler_task: Optional[asyncio.Task] = None
 
 # Create FastAPI app
@@ -483,8 +484,11 @@ class ElasticsearchStatusResponse(BaseModel):
     scheduler_interval_seconds: int = 0
 
 
-def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
-    if not _pipeline_lock.acquire(blocking=False):
+def _run_pipeline_once_sync(limit: int, worker_id: int = 0, worker_total: int = 1) -> Dict[str, Any]:
+    # Per-worker reentrancy guard so N workers can run concurrently but each
+    # worker still serialises its own iterations.
+    lock = _pipeline_locks.setdefault(worker_id, threading.Lock())
+    if not lock.acquire(blocking=False):
         return {
             "processed": 0,
             "rejected": 0,
@@ -515,7 +519,9 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
 
         # Get unprocessed IOCs from Data Lake. For read-only sources, this is
         # filtered by the local processed-state index on the warehouse cluster.
-        unprocessed = es_client.get_unprocessed_iocs(limit=limit)
+        unprocessed = es_client.get_unprocessed_iocs(
+            limit=limit, worker_id=worker_id, worker_total=worker_total,
+        )
 
         if not unprocessed:
             return {
@@ -769,33 +775,48 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
             )
         }
     finally:
-        _pipeline_lock.release()
+        lock.release()
 
 
-async def _run_pipeline_once(limit: int) -> Dict[str, Any]:
-    return await asyncio.to_thread(_run_pipeline_once_sync, limit)
+async def _run_pipeline_once(limit: int, worker_id: int = 0, worker_total: int = 1) -> Dict[str, Any]:
+    return await asyncio.to_thread(_run_pipeline_once_sync, limit, worker_id, worker_total)
+
+
+PIPELINE_WORKER_COUNT = int(os.getenv("PIPELINE_WORKER_COUNT", "1"))
+
+
+async def _pipeline_worker_loop(worker_id: int, worker_total: int) -> None:
+    while True:
+        try:
+            result = await _run_pipeline_once(
+                PIPELINE_SCHEDULER_LIMIT, worker_id=worker_id, worker_total=worker_total,
+            )
+            logger.info("Worker %s/%s pipeline result: %s", worker_id, worker_total, result)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Worker %s pipeline failed: %s", worker_id, e, exc_info=True)
+        await asyncio.sleep(PIPELINE_SCHEDULER_INTERVAL_SECONDS)
 
 
 async def _pipeline_scheduler_loop() -> None:
     logger.info(
-        "Pipeline scheduler enabled: interval=%ss initial_delay=%ss limit=%s",
+        "Pipeline scheduler enabled: interval=%ss initial_delay=%ss limit=%s workers=%s",
         PIPELINE_SCHEDULER_INTERVAL_SECONDS,
         PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS,
         PIPELINE_SCHEDULER_LIMIT,
+        PIPELINE_WORKER_COUNT,
     )
     if PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS > 0:
         await asyncio.sleep(PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS)
 
-    while True:
-        try:
-            result = await _run_pipeline_once(PIPELINE_SCHEDULER_LIMIT)
-            logger.info("Scheduled pipeline result: %s", result)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error("Scheduled pipeline failed: %s", e, exc_info=True)
-
-        await asyncio.sleep(PIPELINE_SCHEDULER_INTERVAL_SECONDS)
+    # Spawn N concurrent worker loops. Each worker reads its own ES slice of
+    # the datalake and tracks its own cursor — no races, no double-processing.
+    workers = [
+        asyncio.create_task(_pipeline_worker_loop(i, PIPELINE_WORKER_COUNT))
+        for i in range(max(1, PIPELINE_WORKER_COUNT))
+    ]
+    await asyncio.gather(*workers)
 
 
 def _start_pipeline_scheduler() -> None:

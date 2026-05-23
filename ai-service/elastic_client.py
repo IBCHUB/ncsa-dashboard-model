@@ -857,26 +857,26 @@ class ElasticClient:
             logger.warning("Failed to bulk-read processed state: %s", e)
             return {}
 
-    def _pipeline_cursor_doc_id(self) -> str:
-        raw = f"cursor:{DATALAKE_SCAN_CURSOR_ID}:{self.datalake_index}"
+    def _pipeline_cursor_doc_id(self, suffix: str = "") -> str:
+        raw = f"cursor:{DATALAKE_SCAN_CURSOR_ID}{suffix}:{self.datalake_index}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
-    def get_datalake_scan_cursor(self) -> Optional[List[Any]]:
+    def get_datalake_scan_cursor(self, suffix: str = "") -> Optional[List[Any]]:
         if not DATALAKE_SCAN_USE_CURSOR:
             return None
         try:
-            doc = self._get_document(PROCESSED_INDEX, self._pipeline_cursor_doc_id()) or {}
+            doc = self._get_document(PROCESSED_INDEX, self._pipeline_cursor_doc_id(suffix)) or {}
             last_sort = doc.get("last_sort")
             return last_sort if isinstance(last_sort, list) and last_sort else None
         except Exception as e:
             logger.warning("Failed to read datalake scan cursor: %s", e)
             return None
 
-    def save_datalake_scan_cursor(self, last_sort: Optional[List[Any]]) -> bool:
+    def save_datalake_scan_cursor(self, last_sort: Optional[List[Any]], suffix: str = "") -> bool:
         if not DATALAKE_SCAN_USE_CURSOR:
             return True
         now = datetime.now(timezone.utc).isoformat()
-        doc_id = self._pipeline_cursor_doc_id()
+        doc_id = self._pipeline_cursor_doc_id(suffix)
         body = {
             "source_index": self.datalake_index,
             "source_doc_id": doc_id,
@@ -1041,9 +1041,14 @@ class ElasticClient:
             logger.error("Failed to save quarantine for %s: %s", state_id, e)
             return False
     
-    def get_unprocessed_iocs(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_unprocessed_iocs(
+        self,
+        limit: int = 100,
+        worker_id: int = 0,
+        worker_total: int = 1,
+    ) -> List[Dict[str, Any]]:
         if DATALAKE_QUERY_MODE == "all":
-            return self._get_unprocessed_iocs_from_readonly_feed(limit)
+            return self._get_unprocessed_iocs_from_readonly_feed(limit, worker_id, worker_total)
         else:
             # Match docs where ai_processed does not exist (old-style) OR is explicitly false
             # (new docs indexed via bulk_index_datalake which sets ai_processed=False by default).
@@ -1075,14 +1080,33 @@ class ElasticClient:
             logger.error(f"Failed to get unprocessed IOCs: {e}")
             return []
 
-    def _get_unprocessed_iocs_from_readonly_feed(self, limit: int) -> List[Dict[str, Any]]:
+    def _get_unprocessed_iocs_from_readonly_feed(
+        self,
+        limit: int,
+        worker_id: int = 0,
+        worker_total: int = 1,
+    ) -> List[Dict[str, Any]]:
         documents: List[Dict[str, Any]] = []
         batch_size = max(DATALAKE_SCAN_BATCH_SIZE, min(limit, 1000))
-        search_after = self.get_datalake_scan_cursor()
+        # Per-worker cursor — each worker gets its own slice and advances
+        # independently so they don't race on a shared cursor.
+        cursor_suffix = f"-w{worker_id}of{worker_total}" if worker_total > 1 else ""
+        search_after = self.get_datalake_scan_cursor(suffix=cursor_suffix)
+
+        # Date filter — only ingest observations from the last 60 days. The
+        # rest of the datalake is older history that can be backfilled later.
+        # observation_date is the per-doc event time on cyberint records.
+        base_query: Dict[str, Any] = {
+            "bool": {
+                "must": [
+                    {"range": {"observation_date": {"gte": "now-60d"}}},
+                ]
+            }
+        }
 
         for _ in range(max(1, DATALAKE_SCAN_MAX_PAGES)):
-            query = {
-                "query": {"match_all": {}},
+            query: Dict[str, Any] = {
+                "query": base_query,
                 "sort": [
                     {"event_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}},
                     {"collect_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}},
@@ -1090,6 +1114,10 @@ class ElasticClient:
                 ],
                 "size": batch_size,
             }
+            # ES native slice — partitions the result set across workers
+            # without script overhead. Workers see disjoint subsets.
+            if worker_total > 1:
+                query["slice"] = {"id": worker_id, "max": worker_total, "field": "_id"}
             if search_after:
                 query["search_after"] = search_after
 
@@ -1104,13 +1132,13 @@ class ElasticClient:
 
             if not hits:
                 if search_after:
-                    self.save_datalake_scan_cursor(None)
+                    self.save_datalake_scan_cursor(None, suffix=cursor_suffix)
                 return documents
 
             last_sort = hits[-1].get("sort")
             search_after = last_sort if isinstance(last_sort, list) else None
             if search_after:
-                self.save_datalake_scan_cursor(search_after)
+                self.save_datalake_scan_cursor(search_after, suffix=cursor_suffix)
 
             normalized_page = [self._normalize_datalake_hit(hit) for hit in hits]
             processed_state = self.get_processed_state_map(normalized_page)
