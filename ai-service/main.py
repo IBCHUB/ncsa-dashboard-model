@@ -542,9 +542,13 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
         quarantined = 0
         skipped_duplicate = 0
 
-        # Group by IOC key to preserve all source-level observations (MOM requirement)
+        # 1:1 observation mode — each datalake observation becomes its own
+        # warehouse row. Key the "group" by the datalake doc id (or a
+        # synthetic per-row id) so build_enriched_ioc_document sees one doc
+        # at a time and we keep all per-observation timestamps, sources,
+        # descriptions distinct in the warehouse.
         grouped_iocs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-        for ioc in unprocessed:
+        for index, ioc in enumerate(unprocessed):
             if ioc.get("adapter_status") == "quarantined":
                 if es_client.save_quarantine(ioc, reason=ioc.get("quarantine_reason")):
                     quarantined += 1
@@ -558,23 +562,18 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 if es_client.save_quarantine(ioc, reason="missing_ioc_value"):
                     quarantined += 1
                 continue
-            key = (ioc_type, ioc_value.lower())
-            grouped_iocs.setdefault(key, []).append(ioc)
+            obs_key = str(ioc.get("_id") or f"{ioc_type}:{ioc_value}:{index}")
+            grouped_iocs[(ioc_type, obs_key)] = [ioc]
             normalized += 1
 
-        # Pre-merge: fetch existing warehouse docs for these IOC keys so we
-        # can merge their source_objects into the new batch.  This is how
-        # cross-batch / cross-index source deduplication works.
-        warehouse_doc_ids = {}
-        for key, ioc_docs_for_key in grouped_iocs.items():
-            sample = ioc_docs_for_key[0]
-            doc_id = ElasticClient._build_warehouse_doc_id(sample)
-            warehouse_doc_ids[key] = doc_id
-
-        existing_warehouse = es_client.bulk_get_warehouse_documents(
-            list(warehouse_doc_ids.values())
-        ) if warehouse_doc_ids else {}
-        id_to_key = {v: k for k, v in warehouse_doc_ids.items()}
+        # 1:1 observation mode skips the pre-merge step — every datalake
+        # observation is its own warehouse row, so there's no existing doc
+        # to merge sources with. Keep the loop structure but turn the
+        # existing-doc lookup into a no-op so the rest of the pipeline
+        # unchanged.
+        warehouse_doc_ids: Dict[Tuple[str, str], str] = {}
+        existing_warehouse: Dict[str, Dict[str, Any]] = {}
+        id_to_key: Dict[str, Tuple[str, str]] = {}
 
         for key, ioc_docs_for_key in grouped_iocs.items():
             doc_id = warehouse_doc_ids.get(key)
@@ -650,7 +649,9 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                 validation_status = pipeline_doc["validation_status"]
                 ioc_value = pipeline_doc["ioc_value"]
 
-                warehouse_doc_id = ElasticClient._build_warehouse_doc_id(pipeline_doc)
+                # 1:1 doc_id — fingerprint by source + event_time + ref so
+                # each datalake observation gets its own warehouse row.
+                warehouse_doc_id = ElasticClient._build_datalake_doc_id(pipeline_doc)
                 warehouse_items.append({
                     "doc_id": warehouse_doc_id,
                     "document": dict(pipeline_doc),
