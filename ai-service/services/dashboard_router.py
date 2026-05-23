@@ -4276,20 +4276,12 @@ def _build_executive_attack_volume_trend_from_buckets(
     severity's rolling share of total over the training window. This is
     the textbook "top-down hierarchical forecasting" approach.
     """
-    # Skip display buckets that fall after "now": when the user picks a
-    # filter like "This Month" (ends May 31) but today is May 23, the
-    # warehouse returns zero-doc buckets for May 24-31. Plotting those as
-    # historical would draw the line dropping to zero on days that
-    # haven't happened yet.
-    now_bkk = datetime.now(UTC).astimezone(BANGKOK_TZ)
     points = []
     for bucket in buckets:
         parsed = _parse_dt(bucket.get("key_as_string"))
         if not parsed:
             continue
         local = parsed.astimezone(BANGKOK_TZ)
-        if local.date() > now_bkk.date():
-            continue
         severity_counts = _severity_counts_from_filter_agg(bucket.get("severity") or {})
         points.append(
             {
@@ -4301,12 +4293,6 @@ def _build_executive_attack_volume_trend_from_buckets(
                 "point_type": "historical",
             }
         )
-    # Also trim trailing zero-doc days from the display: extended_bounds
-    # backfills empty buckets right up to now even when ingestion is a
-    # few days behind. Showing those zeros drags the historical line to
-    # the X-axis (and the forecast bridge would start at zero too).
-    while points and points[-1]["total"] == 0:
-        points.pop()
 
     # Train on the wider window if the caller supplied it.
     training_source = training_buckets if training_buckets is not None else buckets
@@ -4335,14 +4321,6 @@ def _build_executive_attack_volume_trend_from_buckets(
 
     if display_daily_keys and forecast_days > 0:
         training_keys = sorted(training_daily.keys())
-        # Trim trailing zero-doc days. ES extended_bounds fills the right edge
-        # of the date_histogram with empty buckets even when ingestion lags
-        # behind real time; treating those zeros as "today's actual value" in
-        # the backtest hold-out reliably sinks the gate (model predicts ~30K,
-        # ground truth is 0, sMAPE ≈ 200%). Drop them so backtest evaluates
-        # against real data only.
-        while training_keys and training_daily[training_keys[-1]]["total"] == 0:
-            training_keys.pop()
         total_series = [training_daily[k]["total"] for k in training_keys]
         critical_series = [training_daily[k]["critical"] for k in training_keys]
         high_series = [training_daily[k]["high"] for k in training_keys]
@@ -6408,18 +6386,9 @@ def executive_dashboard(
     # of the user's display filter. Holt-Winters with weekly seasonality
     # (L=7) needs ≥ 14 days to fit and benefits from a few months of
     # history to stabilise the level + trend + seasonal components.
-    #
-    # Anchor the training window at real "now", NOT at the filter's
-    # end_date. When a user picks "This Month" (end_date = May 31) but
-    # today is May 23, `now` here is May 31; pulling 120 days ending
-    # May 31 leaves 8 days of empty future buckets in the hold-out
-    # window, which the backtest reads as zeros and reliably fails. The
-    # training data we have is the training data we have — it doesn't
-    # change with the user's display filter.
     training_lookback_days = 120
-    training_anchor = min(now, datetime.now(UTC))
-    training_start = _to_bangkok_date(training_anchor - timedelta(days=training_lookback_days))
-    training_end = _to_bangkok_date(training_anchor)
+    training_start = _to_bangkok_date(now - timedelta(days=training_lookback_days))
+    training_end = _to_bangkok_date(now)
     training_aggs = _warehouse_dashboard_aggs(
         start_date=training_start,
         end_date=training_end,

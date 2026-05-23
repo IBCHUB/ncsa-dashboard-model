@@ -116,12 +116,7 @@ def _project(
 
 # Small but sufficient grid. Combinations: 4 × 4 × 4 × 4 = 256 fits.
 _SMOOTHING_GRID = (0.1, 0.3, 0.5, 0.8)
-# Cap damping at 0.92 — never let the tuner pick "no damping" (1.0).
-# Recent cybersecurity volume often climbs sharply (new threat campaign,
-# backfill, ingestion catch-up) and an undamped trend extrapolates that
-# rise unboundedly. Forcing damping keeps the forecast level near the
-# recent observed range over a 7-day horizon.
-_DAMPING_GRID = (0.75, 0.82, 0.88, 0.92)
+_DAMPING_GRID = (0.85, 0.92, 0.98, 1.0)
 
 
 def _tune(values: list[float], season_length: int) -> tuple[float, float, float, float]:
@@ -172,19 +167,19 @@ def winsorize(
     multiplier: float = 4.0,
 ) -> tuple[list[float], list[int]]:
     """
-    Replace outlier spikes with the local median so the HW level
-    isn't dragged up by a single attack day.
+    Cap outlier spikes using a percentile-based upper bound.
 
-    Replaced (not just capped) because Holt-Winters' level tracker
-    follows recent values, so even a capped value at p95+ pulls the
-    fitted level up and biases the forecast. Substituting the median
-    cleanly removes the spike's influence on the trend/level fit
-    while keeping the series length aligned.
+    We use percentiles instead of mean ± std (not robust to outliers)
+    and instead of pure MAD (degenerates to zero when most values are
+    identical, which happens for sparse cybersecurity feeds). The
+    bound is `p95 + multiplier × (p95 − p50)`: this scales with the
+    natural spread of the data and reliably catches the single
+    50× attack-day spike that would otherwise wreck Holt-Winters.
 
-    Outlier bound: `p95 + multiplier × (p95 − p50)`.
-    Only the upper side is treated — low values (quiet hour) are normal.
+    Only the upper side is capped — low values (a quiet hour) are
+    normal. The series length and ordering are preserved.
 
-    Returns (cleaned_series, indices_that_were_replaced).
+    Returns (capped_series, indices_of_capped_values).
     """
     if len(values) < 4:
         return list(values), []
@@ -194,28 +189,23 @@ def winsorize(
     p95 = _percentile(sorted_values, 95)
     spread = p95 - p50
     if spread <= 0:
+        # Flat or nearly-flat data; fall back to a multiple of p95 to
+        # still flag a lone spike in an otherwise constant series.
         upper_bound = p95 * (1 + multiplier) if p95 > 0 else 0.0
         if upper_bound <= 0:
             return list(values), []
     else:
         upper_bound = p95 + multiplier * spread
 
-    # Replace each outlier with the median of its surrounding window
-    # (last 14 days before the outlier), not the global median — when
-    # recent volume is much higher than the long-run baseline, the
-    # global median would replace a spike with a value far below the
-    # local level and create another distortion.
-    cleaned: list[float] = list(values)
+    capped: list[float] = []
     anomaly_indices: list[int] = []
     for index, value in enumerate(values):
         if value > upper_bound:
-            window_start = max(0, index - 14)
-            window = [v for j, v in enumerate(values[window_start:index]) if v <= upper_bound]
-            if not window:
-                window = [v for v in values[:index] if v <= upper_bound] or [p50]
-            cleaned[index] = _median(window)
+            capped.append(upper_bound)
             anomaly_indices.append(index)
-    return cleaned, anomaly_indices
+        else:
+            capped.append(value)
+    return capped, anomaly_indices
 
 
 def _smape(
@@ -346,17 +336,6 @@ def forecast(
     level, trend, seasonal, residuals = _fit(series, season_length, alpha, beta, gamma, phi)
     point = _project(level, trend, seasonal, n, horizon, season_length, phi)
 
-    # Sanity cap based on recent MEDIAN (not max). Median is robust to
-    # any residual outliers winsorize might have missed and reflects
-    # the "normal day" volume the user expects the forecast to anchor
-    # on. Cap = 2× recent median (or +1K floor for very low baselines).
-    recent_window = series[-min(len(series), 14):]
-    recent_window_sorted = sorted(recent_window)
-    recent_median = _percentile(recent_window_sorted, 50) if recent_window_sorted else 0.0
-    cap = max(recent_median * 2.0, recent_median + 1000.0)
-    if cap > 0:
-        point = [min(value, cap) for value in point]
-
     # --- 80% prediction interval -------------------------------------------
     # σ̂ from in-sample residuals; multi-step variance grows ~√h for a
     # damped linear-trend model. Not the analytic HW PI (which requires
@@ -371,16 +350,10 @@ def forecast(
         max(0, int(round(value - _Z_80 * sigma * math.sqrt(h))))
         for h, value in enumerate(point, start=1)
     ]
-    upper_raw = [
-        int(round(value + _Z_80 * sigma * math.sqrt(h)))
+    upper = [
+        max(0, int(round(value + _Z_80 * sigma * math.sqrt(h))))
         for h, value in enumerate(point, start=1)
     ]
-    # Cap upper CI at the same sanity bound used for the point estimate
-    # so a volatile series doesn't draw a shaded band stretching off-chart.
-    if cap > 0:
-        upper = [max(0, min(value, int(round(cap)))) for value in upper_raw]
-    else:
-        upper = [max(0, value) for value in upper_raw]
 
     return ForecastResult(
         point=point_int,
