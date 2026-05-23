@@ -208,14 +208,33 @@ def winsorize(
     return capped, anomaly_indices
 
 
-def _smape(actual: list[float], predicted: list[float]) -> float:
-    """Symmetric MAPE. Returns 0 on empty input."""
-    pairs = [(a, p) for a, p in zip(actual, predicted) if (abs(a) + abs(p)) > 0]
-    if not pairs:
+def _smape(
+    actual: list[float],
+    predicted: list[float],
+    *,
+    exclude_indices: set[int] | None = None,
+) -> float:
+    """
+    Symmetric median absolute percentage error.
+
+    Uses median instead of mean so a single outlier day in the hold-out
+    window (e.g. a capped attack-volume spike) can't single-handedly
+    drag the score past the gate. Also supports excluding specified
+    indices — the caller passes positions that were winsorized in the
+    full series so the model isn't penalised for failing to predict
+    values it was explicitly told to ignore.
+    """
+    errors: list[float] = []
+    exclude = exclude_indices or set()
+    for index, (a, p) in enumerate(zip(actual, predicted)):
+        if index in exclude:
+            continue
+        if (abs(a) + abs(p)) == 0:
+            continue
+        errors.append(abs(p - a) / ((abs(a) + abs(p)) / 2.0))
+    if not errors:
         return 0.0
-    return sum(
-        abs(p - a) / ((abs(a) + abs(p)) / 2.0) for a, p in pairs
-    ) / len(pairs)
+    return _median(errors)
 
 
 # ---------------------------------------------------------------------------
@@ -283,18 +302,27 @@ def forecast(
     anomaly_values = [raw[i] for i in anomaly_indices]
 
     # --- Backtest gate ------------------------------------------------------
-    # Backtest also uses the winsorized series. A single outlier inside
-    # the hold-out would otherwise sink an otherwise good model.
+    # Backtest uses the winsorized series. We additionally exclude any
+    # day in the hold-out that WAS winsorized: the model was told to
+    # ignore that spike, so penalising it for missing the capped value
+    # would just re-introduce the bug winsorize is supposed to prevent.
     smape: float | None = None
     if n >= 3 * season_length:
         train = series[: n - season_length]
         test = series[n - season_length:]
+        # Convert global anomaly positions into test-relative positions.
+        test_offset = n - season_length
+        excluded = {
+            index - test_offset
+            for index in anomaly_indices
+            if index >= test_offset
+        }
         tuned = _tune(train, season_length)
         level, trend, seasonal, _ = _fit(train, season_length, *tuned)
         backtest_pred = _project(
             level, trend, seasonal, len(train), season_length, season_length, tuned[3]
         )
-        smape = _smape(test, backtest_pred)
+        smape = _smape(test, backtest_pred, exclude_indices=excluded)
         if smape > smape_threshold:
             return ForecastResult(
                 smape=smape,

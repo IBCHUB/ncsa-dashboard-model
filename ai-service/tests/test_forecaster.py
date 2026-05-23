@@ -47,6 +47,22 @@ def test_forecast_records_anomaly_indices():
     assert len(result.point) == 7
 
 
+def test_forecast_survives_spike_in_holdout_window():
+    # 120 days of low-volatility baseline with a single huge spike in
+    # the hold-out window (last 7 days). This is the exact scenario
+    # that caused the user-visible 'backtest_failed' bug: even after
+    # winsorizing the spike value, mean sMAPE was dragged past 0.6 by
+    # the single capped day. Median sMAPE + excluding winsorized
+    # positions from the score should let the forecast through.
+    import random
+    random.seed(42)
+    series = [30_000 + random.randint(-2_000, 2_000) for _ in range(120)]
+    series[115] = 1_000_000  # ← attack-day spike inside the hold-out
+    result = forecast(series, horizon=7, season_length=7)
+    assert 115 in result.anomaly_indices
+    assert result.point, f"Forecast should emit; got reason={result.reason}"
+
+
 # ---------------------------------------------------------------------------
 # New forecast() API — point + CI + backtest gate
 # ---------------------------------------------------------------------------
