@@ -6304,7 +6304,11 @@ def executive_dashboard(
     attack_origin_map = _build_attack_origin_map_from_aggs(current_aggs)
     is_single_day = start_date == end_date
     today_bkk = _to_bangkok_date(datetime.now(UTC))
-    include_forecast = is_single_day and end_date >= today_bkk
+    # Forecast: only when the date range reaches today or the future.
+    # Forecast length = same as the selected date range (flexible).
+    start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
+    date_range_days = max(1, (end_bound - start_bound).days) if start_bound and end_bound else 1
+    include_forecast = end_date >= today_bkk
     if is_single_day:
         # Use ES date_histogram aggregation across last 72h (hourly buckets).
         # Pass YYYY-MM-DD date strings so _resolve_date_bounds parses correctly.
@@ -6326,7 +6330,7 @@ def executive_dashboard(
         )
         attack_volume_trend = threat_volume_trend
     else:
-        forecast_days = 7 if end_date >= today_bkk else 0
+        forecast_days = date_range_days if include_forecast else 0
         threat_volume_trend = _build_executive_attack_volume_trend_from_buckets(
             (current_aggs.get("trend") or {}).get("buckets") or [],
             forecast_days=forecast_days,
