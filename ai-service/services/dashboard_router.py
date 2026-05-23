@@ -6386,9 +6386,18 @@ def executive_dashboard(
     # of the user's display filter. Holt-Winters with weekly seasonality
     # (L=7) needs ≥ 14 days to fit and benefits from a few months of
     # history to stabilise the level + trend + seasonal components.
+    #
+    # Anchor the training window at real "now", NOT at the filter's
+    # end_date. When a user picks "This Month" (end_date = May 31) but
+    # today is May 23, `now` here is May 31; pulling 120 days ending
+    # May 31 leaves 8 days of empty future buckets in the hold-out
+    # window, which the backtest reads as zeros and reliably fails. The
+    # training data we have is the training data we have — it doesn't
+    # change with the user's display filter.
     training_lookback_days = 120
-    training_start = _to_bangkok_date(now - timedelta(days=training_lookback_days))
-    training_end = _to_bangkok_date(now)
+    training_anchor = min(now, datetime.now(UTC))
+    training_start = _to_bangkok_date(training_anchor - timedelta(days=training_lookback_days))
+    training_end = _to_bangkok_date(training_anchor)
     training_aggs = _warehouse_dashboard_aggs(
         start_date=training_start,
         end_date=training_end,
