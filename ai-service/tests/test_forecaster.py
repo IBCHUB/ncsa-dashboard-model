@@ -11,7 +11,40 @@ from models.forecaster import (
     has_forecast_signal,
     holt_winters_forecast,
     seasonal_average,
+    winsorize,
 )
+
+
+def test_winsorize_caps_single_spike():
+    # A baseline of ~20 with one 1000× spike at index 50.
+    series = [20.0] * 100
+    series[50] = 1_000.0
+    capped, indices = winsorize(series)
+    assert indices == [50]
+    assert capped[50] < 1_000.0
+    # Everything else untouched.
+    assert capped[:50] == series[:50]
+    assert capped[51:] == series[51:]
+
+
+def test_winsorize_leaves_clean_series_alone():
+    series = [10.0 + (i % 7) for i in range(60)]
+    capped, indices = winsorize(series)
+    assert indices == []
+    assert capped == series
+
+
+def test_forecast_records_anomaly_indices():
+    # 84 days (12 weeks) of weekly-seasonal data with one outlier.
+    import math
+    series = [50 + 10 * math.sin(2 * math.pi * i / 7) for i in range(84)]
+    series[40] = 5_000
+    result = forecast(series, horizon=7, season_length=7)
+    assert 40 in result.anomaly_indices
+    assert 5_000 in result.anomaly_values
+    # And with the spike capped, the forecast should still emit (not be
+    # rejected by backtest the way the raw series would be).
+    assert len(result.point) == 7
 
 
 # ---------------------------------------------------------------------------

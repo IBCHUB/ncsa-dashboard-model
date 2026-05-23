@@ -4332,6 +4332,14 @@ def _build_executive_attack_volume_trend_from_buckets(
 
         result = _hw_forecast(total_series, horizon=capped_horizon, season_length=7)
 
+        # Map outlier positions back to dates so the UI can name the days
+        # excluded from the fit (e.g. "Forecast excludes anomaly on 21.05").
+        anomaly_dates = [
+            training_keys[index]
+            for index in result.anomaly_indices
+            if 0 <= index < len(training_keys)
+        ]
+
         if result.point:
             # Apportion forecasted total into critical/high by their share
             # in the training window. Use only the last ~28 days (4 weeks)
@@ -4364,6 +4372,7 @@ def _build_executive_attack_volume_trend_from_buckets(
                 "horizon_days": len(result.point),
                 "smape": result.smape,
                 "params": list(result.params) if result.params else None,
+                "anomaly_dates": anomaly_dates,
             }
         else:
             forecast_meta = {
@@ -4371,6 +4380,7 @@ def _build_executive_attack_volume_trend_from_buckets(
                 "reason": result.reason,
                 "training_days": len(training_keys),
                 "smape": result.smape,
+                "anomaly_dates": anomaly_dates,
             }
     return {
         "points": points + forecast_points,

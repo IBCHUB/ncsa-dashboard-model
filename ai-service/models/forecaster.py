@@ -37,6 +37,8 @@ class ForecastResult:
     smape: float | None = None                        # backtest error, if run
     params: tuple[float, float, float, float] | None = None  # α, β, γ, φ
     reason: str | None = None                         # why empty, if empty
+    anomaly_indices: list[int] = field(default_factory=list)  # winsorized positions
+    anomaly_values: list[float] = field(default_factory=list)  # original values at those positions
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +140,74 @@ def _tune(values: list[float], season_length: int) -> tuple[float, float, float,
     return best
 
 
+def _median(values: list[float]) -> float:
+    sorted_values = sorted(values)
+    n = len(sorted_values)
+    mid = n // 2
+    if n % 2:
+        return sorted_values[mid]
+    return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+
+
+def _percentile(sorted_values: list[float], pct: float) -> float:
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = (pct / 100.0) * (len(sorted_values) - 1)
+    low = int(rank)
+    high = min(low + 1, len(sorted_values) - 1)
+    weight = rank - low
+    return sorted_values[low] * (1 - weight) + sorted_values[high] * weight
+
+
+def winsorize(
+    values: list[float],
+    *,
+    multiplier: float = 4.0,
+) -> tuple[list[float], list[int]]:
+    """
+    Cap outlier spikes using a percentile-based upper bound.
+
+    We use percentiles instead of mean ± std (not robust to outliers)
+    and instead of pure MAD (degenerates to zero when most values are
+    identical, which happens for sparse cybersecurity feeds). The
+    bound is `p95 + multiplier × (p95 − p50)`: this scales with the
+    natural spread of the data and reliably catches the single
+    50× attack-day spike that would otherwise wreck Holt-Winters.
+
+    Only the upper side is capped — low values (a quiet hour) are
+    normal. The series length and ordering are preserved.
+
+    Returns (capped_series, indices_of_capped_values).
+    """
+    if len(values) < 4:
+        return list(values), []
+
+    sorted_values = sorted(values)
+    p50 = _percentile(sorted_values, 50)
+    p95 = _percentile(sorted_values, 95)
+    spread = p95 - p50
+    if spread <= 0:
+        # Flat or nearly-flat data; fall back to a multiple of p95 to
+        # still flag a lone spike in an otherwise constant series.
+        upper_bound = p95 * (1 + multiplier) if p95 > 0 else 0.0
+        if upper_bound <= 0:
+            return list(values), []
+    else:
+        upper_bound = p95 + multiplier * spread
+
+    capped: list[float] = []
+    anomaly_indices: list[int] = []
+    for index, value in enumerate(values):
+        if value > upper_bound:
+            capped.append(upper_bound)
+            anomaly_indices.append(index)
+        else:
+            capped.append(value)
+    return capped, anomaly_indices
+
+
 def _smape(actual: list[float], predicted: list[float]) -> float:
     """Symmetric MAPE. Returns 0 on empty input."""
     pairs = [(a, p) for a, p in zip(actual, predicted) if (abs(a) + abs(p)) > 0]
@@ -201,10 +271,20 @@ def forecast(
     if len(values) < 2 * season_length:
         return ForecastResult(reason="insufficient_history")
 
-    series = [float(value) for value in values]
-    n = len(series)
+    raw = [float(value) for value in values]
+    n = len(raw)
+
+    # Winsorize before fitting. Outlier spikes (a single attack day with
+    # 50× normal traffic) destroy Holt-Winters' level and trend updates
+    # and blow up the backtest. We cap them for the *model* only — the
+    # historical chart still shows the raw values; the anomaly indices
+    # are returned so the UI can label what was excluded.
+    series, anomaly_indices = winsorize(raw)
+    anomaly_values = [raw[i] for i in anomaly_indices]
 
     # --- Backtest gate ------------------------------------------------------
+    # Backtest also uses the winsorized series. A single outlier inside
+    # the hold-out would otherwise sink an otherwise good model.
     smape: float | None = None
     if n >= 3 * season_length:
         train = series[: n - season_length]
@@ -216,9 +296,14 @@ def forecast(
         )
         smape = _smape(test, backtest_pred)
         if smape > smape_threshold:
-            return ForecastResult(smape=smape, reason="backtest_failed")
+            return ForecastResult(
+                smape=smape,
+                reason="backtest_failed",
+                anomaly_indices=anomaly_indices,
+                anomaly_values=anomaly_values,
+            )
 
-    # --- Fit on full history -----------------------------------------------
+    # --- Fit on full (winsorized) history ----------------------------------
     alpha, beta, gamma, phi = _tune(series, season_length)
     level, trend, seasonal, residuals = _fit(series, season_length, alpha, beta, gamma, phi)
     point = _project(level, trend, seasonal, n, horizon, season_length, phi)
@@ -248,6 +333,8 @@ def forecast(
         upper=upper,
         smape=smape,
         params=(alpha, beta, gamma, phi),
+        anomaly_indices=anomaly_indices,
+        anomaly_values=anomaly_values,
     )
 
 
