@@ -4330,6 +4330,14 @@ def _build_executive_attack_volume_trend_from_buckets(
 
     if display_daily_keys and forecast_days > 0:
         training_keys = sorted(training_daily.keys())
+        # Trim trailing zero-doc days. ES extended_bounds fills the right edge
+        # of the date_histogram with empty buckets even when ingestion lags
+        # behind real time; treating those zeros as "today's actual value" in
+        # the backtest hold-out reliably sinks the gate (model predicts ~30K,
+        # ground truth is 0, sMAPE ≈ 200%). Drop them so backtest evaluates
+        # against real data only.
+        while training_keys and training_daily[training_keys[-1]]["total"] == 0:
+            training_keys.pop()
         total_series = [training_daily[k]["total"] for k in training_keys]
         critical_series = [training_daily[k]["critical"] for k in training_keys]
         high_series = [training_daily[k]["high"] for k in training_keys]
