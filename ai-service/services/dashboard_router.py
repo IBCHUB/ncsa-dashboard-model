@@ -6381,11 +6381,18 @@ def executive_dashboard(
     attack_origin_map = _build_attack_origin_map_from_aggs(current_aggs)
     is_single_day = start_date == end_date
     today_bkk = _to_bangkok_date(datetime.now(UTC))
-    # Forecast: only when the date range reaches today or the future.
-    # Forecast length = same as the selected date range (flexible).
+    # Forecast: enabled when the range reaches today/future, OR ends within
+    # the last 7 days (grace window for warehouse ingestion lag — when
+    # today's data isn't loaded yet, users naturally pick "last 7 days of
+    # real data" which has end_date a few days in the past; that's still
+    # an "edge of available data" view and forecasting forward is useful).
+    # Filters that ended more than a week ago are historical reports and
+    # we don't try to forecast for those.
     start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
     date_range_days = max(1, (end_bound - start_bound).days) if start_bound and end_bound else 1
-    include_forecast = end_date >= today_bkk
+    _today_dt = datetime.strptime(today_bkk, "%Y-%m-%d")
+    _end_dt = datetime.strptime(end_date, "%Y-%m-%d") if end_date else _today_dt
+    include_forecast = (_today_dt - _end_dt).days <= 7
     # Always pull a wide training window for the forecast model regardless
     # of the user's display filter. Holt-Winters with weekly seasonality
     # (L=7) needs ≥ 14 days to fit and benefits from a few months of
