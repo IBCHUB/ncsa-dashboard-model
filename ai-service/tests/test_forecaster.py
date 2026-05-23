@@ -7,7 +7,6 @@ import pytest
 from models.forecaster import (
     guarded_holt_winters_forecast,
     has_forecast_signal,
-    holt_linear_forecast,
     holt_winters_forecast,
     seasonal_average,
 )
@@ -73,28 +72,13 @@ def test_holt_winters_seasonal_24h():
 # 4. Fallback for short input (< 2 * season_length)
 # ---------------------------------------------------------------------------
 
-def test_holt_winters_fallback_short_input_uses_linear_trend():
-    # Short input (n < 2 * season_length) should fall back to Holt's damped
-    # linear trend, NOT seasonal repetition (which would echo the input shape
-    # as the "forecast").
+def test_holt_winters_short_input_returns_zeros():
+    # When the window is shorter than two seasonal cycles there isn't enough
+    # signal to fit Holt-Winters honestly. Return zeros so the caller can
+    # suppress the forecast series rather than echo the input shape.
     series = [5, 10, 15]
     forecast = holt_winters_forecast(series, horizon=6)
-
-    assert forecast == holt_linear_forecast(series, horizon=6)
-    # Trend should continue upward, not loop back to 5.
-    assert forecast[0] >= series[-1] - 1
-    assert forecast[-1] >= forecast[0]
-
-
-def test_holt_linear_does_not_repeat_input_shape():
-    # 7 days with a spike on day 5 (the case that produced the duplicate
-    # forecast shape in the chart). Forecast must not be a copy of input.
-    series = [10, 12, 11, 50, 13, 12, 10]
-    forecast = holt_linear_forecast(series, horizon=7)
-    assert forecast != [max(0, round(v)) for v in series]
-    # Damping should keep the forecast bounded near the recent level rather
-    # than echoing the spike.
-    assert max(forecast) < 50
+    assert forecast == [0] * 6
 
 
 # ---------------------------------------------------------------------------

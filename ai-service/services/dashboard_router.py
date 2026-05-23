@@ -4176,16 +4176,21 @@ def _build_trend_analytics(
     total_forecast = guarded_holt_winters_forecast([point["total"] for point in training_list], forecast_hours)
     critical_forecast = guarded_holt_winters_forecast([point["critical"] for point in training_list], forecast_hours)
     high_forecast = guarded_holt_winters_forecast([point["high"] for point in training_list], forecast_hours)
-    forecast = [
-        {
-            "hour": _to_bangkok_hour(hour),
-            "label": _to_bangkok_hour(hour)[5:],
-            "total": total_forecast[index],
-            "critical": critical_forecast[index],
-            "high": high_forecast[index],
-        }
-        for index, hour in enumerate(forecast_hours_list)
-    ]
+    # Suppress the forecast series when the model can't produce signal
+    # (insufficient history → all zeros). A flat zero line is misleading.
+    if any(total_forecast) or any(critical_forecast) or any(high_forecast):
+        forecast = [
+            {
+                "hour": _to_bangkok_hour(hour),
+                "label": _to_bangkok_hour(hour)[5:],
+                "total": total_forecast[index],
+                "critical": critical_forecast[index],
+                "high": high_forecast[index],
+            }
+            for index, hour in enumerate(forecast_hours_list)
+        ]
+    else:
+        forecast = []
 
     def build_series(title: str, dimension: str, counts: Dict[str, Dict[str, int]]) -> Dict[str, Any]:
         totals = {key: sum(bucket.values()) for key, bucket in counts.items()}
@@ -4297,19 +4302,23 @@ def _build_executive_attack_volume_trend_from_buckets(buckets: Sequence[Dict[str
             forecast_days,
             season_length=season,
         )
-        last_day = datetime.strptime(daily_keys[-1], "%Y-%m-%d").replace(tzinfo=BANGKOK_TZ)
-        for i in range(forecast_days):
-            fc_day = last_day + timedelta(days=i + 1)
-            forecast_points.append(
-                {
-                    "timestamp": fc_day.isoformat(),
-                    "label": fc_day.strftime("%d-%m-%y"),
-                    "total": total_fc[i],
-                    "critical": critical_fc[i],
-                    "high": high_fc[i],
-                    "point_type": "forecast",
-                }
-            )
+        # Suppress the forecast series entirely when the model returned all
+        # zeros (insufficient history for honest Holt-Winters). A flat line
+        # at zero would be misleading — better to show no forecast at all.
+        if any(total_fc) or any(critical_fc) or any(high_fc):
+            last_day = datetime.strptime(daily_keys[-1], "%Y-%m-%d").replace(tzinfo=BANGKOK_TZ)
+            for i in range(forecast_days):
+                fc_day = last_day + timedelta(days=i + 1)
+                forecast_points.append(
+                    {
+                        "timestamp": fc_day.isoformat(),
+                        "label": fc_day.strftime("%d-%m-%y"),
+                        "total": total_fc[i],
+                        "critical": critical_fc[i],
+                        "high": high_fc[i],
+                        "point_type": "forecast",
+                    }
+                )
     return {
         "points": points + forecast_points,
         "forecast_start_index": len(points),
