@@ -172,19 +172,19 @@ def winsorize(
     multiplier: float = 4.0,
 ) -> tuple[list[float], list[int]]:
     """
-    Cap outlier spikes using a percentile-based upper bound.
+    Replace outlier spikes with the local median so the HW level
+    isn't dragged up by a single attack day.
 
-    We use percentiles instead of mean ± std (not robust to outliers)
-    and instead of pure MAD (degenerates to zero when most values are
-    identical, which happens for sparse cybersecurity feeds). The
-    bound is `p95 + multiplier × (p95 − p50)`: this scales with the
-    natural spread of the data and reliably catches the single
-    50× attack-day spike that would otherwise wreck Holt-Winters.
+    Replaced (not just capped) because Holt-Winters' level tracker
+    follows recent values, so even a capped value at p95+ pulls the
+    fitted level up and biases the forecast. Substituting the median
+    cleanly removes the spike's influence on the trend/level fit
+    while keeping the series length aligned.
 
-    Only the upper side is capped — low values (a quiet hour) are
-    normal. The series length and ordering are preserved.
+    Outlier bound: `p95 + multiplier × (p95 − p50)`.
+    Only the upper side is treated — low values (quiet hour) are normal.
 
-    Returns (capped_series, indices_of_capped_values).
+    Returns (cleaned_series, indices_that_were_replaced).
     """
     if len(values) < 4:
         return list(values), []
@@ -194,23 +194,28 @@ def winsorize(
     p95 = _percentile(sorted_values, 95)
     spread = p95 - p50
     if spread <= 0:
-        # Flat or nearly-flat data; fall back to a multiple of p95 to
-        # still flag a lone spike in an otherwise constant series.
         upper_bound = p95 * (1 + multiplier) if p95 > 0 else 0.0
         if upper_bound <= 0:
             return list(values), []
     else:
         upper_bound = p95 + multiplier * spread
 
-    capped: list[float] = []
+    # Replace each outlier with the median of its surrounding window
+    # (last 14 days before the outlier), not the global median — when
+    # recent volume is much higher than the long-run baseline, the
+    # global median would replace a spike with a value far below the
+    # local level and create another distortion.
+    cleaned: list[float] = list(values)
     anomaly_indices: list[int] = []
     for index, value in enumerate(values):
         if value > upper_bound:
-            capped.append(upper_bound)
+            window_start = max(0, index - 14)
+            window = [v for j, v in enumerate(values[window_start:index]) if v <= upper_bound]
+            if not window:
+                window = [v for v in values[:index] if v <= upper_bound] or [p50]
+            cleaned[index] = _median(window)
             anomaly_indices.append(index)
-        else:
-            capped.append(value)
-    return capped, anomaly_indices
+    return cleaned, anomaly_indices
 
 
 def _smape(
@@ -341,15 +346,14 @@ def forecast(
     level, trend, seasonal, residuals = _fit(series, season_length, alpha, beta, gamma, phi)
     point = _project(level, trend, seasonal, n, horizon, season_length, phi)
 
-    # Sanity cap. Even with damping, a strong recent uptrend in noisy
-    # cybersecurity volume can extrapolate to absurd values (e.g. 70K
-    # observed → 500K forecast in 7 days). Cap each point at 2× the
-    # recent maximum so the forecast stays within a band the user can
-    # plausibly act on; trends genuinely beyond that need more than a
-    # one-week horizon to confirm anyway.
+    # Sanity cap based on recent MEDIAN (not max). Median is robust to
+    # any residual outliers winsorize might have missed and reflects
+    # the "normal day" volume the user expects the forecast to anchor
+    # on. Cap = 2× recent median (or +1K floor for very low baselines).
     recent_window = series[-min(len(series), 14):]
-    recent_max = max(recent_window) if recent_window else 0.0
-    cap = max(recent_max * 2.0, recent_max + 1000.0)
+    recent_window_sorted = sorted(recent_window)
+    recent_median = _percentile(recent_window_sorted, 50) if recent_window_sorted else 0.0
+    cap = max(recent_median * 2.0, recent_median + 1000.0)
     if cap > 0:
         point = [min(value, cap) for value in point]
 
