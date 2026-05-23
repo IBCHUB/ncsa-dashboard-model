@@ -1649,10 +1649,45 @@ def _warehouse_dashboard_aggs(
         "format": "strict_date_optional_time",
     }
     if len(_tf2) > 1:
-        branches = []
-        for f in _tf2:
-            branches.append(f"if (doc['{f}'].size() > 0) {{ return doc['{f}'].value.toInstant().toEpochMilli(); }}")
-        date_histogram["script"] = {"source": " else ".join(branches) + " else { return 0; }", "lang": "painless"}
+        # Build a Painless script that picks the field matching the queried
+        # date range.  The date filter uses OR logic (match if ANY field is
+        # in range), so the histogram must bucket each doc by whichever
+        # field actually fell inside the range — otherwise docs that matched
+        # via e.g. last_seen but have an old event_time would be placed in
+        # the wrong bucket (or dropped by hard_bounds).
+        range_q = _date_query_range(start_date, end_date)
+        gte_ms = lte_ms = None
+        if range_q:
+            gte_parsed = _parse_dt(range_q.get("gte"))
+            lte_parsed = _parse_dt(range_q.get("lte"))
+            if gte_parsed:
+                gte_ms = int(gte_parsed.timestamp() * 1000)
+            if lte_parsed:
+                lte_ms = int(lte_parsed.timestamp() * 1000)
+
+        if gte_ms is not None and lte_ms is not None:
+            # Phase 1: prefer the field whose value is within the query
+            # bounds.  Phase 2: fall back to first available field (legacy
+            # behaviour) so docs outside the bounds still get a timestamp
+            # for hard_bounds to exclude.
+            in_range_branches = []
+            for f in _tf2:
+                in_range_branches.append(
+                    f"if (doc['{f}'].size() > 0) {{"
+                    f" long v = doc['{f}'].value.toInstant().toEpochMilli();"
+                    f" if (v >= {gte_ms}L && v <= {lte_ms}L) {{ return v; }}"
+                    f" }}"
+                )
+            # No fallback: if no field is in range, return 0 so
+            # hard_bounds excludes the doc — don't fabricate a bucket.
+            script_src = " ".join(in_range_branches) + " return 0;"
+            date_histogram["script"] = {"source": script_src, "lang": "painless"}
+        else:
+            # No usable date bounds — fall back to first-available-field
+            branches = []
+            for f in _tf2:
+                branches.append(f"if (doc['{f}'].size() > 0) {{ return doc['{f}'].value.toInstant().toEpochMilli(); }}")
+            date_histogram["script"] = {"source": " else ".join(branches) + " else { return 0; }", "lang": "painless"}
     else:
         date_histogram["field"] = histogram_field
     bounds = _date_histogram_bounds(start_date, end_date)
@@ -2963,7 +2998,11 @@ def _build_attack_origin_map(visible_docs: Sequence[Dict[str, Any]], related_doc
     for origin in origins:
         sector = origin.get("primary_sector") or "Other"
         sector_volume[sector] += int(origin.get("value") or 0)
-    map_most_target_sector = sector_volume.most_common(1)[0][0] if sector_volume else "Other"
+    # Skip "Other" — it means no sector data; show the first real sector.
+    map_most_target_sector = next(
+        (name for name, _ in sector_volume.most_common() if name and name != "Other"),
+        "Other",
+    )
 
     return {
         "target_country": "Thailand",
@@ -4282,7 +4321,14 @@ def _build_threat_level_from_aggregations(
     aggs: Dict[str, Any],
     *,
     now: datetime,
+    today_aggs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    # Per spec: all 4 factors use TODAY's data.
+    # - Volume: today vs 14-day baseline (uses `aggs` trend)
+    # - Severity: today's critical+high ratio (uses `stats`)
+    # - Sector: sectors hit by high/critical TODAY (uses `today_aggs`)
+    # - Actor: named actors found TODAY (uses `today_aggs`)
+    sector_actor_source = today_aggs if today_aggs is not None else aggs
     total = int(stats.get("total_threats") or 0)
     critical = int((stats.get("severity_counts") or {}).get("critical") or 0)
     high = int((stats.get("severity_counts") or {}).get("high") or 0)
@@ -4307,7 +4353,7 @@ def _build_threat_level_from_aggregations(
     # Aggregate raw sector keys into normalized display names (handles dirty data
     # where same sector appears as both "technology" and "Information Technology...")
     normalized_buckets: Dict[str, Dict[str, Any]] = {}
-    for bucket in ((aggs.get("sectors") or {}).get("buckets") or []):
+    for bucket in ((sector_actor_source.get("sectors") or {}).get("buckets") or []):
         raw_key = str(bucket.get("key") or "").strip()
         if not raw_key or raw_key.lower() in {"none", "null", "unknown", "general/multiple", "other"}:
             continue
@@ -4339,7 +4385,7 @@ def _build_threat_level_from_aggregations(
 
     # Named Threat Actors: นับจาก ai_threat_actors field (เช่น Lazarus, APT28)
     # ไม่ใช่จาก ai_threat_types (ซึ่งเป็นชนิดภัย เช่น Malware, Phishing)
-    actor_buckets = (aggs.get("threat_actors") or {}).get("buckets") or []
+    actor_buckets = (sector_actor_source.get("threat_actors") or {}).get("buckets") or []
     actor_counts: Dict[str, int] = {
         str(bucket.get("key") or "").strip(): int(bucket.get("doc_count") or 0)
         for bucket in actor_buckets
@@ -4520,7 +4566,11 @@ def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
     for origin in origins:
         sector = origin.get("primary_sector") or "Other"
         sector_volume[sector] += int(origin.get("value") or 0)
-    map_most_target_sector = sector_volume.most_common(1)[0][0] if sector_volume else "Other"
+    # Skip "Other" — it means no sector data; show the first real sector.
+    map_most_target_sector = next(
+        (name for name, _ in sector_volume.most_common() if name and name != "Other"),
+        "Other",
+    )
 
     return {
         "target_country": "Thailand",
@@ -6215,9 +6265,12 @@ def executive_dashboard(
     severity_distribution = _build_severity_distribution_from_counts(current_stats.get("severity_counts") or {})
     treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("threat_types") or [])
     sector_treemap_nodes = _build_threat_volume_nodes_from_terms(current_stats.get("sector_terms") or [])
-    # Threat Level ต้องใช้ trend 14 วันย้อนหลังตาม spec (ไม่ใช่ date range ที่ user เลือก)
+    # Threat Level: per spec, all 4 factors use TODAY's data.
+    # - Volume: compare today vs 14-day baseline → needs 14-day trend
+    # - Severity/Sector/Actor: today only → needs today-specific stats & aggs
+    today_str = _to_bangkok_date(now)
     threat_level_lookback_start = _to_bangkok_date(now - timedelta(days=14))
-    threat_level_lookback_end = _to_bangkok_date(now)
+    threat_level_lookback_end = today_str
     threat_level_aggs = _warehouse_dashboard_aggs(
         start_date=threat_level_lookback_start,
         end_date=threat_level_lookback_end,
@@ -6227,7 +6280,26 @@ def executive_dashboard(
         include_trend=True,
         time_mode=TIME_MODE_OBSERVED,
     )
-    threat_level = _build_threat_level_from_aggregations(current_stats, threat_level_aggs, now=now)
+    # Today-only stats for severity, and today-only aggs for sectors/actors
+    today_stats = _warehouse_summary_stats(
+        today_str, today_str,
+        time_mode=TIME_MODE_OBSERVED,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+    )
+    today_aggs = _warehouse_dashboard_aggs(
+        start_date=today_str,
+        end_date=today_str,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        include_trend=False,
+        time_mode=TIME_MODE_OBSERVED,
+    )
+    threat_level = _build_threat_level_from_aggregations(
+        today_stats, threat_level_aggs, today_aggs=today_aggs, now=now,
+    )
     primary_sector = threat_level["top_sectors"][0] if threat_level["top_sectors"] else {"sector_name": None, "count": 0}
     attack_origin_map = _build_attack_origin_map_from_aggs(current_aggs)
     is_single_day = start_date == end_date
