@@ -1093,15 +1093,26 @@ class ElasticClient:
         cursor_suffix = f"-w{worker_id}of{worker_total}" if worker_total > 1 else ""
         search_after = self.get_datalake_scan_cursor(suffix=cursor_suffix)
 
-        # Date filter — only ingest observations from the last 60 days. The
-        # rest of the datalake is older history that can be backfilled later.
-        # observation_date is the per-doc event time on cyberint records.
+        # Date filter — last 60 days of datalake history. Each worker takes
+        # a disjoint date slice of that window (e.g. with 4 workers each
+        # gets ~15 days). Date partitioning avoids needing scroll/PIT
+        # (which ES slice would otherwise require) while still letting
+        # workers process disjoint subsets in parallel.
+        total_days = 60
+        days_per_worker = max(1, total_days // worker_total)
+        # Worker i covers [now - (i+1)*days_per_worker, now - i*days_per_worker)
+        # except the last worker which extends to total_days to catch any
+        # remainder from integer division.
+        lower_offset = worker_id * days_per_worker
+        if worker_id == worker_total - 1:
+            upper_offset = total_days
+        else:
+            upper_offset = (worker_id + 1) * days_per_worker
+        date_range = {"gte": f"now-{upper_offset}d"}
+        if lower_offset > 0:
+            date_range["lt"] = f"now-{lower_offset}d"
         base_query: Dict[str, Any] = {
-            "bool": {
-                "must": [
-                    {"range": {"observation_date": {"gte": "now-60d"}}},
-                ]
-            }
+            "bool": {"must": [{"range": {"observation_date": date_range}}]}
         }
 
         for _ in range(max(1, DATALAKE_SCAN_MAX_PAGES)):
@@ -1114,10 +1125,6 @@ class ElasticClient:
                 ],
                 "size": batch_size,
             }
-            # ES native slice — partitions the result set across workers
-            # without script overhead. Workers see disjoint subsets.
-            if worker_total > 1:
-                query["slice"] = {"id": worker_id, "max": worker_total, "field": "_id"}
             if search_after:
                 query["search_after"] = search_after
 
