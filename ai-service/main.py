@@ -699,14 +699,13 @@ def _run_pipeline_once_sync(limit: int) -> Dict[str, Any]:
                     failed += 1
 
         # --- Campaign Clustering (incremental) ---
-        # Run HDBSCAN clustering on this batch so cluster_label is populated for
-        # every doc ingested via the live pipeline — not only during full rebuilds.
-        # Minimum cluster size (5) means small batches mostly produce noise (-1),
-        # but larger batches will correctly group related IOCs into campaigns.
-        # Note: we cluster even when some docs failed — the batch_docs filter below
-        # already excludes failed_warehouse_doc_ids individually.
+        # Disabled during 1:1 backfill: the bulk-update call races against the
+        # bulk-index call in the same iteration (update sees the doc before the
+        # index refresh applies → document_missing_exception per doc, ~10K
+        # wasted ops per batch). Re-enable / re-cluster as a separate
+        # post-ingest job once the warehouse is hydrated.
         clustered_count = 0
-        if warehouse_items:
+        if False and warehouse_items:
             try:
                 batch_docs = [
                     item["document"] for item in warehouse_items
