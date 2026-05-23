@@ -7072,12 +7072,21 @@ def attack_time_report(
     page_docs = _hits_to_docs(page_result)
     total_events = _search_total(page_result)
     paged_items = [_attack_time_event_row(event, TIME_MODE_OBSERVED, start_date, end_date) for event in page_docs]
-    docs = page_docs  # used by _average_events_per_day fallback
+    # AVG per day must divide total_events by days WITH activity across the
+    # full filter range — counting from the paginated `page_docs` would give
+    # 1-2 unique days (one page's worth) and inflate avg ~10-100×. The
+    # heatmap cells are computed via ES aggregation on the whole window, so
+    # use them as the source of truth for the day count.
+    unique_days_with_events = len({
+        cell.get("x") for cell in (heatmap.get("cells") or [])
+        if int(cell.get("value") or 0) > 0 and cell.get("x") is not None
+    })
+    avg_per_day = round(total_events / max(unique_days_with_events, 1), 2)
     payload = {
         "summary": {
             "peak_attack_time": {"day": peak_day, "time_range": peak_time_range},
             "quietest_period": {"day": quiet_day, "time_range": quiet_time_range},
-            "avg_attack_rate": _average_events_per_day(total_events, docs, start_date, end_date, TIME_MODE_OBSERVED),
+            "avg_attack_rate": avg_per_day,
             "highest_day": peak_day,
             "total_events": total_events,
         },
