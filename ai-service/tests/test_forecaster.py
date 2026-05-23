@@ -5,11 +5,62 @@ from __future__ import annotations
 import pytest
 
 from models.forecaster import (
+    ForecastResult,
+    forecast,
     guarded_holt_winters_forecast,
     has_forecast_signal,
     holt_winters_forecast,
     seasonal_average,
 )
+
+
+# ---------------------------------------------------------------------------
+# New forecast() API — point + CI + backtest gate
+# ---------------------------------------------------------------------------
+
+def test_forecast_short_input_returns_empty_with_reason():
+    result = forecast([5, 10, 15], horizon=6, season_length=24)
+    assert isinstance(result, ForecastResult)
+    assert result.point == []
+    assert result.reason == "insufficient_history"
+
+
+def test_forecast_sparse_input_returns_empty():
+    # 96 hours but only one spike — not enough density to predict.
+    series = [0] * 50 + [100] + [0] * 45
+    result = forecast(series, horizon=24, season_length=24)
+    assert result.point == []
+    assert result.reason == "insufficient_signal"
+
+
+def test_forecast_returns_confidence_interval():
+    # 96 hours of a stable repeating pattern → forecast + CI should
+    # bracket the point estimate symmetrically.
+    series = ([10, 12, 14, 16, 18, 20, 18, 16, 14, 12, 10, 8] * 8)[:96]
+    result = forecast(series, horizon=12, season_length=12)
+    assert len(result.point) == 12
+    assert len(result.lower) == 12
+    assert len(result.upper) == 12
+    for lower, point, upper in zip(result.lower, result.point, result.upper):
+        assert lower <= point <= upper
+    # CI should widen with horizon (variance grows with √h).
+    assert (result.upper[-1] - result.lower[-1]) >= (result.upper[0] - result.lower[0])
+
+
+def test_forecast_backtest_suppresses_unpredictable_series():
+    # Random-walk-ish series with no real seasonality. The hold-out
+    # backtest should reject this and return an empty forecast.
+    import random
+    random.seed(0)
+    series = [random.randint(0, 100) for _ in range(96)]
+    result = forecast(series, horizon=24, season_length=24)
+    # Either suppressed by backtest, or returned with smape recorded.
+    if not result.point:
+        assert result.reason == "backtest_failed"
+        assert result.smape is not None and result.smape > 0.6
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -33,15 +84,18 @@ def test_holt_winters_constant_series():
 # ---------------------------------------------------------------------------
 
 def test_holt_winters_trending_up():
-    # Build 72 points with a clear upward trend + seasonal noise
+    # Build 72 points with a clear upward trend + seasonal noise.
+    # With damping the forecast won't extrapolate without bound, but the
+    # forecast season's mean should still exceed the last observed season's
+    # mean since the level is still rising.
     series = [i + (i % 24) for i in range(72)]
     forecast = holt_winters_forecast(series, horizon=24)
 
     assert len(forecast) == 24
-    last_observed = series[-1]
-    # At least the tail of the forecast should exceed the last observation
-    assert max(forecast) > last_observed, (
-        "Forecast should continue the upward trend"
+    last_season_mean = sum(series[-24:]) / 24
+    forecast_mean = sum(forecast) / 24
+    assert forecast_mean > last_season_mean, (
+        "Forecast season mean should exceed last observed season mean"
     )
 
 

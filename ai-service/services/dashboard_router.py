@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 from config import NEWS_SOURCES
 from elastic_client import get_elastic_client
 from models.actions import ACTION_CLOSED, ACTION_IN_PROGRESS, ACTION_OPEN, derive_action_metadata
-from models.forecaster import guarded_holt_winters_forecast
+from models.forecaster import forecast as _hw_forecast, guarded_holt_winters_forecast
 from services.dashboard_bootstrap import get_dashboard_state
 
 logger = logging.getLogger(__name__)
@@ -4255,7 +4255,27 @@ def _build_trend_analytics(
     }
 
 
-def _build_executive_attack_volume_trend_from_buckets(buckets: Sequence[Dict[str, Any]], forecast_days: int = 7) -> Dict[str, Any]:
+def _build_executive_attack_volume_trend_from_buckets(
+    buckets: Sequence[Dict[str, Any]],
+    forecast_days: int = 7,
+    *,
+    training_buckets: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Build the Attack Volume Trend payload.
+
+    Display: aggregates `buckets` (the user-selected filter range).
+    Training: aggregates `training_buckets` if provided — a wider window
+    pulled by the caller so Holt-Winters has enough history to fit even
+    when the user picks a short filter (1 day, 1 week). Falls back to the
+    display window if not provided.
+
+    Severity apportionment: critical and high are sparse on most feeds
+    and don't survive Holt-Winters on their own (the model collapses to
+    zero). We forecast `total` only, then split the forecast by each
+    severity's rolling share of total over the training window. This is
+    the textbook "top-down hierarchical forecasting" approach.
+    """
     points = []
     for bucket in buckets:
         parsed = _parse_dt(bucket.get("key_as_string"))
@@ -4273,55 +4293,89 @@ def _build_executive_attack_volume_trend_from_buckets(buckets: Sequence[Dict[str
                 "point_type": "historical",
             }
         )
-    daily_agg: Dict[str, Dict[str, int]] = {}
-    for p in points:
-        ts = _parse_dt(p["timestamp"])
-        if not ts:
+
+    # Train on the wider window if the caller supplied it.
+    training_source = training_buckets if training_buckets is not None else buckets
+    training_daily: Dict[str, Dict[str, int]] = {}
+    for bucket in training_source:
+        parsed = _parse_dt(bucket.get("key_as_string"))
+        if not parsed:
             continue
-        day_key = ts.strftime("%Y-%m-%d")
-        day_bucket = daily_agg.setdefault(day_key, {"total": 0, "critical": 0, "high": 0})
-        day_bucket["total"] += p["total"]
-        day_bucket["critical"] += p["critical"]
-        day_bucket["high"] += p["high"]
-    daily_keys = sorted(daily_agg.keys())
+        local = parsed.astimezone(BANGKOK_TZ)
+        day_key = local.strftime("%Y-%m-%d")
+        severity_counts = _severity_counts_from_filter_agg(bucket.get("severity") or {})
+        day_bucket = training_daily.setdefault(day_key, {"total": 0, "critical": 0, "high": 0})
+        day_bucket["total"] += int(bucket.get("doc_count") or 0)
+        day_bucket["critical"] += int(severity_counts.get("critical") or 0)
+        day_bucket["high"] += int(severity_counts.get("high") or 0)
+
+    # Last day in the *display* window — forecast starts the day after.
+    display_daily_keys = sorted({
+        _parse_dt(p["timestamp"]).strftime("%Y-%m-%d")
+        for p in points
+        if _parse_dt(p["timestamp"])
+    })
+
     forecast_points: List[Dict[str, Any]] = []
-    if daily_keys and forecast_days > 0:
-        season = min(7, max(1, len(daily_keys)))
-        total_fc = guarded_holt_winters_forecast(
-            [daily_agg[k]["total"] for k in daily_keys],
-            forecast_days,
-            season_length=season,
-        )
-        critical_fc = guarded_holt_winters_forecast(
-            [daily_agg[k]["critical"] for k in daily_keys],
-            forecast_days,
-            season_length=season,
-        )
-        high_fc = guarded_holt_winters_forecast(
-            [daily_agg[k]["high"] for k in daily_keys],
-            forecast_days,
-            season_length=season,
-        )
-        # Suppress the forecast series entirely when the model returned all
-        # zeros (insufficient history for honest Holt-Winters). A flat line
-        # at zero would be misleading — better to show no forecast at all.
-        if any(total_fc) or any(critical_fc) or any(high_fc):
-            last_day = datetime.strptime(daily_keys[-1], "%Y-%m-%d").replace(tzinfo=BANGKOK_TZ)
-            for i in range(forecast_days):
+    forecast_meta: Dict[str, Any] = {"used": False}
+
+    if display_daily_keys and forecast_days > 0:
+        training_keys = sorted(training_daily.keys())
+        total_series = [training_daily[k]["total"] for k in training_keys]
+        critical_series = [training_daily[k]["critical"] for k in training_keys]
+        high_series = [training_daily[k]["high"] for k in training_keys]
+
+        # Cap the forecast horizon at one seasonal cycle (7 days) — beyond
+        # that the model's confidence interval explodes and the line is
+        # not useful for a dashboard chart.
+        capped_horizon = min(forecast_days, 7)
+
+        result = _hw_forecast(total_series, horizon=capped_horizon, season_length=7)
+
+        if result.point:
+            # Apportion forecasted total into critical/high by their share
+            # in the training window. Use only the last ~28 days (4 weeks)
+            # of training to weight the ratio toward recent behaviour.
+            recent_total = sum(total_series[-28:])
+            recent_critical = sum(critical_series[-28:])
+            recent_high = sum(high_series[-28:])
+            critical_ratio = (recent_critical / recent_total) if recent_total else 0.0
+            high_ratio = (recent_high / recent_total) if recent_total else 0.0
+
+            last_day = datetime.strptime(display_daily_keys[-1], "%Y-%m-%d").replace(tzinfo=BANGKOK_TZ)
+            for i in range(len(result.point)):
                 fc_day = last_day + timedelta(days=i + 1)
                 forecast_points.append(
                     {
                         "timestamp": fc_day.isoformat(),
                         "label": fc_day.strftime("%d-%m-%y"),
-                        "total": total_fc[i],
-                        "critical": critical_fc[i],
-                        "high": high_fc[i],
+                        "total": result.point[i],
+                        "critical": int(round(result.point[i] * critical_ratio)),
+                        "high": int(round(result.point[i] * high_ratio)),
+                        "total_lower": result.lower[i],
+                        "total_upper": result.upper[i],
                         "point_type": "forecast",
                     }
                 )
+            forecast_meta = {
+                "used": True,
+                "model": "holt_winters_damped",
+                "training_days": len(training_keys),
+                "horizon_days": len(result.point),
+                "smape": result.smape,
+                "params": list(result.params) if result.params else None,
+            }
+        else:
+            forecast_meta = {
+                "used": False,
+                "reason": result.reason,
+                "training_days": len(training_keys),
+                "smape": result.smape,
+            }
     return {
         "points": points + forecast_points,
         "forecast_start_index": len(points),
+        "forecast_meta": forecast_meta,
     }
 
 
@@ -6318,9 +6372,26 @@ def executive_dashboard(
     start_bound, end_bound = _resolve_date_bounds(start_date, end_date)
     date_range_days = max(1, (end_bound - start_bound).days) if start_bound and end_bound else 1
     include_forecast = end_date >= today_bkk
+    # Always pull a wide training window for the forecast model regardless
+    # of the user's display filter. Holt-Winters with weekly seasonality
+    # (L=7) needs ≥ 14 days to fit and benefits from a few months of
+    # history to stabilise the level + trend + seasonal components.
+    training_lookback_days = 120
+    training_start = _to_bangkok_date(now - timedelta(days=training_lookback_days))
+    training_end = _to_bangkok_date(now)
+    training_aggs = _warehouse_dashboard_aggs(
+        start_date=training_start,
+        end_date=training_end,
+        sources=sources,
+        threat_types=threat_types,
+        severities=severities,
+        include_trend=True,
+        time_mode=TIME_MODE_OBSERVED,
+    )
+    training_buckets = (training_aggs.get("trend") or {}).get("buckets") or []
+
     if is_single_day:
-        # Use ES date_histogram aggregation across last 72h (hourly buckets).
-        # Pass YYYY-MM-DD date strings so _resolve_date_bounds parses correctly.
+        # Display: 72h hourly buckets so the chart still shows recent detail.
         lookback_start = _to_bangkok_date(now - timedelta(hours=72))
         lookback_end = _to_bangkok_date(now)
         hourly_aggs = _warehouse_dashboard_aggs(
@@ -6336,6 +6407,7 @@ def executive_dashboard(
         threat_volume_trend = _build_executive_attack_volume_trend_from_buckets(
             (hourly_aggs.get("trend") or {}).get("buckets") or [],
             forecast_days=forecast_days,
+            training_buckets=training_buckets,
         )
         attack_volume_trend = threat_volume_trend
     else:
@@ -6343,6 +6415,7 @@ def executive_dashboard(
         threat_volume_trend = _build_executive_attack_volume_trend_from_buckets(
             (current_aggs.get("trend") or {}).get("buckets") or [],
             forecast_days=forecast_days,
+            training_buckets=training_buckets,
         )
         attack_volume_trend = threat_volume_trend
     payload = {
