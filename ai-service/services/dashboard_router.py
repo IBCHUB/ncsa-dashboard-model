@@ -4321,6 +4321,12 @@ def _build_executive_attack_volume_trend_from_buckets(
 
     if display_daily_keys and forecast_days > 0:
         training_keys = sorted(training_daily.keys())
+        # Trim trailing zero-doc days. ES extended_bounds fills the right
+        # edge of the date_histogram with empty buckets when ingestion is
+        # behind real time; treating those zeros as "today's actual value"
+        # in the backtest hold-out reliably trips the gate.
+        while training_keys and training_daily[training_keys[-1]]["total"] == 0:
+            training_keys.pop()
         total_series = [training_daily[k]["total"] for k in training_keys]
         critical_series = [training_daily[k]["critical"] for k in training_keys]
         high_series = [training_daily[k]["high"] for k in training_keys]
@@ -6391,8 +6397,12 @@ def executive_dashboard(
     # (L=7) needs ≥ 14 days to fit and benefits from a few months of
     # history to stabilise the level + trend + seasonal components.
     training_lookback_days = 120
-    training_start = _to_bangkok_date(now - timedelta(days=training_lookback_days))
-    training_end = _to_bangkok_date(now)
+    # Anchor training at min(filter_now, real_now) so we never query
+    # warehouse for buckets after today — empty future buckets would
+    # land in the backtest hold-out and reliably trip the gate.
+    training_anchor = min(now, datetime.now(UTC))
+    training_start = _to_bangkok_date(training_anchor - timedelta(days=training_lookback_days))
+    training_end = _to_bangkok_date(training_anchor)
     training_aggs = _warehouse_dashboard_aggs(
         start_date=training_start,
         end_date=training_end,
