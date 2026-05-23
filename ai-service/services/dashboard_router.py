@@ -4276,12 +4276,21 @@ def _build_executive_attack_volume_trend_from_buckets(
     severity's rolling share of total over the training window. This is
     the textbook "top-down hierarchical forecasting" approach.
     """
+    # Skip display buckets that fall after "now": when the user picks a
+    # filter like "This Month" (ends May 31) but today is May 23, the
+    # warehouse returns zero-doc buckets for May 24-31. Plotting those as
+    # historical would draw the line dropping to zero on days that
+    # haven't happened yet, which is misleading and creates a visual gap
+    # before the forecast.
+    now_bkk = datetime.now(UTC).astimezone(BANGKOK_TZ)
     points = []
     for bucket in buckets:
         parsed = _parse_dt(bucket.get("key_as_string"))
         if not parsed:
             continue
         local = parsed.astimezone(BANGKOK_TZ)
+        if local.date() > now_bkk.date():
+            continue
         severity_counts = _severity_counts_from_filter_agg(bucket.get("severity") or {})
         points.append(
             {
