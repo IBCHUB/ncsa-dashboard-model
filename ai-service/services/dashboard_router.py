@@ -4280,8 +4280,7 @@ def _build_executive_attack_volume_trend_from_buckets(
     # filter like "This Month" (ends May 31) but today is May 23, the
     # warehouse returns zero-doc buckets for May 24-31. Plotting those as
     # historical would draw the line dropping to zero on days that
-    # haven't happened yet, which is misleading and creates a visual gap
-    # before the forecast.
+    # haven't happened yet.
     now_bkk = datetime.now(UTC).astimezone(BANGKOK_TZ)
     points = []
     for bucket in buckets:
@@ -4302,6 +4301,12 @@ def _build_executive_attack_volume_trend_from_buckets(
                 "point_type": "historical",
             }
         )
+    # Also trim trailing zero-doc days from the display: extended_bounds
+    # backfills empty buckets right up to now even when ingestion is a
+    # few days behind. Showing those zeros drags the historical line to
+    # the X-axis (and the forecast bridge would start at zero too).
+    while points and points[-1]["total"] == 0:
+        points.pop()
 
     # Train on the wider window if the caller supplied it.
     training_source = training_buckets if training_buckets is not None else buckets

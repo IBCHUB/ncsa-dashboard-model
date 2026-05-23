@@ -116,7 +116,12 @@ def _project(
 
 # Small but sufficient grid. Combinations: 4 × 4 × 4 × 4 = 256 fits.
 _SMOOTHING_GRID = (0.1, 0.3, 0.5, 0.8)
-_DAMPING_GRID = (0.85, 0.92, 0.98, 1.0)
+# Cap damping at 0.92 — never let the tuner pick "no damping" (1.0).
+# Recent cybersecurity volume often climbs sharply (new threat campaign,
+# backfill, ingestion catch-up) and an undamped trend extrapolates that
+# rise unboundedly. Forcing damping keeps the forecast level near the
+# recent observed range over a 7-day horizon.
+_DAMPING_GRID = (0.75, 0.82, 0.88, 0.92)
 
 
 def _tune(values: list[float], season_length: int) -> tuple[float, float, float, float]:
@@ -336,6 +341,18 @@ def forecast(
     level, trend, seasonal, residuals = _fit(series, season_length, alpha, beta, gamma, phi)
     point = _project(level, trend, seasonal, n, horizon, season_length, phi)
 
+    # Sanity cap. Even with damping, a strong recent uptrend in noisy
+    # cybersecurity volume can extrapolate to absurd values (e.g. 70K
+    # observed → 500K forecast in 7 days). Cap each point at 2× the
+    # recent maximum so the forecast stays within a band the user can
+    # plausibly act on; trends genuinely beyond that need more than a
+    # one-week horizon to confirm anyway.
+    recent_window = series[-min(len(series), 14):]
+    recent_max = max(recent_window) if recent_window else 0.0
+    cap = max(recent_max * 2.0, recent_max + 1000.0)
+    if cap > 0:
+        point = [min(value, cap) for value in point]
+
     # --- 80% prediction interval -------------------------------------------
     # σ̂ from in-sample residuals; multi-step variance grows ~√h for a
     # damped linear-trend model. Not the analytic HW PI (which requires
@@ -350,10 +367,16 @@ def forecast(
         max(0, int(round(value - _Z_80 * sigma * math.sqrt(h))))
         for h, value in enumerate(point, start=1)
     ]
-    upper = [
-        max(0, int(round(value + _Z_80 * sigma * math.sqrt(h))))
+    upper_raw = [
+        int(round(value + _Z_80 * sigma * math.sqrt(h)))
         for h, value in enumerate(point, start=1)
     ]
+    # Cap upper CI at the same sanity bound used for the point estimate
+    # so a volatile series doesn't draw a shaded band stretching off-chart.
+    if cap > 0:
+        upper = [max(0, min(value, int(round(cap)))) for value in upper_raw]
+    else:
+        upper = [max(0, value) for value in upper_raw]
 
     return ForecastResult(
         point=point_int,
