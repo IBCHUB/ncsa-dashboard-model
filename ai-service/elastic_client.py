@@ -476,12 +476,17 @@ class ElasticClient:
         event_time = str(doc.get("event_time", "")).strip()
         collect_time = str(doc.get("collect_time", "")).strip()
         reference = str(doc.get("reference", "")).strip()
+        # Hash everything (including ioc_value) — raw IOC values can be 300+
+        # byte URLs which blow past ES's 512-byte doc_id limit when embedded
+        # verbatim. The hash gives a fixed 40-char id while still being
+        # unique per (ioc, source, event-time, ...) observation.
         fingerprint_src = (
-            f"{source}|{source_type}|{event_time}|{collect_time}|"
-            f"{reference}|{str(doc.get('description', ''))[:256]}"
+            f"{ioc_type}|{ioc_value}|{source}|{source_type}|"
+            f"{event_time}|{collect_time}|{reference}|"
+            f"{str(doc.get('description', ''))[:256]}"
         )
-        digest = hashlib.sha256(fingerprint_src.encode("utf-8")).hexdigest()[:24]
-        return f"{ioc_type}:{ioc_value}:{digest}"
+        digest = hashlib.sha256(fingerprint_src.encode("utf-8")).hexdigest()
+        return f"{ioc_type}:{digest[:32]}"
 
     @staticmethod
     def _build_processed_state_id(doc: Dict[str, Any]) -> str:
