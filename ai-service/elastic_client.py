@@ -1098,12 +1098,11 @@ class ElasticClient:
         cursor_suffix = f"-w{worker_id}of{worker_total}" if worker_total > 1 else ""
         search_after = self.get_datalake_scan_cursor(suffix=cursor_suffix)
 
-        # Date filter — last 60 days of datalake history. Each worker takes
-        # a disjoint date slice of that window (e.g. with 4 workers each
-        # gets ~15 days). Date partitioning avoids needing scroll/PIT
-        # (which ES slice would otherwise require) while still letting
-        # workers process disjoint subsets in parallel.
-        total_days = 60
+        # Date filter — covers up to BACKFILL_DAYS days of datalake history.
+        # Each worker takes a disjoint date slice (e.g. 730 days / 4 workers
+        # = ~182 days each). Tunable via env so we can run a short window
+        # first (e.g. 60d) then extend to all history once that's caught up.
+        total_days = int(os.getenv("BACKFILL_DAYS", "730"))
         days_per_worker = max(1, total_days // worker_total)
         # Worker i covers [now - (i+1)*days_per_worker, now - i*days_per_worker)
         # except the last worker which extends to total_days to catch any
