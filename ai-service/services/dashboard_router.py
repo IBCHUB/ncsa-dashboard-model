@@ -6305,6 +6305,21 @@ def executive_dashboard(
     if not start_date:
         start_date = _to_bangkok_date(now - timedelta(hours=24))
 
+    # Cache: executive dashboard aggregates over millions of docs — cache the
+    # result to avoid re-querying ES on every page load. TTL follows the
+    # global DASHBOARD_CACHE_TTL_SECONDS (default 120s).
+    _exec_cache_key = _cache_key(
+        "executive_dashboard",
+        start_date=start_date,
+        end_date=end_date,
+        sources=sorted(sources) if sources else None,
+        threat_types=sorted(threat_types) if threat_types else None,
+        severities=sorted(severities) if severities else None,
+    )
+    _exec_cached = _cache_get(_exec_cache_key)
+    if _exec_cached is not None:
+        return _exec_cached
+
     # Use OBSERVED (event_time/first_seen) — not PROCESSED (processed_at) —
     # so IOC timeline reflects when threats actually appeared, not when
     # they were imported.  Importing 100K IOCs in one batch must not spike
@@ -6466,7 +6481,7 @@ def executive_dashboard(
         "attack_volume_trend": attack_volume_trend,
         "attack_origin_map": attack_origin_map,
     }
-    return _success(payload)
+    return _cache_set(_exec_cache_key, _success(payload))
 
 
 @router.post("/reports/executive/preview", tags=["Reports"])
