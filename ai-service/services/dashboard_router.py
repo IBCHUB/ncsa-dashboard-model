@@ -1176,8 +1176,11 @@ def _terms_items_from_buckets(
         # If the bucket includes a severity sub-aggregation (terms on ai_severity),
         # derive the color from the highest actual severity so it matches the
         # Threat Volume & Severity treemap palette instead of using a fixed null.
+        # severity sub-agg may be a `terms` agg (→ list of dicts) or a
+        # `filters` agg (→ named-bucket dict).  Only the list form is
+        # compatible with _highest_severity_from_buckets; skip the dict form.
         sev_buckets = (bucket.get("severity") or {}).get("buckets")
-        if sev_buckets:
+        if sev_buckets and isinstance(sev_buckets, list):
             sev = _highest_severity_from_buckets(sev_buckets)
             color: Optional[str] = _severity_color(sev)
         else:
