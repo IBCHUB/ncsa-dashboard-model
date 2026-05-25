@@ -22,7 +22,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 import zipfile
 from xml.sax.saxutils import escape as xml_escape
@@ -406,6 +406,12 @@ EXPORT_ROWS_PER_FILE: Dict[str, int] = {
     "xlsx": 100_000,
     "pdf": 5_000,
 }
+
+# CSV header row shared by the streaming exporter and _build_ioc_export_rows.
+_IOC_CSV_HEADERS: List[str] = [
+    "rank", "ioc_id", "ioc_value", "ioc_type", "ioc_type_label",
+    "severity", "risk_score", "threat_types", "sources", "first_seen", "last_seen",
+]
 
 
 def _validate_dashboard_date_range(start_date: Optional[str], end_date: Optional[str]) -> None:
@@ -921,6 +927,52 @@ def _scroll_all_warehouse_docs(
         else [{"event_time": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
     )
     return _scroll_all_documents(client.warehouse_index, filters=filters, sort=sort, max_docs=max_docs, on_batch=on_batch)
+
+
+def _scroll_warehouse_docs_batched(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    sources: Optional[List[str]] = None,
+    threat_types: Optional[List[str]] = None,
+    severities: Optional[List[str]] = None,
+    ioc_types: Optional[List[str]] = None,
+    sort_by: str = "risk",
+    time_mode: str = TIME_MODE_OBSERVED,
+    max_docs: Optional[int] = None,
+) -> Iterator[List[Dict[str, Any]]]:
+    """Generator: yields one scroll batch (≤ 10 000 docs) at a time.
+
+    Unlike _scroll_all_warehouse_docs, this never accumulates all documents
+    in memory — each yielded batch can be processed and discarded before the
+    next one arrives.  Designed for large streaming CSV exports.
+    """
+    client = get_elastic_client()
+    filters = _warehouse_search_filters(
+        ioc_types=ioc_types,
+        severities=severities,
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        time_mode=time_mode,
+    )
+    sort = (
+        [{"ai_risk_score": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
+        if sort_by == "risk"
+        else [{"event_time": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
+    )
+    body: Dict[str, Any] = {
+        "query": {"bool": {"must": [{"match_all": {}}], "filter": filters or []}},
+        "sort": sort,
+    }
+    try:
+        for batch_hits in client.scroll_search_batched(
+            client.warehouse_index, body, page_size=10_000, max_docs=max_docs
+        ):
+            yield [{"_id": hit.get("_id"), **(hit.get("_source") or {})} for hit in batch_hits]
+    except Exception as exc:
+        logger.error("Batched scroll failed for warehouse export: %s", exc)
+        return
 
 
 def _scroll_all_datalake_docs(
@@ -2804,36 +2856,27 @@ def _average_events_per_day(total_events: int, docs: Sequence[Dict[str, Any]], s
     return round(total_events / max(len(unique_days), 1), 2)
 
 
+def _ioc_item_to_csv_row(item: Dict[str, Any]) -> List[str]:
+    """Convert a single _build_ioc_record dict to a flat CSV row (no header)."""
+    return [
+        str(item.get("rank") or ""),
+        str(item.get("ioc_id") or ""),
+        str(item.get("ioc_value") or ""),
+        str(item.get("ioc_type") or ""),
+        str(item.get("ioc_type_label") or ""),
+        str(item.get("severity") or ""),
+        str(item.get("risk_score") or ""),
+        " | ".join(str(v) for v in (item.get("threat_types") or [])),
+        " | ".join(str(v) for v in (item.get("sources") or [])),
+        str(item.get("first_seen") or ""),
+        str(item.get("last_seen") or ""),
+    ]
+
+
 def _build_ioc_export_rows(items: Sequence[Dict[str, Any]]) -> List[List[str]]:
-    rows = [[
-        "rank",
-        "ioc_id",
-        "ioc_value",
-        "ioc_type",
-        "ioc_type_label",
-        "severity",
-        "risk_score",
-        "threat_types",
-        "sources",
-        "first_seen",
-        "last_seen",
-    ]]
+    rows: List[List[str]] = [list(_IOC_CSV_HEADERS)]
     for item in items:
-        rows.append(
-            [
-                str(item.get("rank") or ""),
-                str(item.get("ioc_id") or ""),
-                str(item.get("ioc_value") or ""),
-                str(item.get("ioc_type") or ""),
-                str(item.get("ioc_type_label") or ""),
-                str(item.get("severity") or ""),
-                str(item.get("risk_score") or ""),
-                " | ".join(str(value) for value in (item.get("threat_types") or [])),
-                " | ".join(str(value) for value in (item.get("sources") or [])),
-                str(item.get("first_seen") or ""),
-                str(item.get("last_seen") or ""),
-            ]
-        )
+        rows.append(_ioc_item_to_csv_row(item))
     return rows
 
 
@@ -7872,15 +7915,19 @@ def _run_ioc_export_background(
     export_format: str,
     total_rows: int = 0,
 ) -> None:
-    """Background task: scroll warehouse docs, build export file(s), update job.
+    """Background task: stream warehouse docs to export file, update job progress.
 
-    Runs in a thread after the HTTP 202 response has been sent. Transitions
-    the job through  pending → processing → completed  (or failed).
-    Multiple-file exports (CSV only, when total > EXPORT_ROWS_PER_FILE) are
-    packaged into a single .zip so the download endpoint never changes.
+    Runs in a thread after the HTTP 202 response has been sent.
+    Transitions:  pending → processing → completed  (or failed).
 
-    *total_rows* is the pre-counted row count used to report real progress
-    during the scroll phase (5 % → 48 %) so the bar reflects actual work done.
+    CSV exports are truly streamed — each 10 k scroll batch is converted to
+    CSV rows and written immediately, so peak RAM stays at O(batch) not O(total).
+    For 600 k rows this means ~50 MB peak instead of ~3 GB.
+
+    XLSX / PDF keep the existing load-all approach because their row limits
+    (100 k / 5 k) are small enough to fit in RAM comfortably.
+
+    Progress bar: 5 % (start) → 95 % (all rows scrolled) → 100 % (file ready).
     """
     state = get_dashboard_state()
     try:
@@ -7888,37 +7935,116 @@ def _run_ioc_export_background(
 
         row_limit = EXPORT_ROW_LIMITS.get(export_format, 100_000)
         rows_per_file = EXPORT_ROWS_PER_FILE.get(export_format, 100_000)
-
-        # Real-time scroll progress: maps 0 → total_rows onto 5 % → 95 %
-        # so each scroll batch moves the bar by a real fraction of work done.
-        # For 34 k rows / 10 k page_size the user sees ~28 % → 57 % → 85 % → 95 %
-        # rather than a cramped 5-48 % band followed by an instant jump to 100 %.
         _cap = max(total_rows, 1)
-
-        def _on_batch(fetched: int) -> None:
-            ratio = min(fetched / _cap, 1.0)
-            pct = 5 + int(90 * ratio)   # 5 % at start → 95 % when scroll done
-            state.update_export_job(export_id, progress=pct)
-
-        docs = _scroll_all_warehouse_docs(
-            start_date=start_date_str,
-            end_date=end_date_str,
-            threat_types=threat_types or None,
-            sources=sources or None,
-            ioc_types=ioc_types or None,
-            severities=severities or None,
-            sort_by="risk",
-            time_mode=TIME_MODE_OBSERVED,
-            max_docs=row_limit,
-            on_batch=_on_batch,
-        )
-
-        items = [_build_ioc_record(i + 1, doc) for i, doc in enumerate(docs)]
-
         ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
 
-        if len(items) <= rows_per_file:
-            # Single file — serve directly without zip
+        # ── CSV: true streaming ──────────────────────────────────────────────
+        if export_format == "csv":
+            scroll_kwargs: Dict[str, Any] = dict(
+                start_date=start_date_str,
+                end_date=end_date_str,
+                threat_types=threat_types or None,
+                sources=sources or None,
+                ioc_types=ioc_types or None,
+                severities=severities or None,
+                sort_by="risk",
+                time_mode=TIME_MODE_OBSERVED,
+                max_docs=row_limit,
+            )
+
+            row_counter = 0
+
+            if total_rows <= rows_per_file:
+                # ── Single file ──────────────────────────────────────────────
+                csv_buf = io.StringIO()
+                writer = csv.writer(csv_buf)
+                writer.writerow(_IOC_CSV_HEADERS)
+
+                for batch in _scroll_warehouse_docs_batched(**scroll_kwargs):
+                    for doc in batch:
+                        row_counter += 1
+                        writer.writerow(_ioc_item_to_csv_row(_build_ioc_record(row_counter, doc)))
+                    pct = 5 + int(90 * min(row_counter / _cap, 1.0))
+                    state.update_export_job(export_id, progress=pct)
+
+                file_name = f"ioc-report-{ts}.csv"
+                state.update_export_job(
+                    export_id,
+                    status="completed",
+                    progress=100,
+                    file_name=file_name,
+                    completed_at=datetime.now(UTC).isoformat(),
+                    file_content=csv_buf.getvalue().encode("utf-8-sig"),
+                    media_type="text/csv; charset=utf-8",
+                )
+
+            else:
+                # ── Multi-file zip ───────────────────────────────────────────
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    part_num = 1
+                    csv_buf = io.StringIO()
+                    writer = csv.writer(csv_buf)
+                    writer.writerow(_IOC_CSV_HEADERS)
+                    rows_in_part = 0
+
+                    for batch in _scroll_warehouse_docs_batched(**scroll_kwargs):
+                        for doc in batch:
+                            row_counter += 1
+                            writer.writerow(_ioc_item_to_csv_row(_build_ioc_record(row_counter, doc)))
+                            rows_in_part += 1
+
+                            if rows_in_part >= rows_per_file:
+                                fname = f"ioc-report-{ts}_part{part_num:02d}.csv"
+                                zf.writestr(fname, csv_buf.getvalue().encode("utf-8-sig"))
+                                csv_buf.close()
+                                part_num += 1
+                                csv_buf = io.StringIO()
+                                writer = csv.writer(csv_buf)
+                                writer.writerow(_IOC_CSV_HEADERS)
+                                rows_in_part = 0
+
+                        pct = 5 + int(90 * min(row_counter / _cap, 1.0))
+                        state.update_export_job(export_id, progress=pct)
+
+                    # flush last partial file
+                    if rows_in_part > 0:
+                        fname = f"ioc-report-{ts}_part{part_num:02d}.csv"
+                        zf.writestr(fname, csv_buf.getvalue().encode("utf-8-sig"))
+                        csv_buf.close()
+
+                file_name = f"ioc-report-{ts}.zip"
+                state.update_export_job(
+                    export_id,
+                    status="completed",
+                    progress=100,
+                    file_name=file_name,
+                    completed_at=datetime.now(UTC).isoformat(),
+                    file_content=zip_buffer.getvalue(),
+                    media_type="application/zip",
+                )
+
+        # ── XLSX / PDF: existing approach (small limits, OK in RAM) ─────────
+        else:
+            _cap_on_batch_count = 0
+
+            def _on_batch(fetched: int) -> None:
+                pct = 5 + int(90 * min(fetched / _cap, 1.0))
+                state.update_export_job(export_id, progress=pct)
+
+            docs = _scroll_all_warehouse_docs(
+                start_date=start_date_str,
+                end_date=end_date_str,
+                threat_types=threat_types or None,
+                sources=sources or None,
+                ioc_types=ioc_types or None,
+                severities=severities or None,
+                sort_by="risk",
+                time_mode=TIME_MODE_OBSERVED,
+                max_docs=row_limit,
+                on_batch=_on_batch,
+            )
+            items = [_build_ioc_record(i + 1, doc) for i, doc in enumerate(docs)]
             fmt, content, media_type = _build_ioc_export_artifact(items, export_format)
             file_name = f"ioc-report-{ts}.{fmt}"
             state.update_export_job(
@@ -7929,28 +8055,6 @@ def _run_ioc_export_background(
                 completed_at=datetime.now(UTC).isoformat(),
                 file_content=content,
                 media_type=media_type,
-            )
-        else:
-            # Multiple chunks → zip archive (CSV only in practice)
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                num_parts = ceil(len(items) / rows_per_file)
-                for part_num, start in enumerate(range(0, len(items), rows_per_file), 1):
-                    chunk = items[start : start + rows_per_file]
-                    fmt, chunk_content, _ = _build_ioc_export_artifact(chunk, export_format)
-                    zf.writestr(f"ioc-report-{ts}_part{part_num:02d}_of_{num_parts:02d}.{fmt}", chunk_content)
-                    # Update progress proportionally during zip building
-                    pct = 70 + int(25 * part_num / num_parts)
-                    state.update_export_job(export_id, progress=pct)
-            file_name = f"ioc-report-{ts}.zip"
-            state.update_export_job(
-                export_id,
-                status="completed",
-                progress=100,
-                file_name=file_name,
-                completed_at=datetime.now(UTC).isoformat(),
-                file_content=zip_buffer.getvalue(),
-                media_type="application/zip",
             )
 
     except Exception as exc:

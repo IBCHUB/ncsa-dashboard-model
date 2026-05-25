@@ -369,6 +369,94 @@ class ElasticClient:
                 pass
         return all_hits[:max_docs] if max_docs is not None else all_hits
 
+    def scroll_search_batched(
+        self,
+        index: str,
+        body: Dict[str, Any],
+        page_size: int = 10000,
+        max_docs: Optional[int] = None,
+    ):
+        """Generator that yields each scroll batch as a list of raw hits.
+
+        Unlike scroll_search() which accumulates everything into one list,
+        this yields one batch at a time so the caller can process and discard
+        each batch before the next arrives — O(batch) memory instead of O(total).
+
+        Designed for large streaming CSV exports where total_rows >> RAM.
+        """
+        body = {**body, "size": page_size}
+        body.pop("from", None)
+        total_fetched = 0
+        client = self._get_client(index)
+
+        if ES_CLIENT_AVAILABLE and client:
+            result = client.search(index=index, body=body, scroll="2m")
+            scroll_id = result.get("_scroll_id")
+            try:
+                while True:
+                    hits = result.get("hits", {}).get("hits", [])
+                    if not hits:
+                        break
+                    if max_docs is not None:
+                        hits = hits[: max_docs - total_fetched]
+                    yield hits
+                    total_fetched += len(hits)
+                    if max_docs is not None and total_fetched >= max_docs:
+                        break
+                    result = client.scroll(scroll_id=scroll_id, scroll="2m")
+                    scroll_id = result.get("_scroll_id")
+            finally:
+                if scroll_id:
+                    try:
+                        client.clear_scroll(scroll_id=scroll_id)
+                    except Exception:
+                        pass
+            return
+
+        # httpx fallback
+        url = self._get_url(index)
+        headers = self._get_headers(index)
+        response = httpx.post(
+            f"{url}/{index}/_search?scroll=2m",
+            json=body,
+            timeout=60,
+            headers=headers,
+        )
+        response.raise_for_status()
+        result = response.json()
+        scroll_id = result.get("_scroll_id")
+        try:
+            while True:
+                hits = result.get("hits", {}).get("hits", [])
+                if not hits:
+                    break
+                if max_docs is not None:
+                    hits = hits[: max_docs - total_fetched]
+                yield hits
+                total_fetched += len(hits)
+                if max_docs is not None and total_fetched >= max_docs:
+                    break
+                response = httpx.post(
+                    f"{url}/_search/scroll",
+                    json={"scroll": "2m", "scroll_id": scroll_id},
+                    timeout=60,
+                    headers=headers,
+                )
+                response.raise_for_status()
+                result = response.json()
+                scroll_id = result.get("_scroll_id")
+        finally:
+            if scroll_id:
+                try:
+                    httpx.delete(
+                        f"{url}/_search/scroll",
+                        json={"scroll_id": scroll_id},
+                        timeout=10,
+                        headers=headers,
+                    )
+                except Exception:
+                    pass
+
     def _get_document(self, index: str, doc_id: str) -> Optional[Dict[str, Any]]:
         client = self._get_client(index)
         if ES_CLIENT_AVAILABLE and client:
