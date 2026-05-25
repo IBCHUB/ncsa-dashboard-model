@@ -7922,7 +7922,7 @@ def _run_ioc_export_background(
                 status="completed",
                 progress=100,
                 file_name=file_name,
-                completed_at=_isoformat(datetime.now(UTC)),
+                completed_at=datetime.now(UTC).isoformat(),
                 file_content=content,
                 media_type=media_type,
             )
@@ -7944,7 +7944,7 @@ def _run_ioc_export_background(
                 status="completed",
                 progress=100,
                 file_name=file_name,
-                completed_at=_isoformat(datetime.now(UTC)),
+                completed_at=datetime.now(UTC).isoformat(),
                 file_content=zip_buffer.getvalue(),
                 media_type="application/zip",
             )
