@@ -1173,13 +1173,22 @@ def _terms_items_from_buckets(
         if not key or key.lower() in {"none", "null", "unknown", "-"}:
             continue
         value = int(bucket.get("doc_count") or 0)
+        # If the bucket includes a severity sub-aggregation (terms on ai_severity),
+        # derive the color from the highest actual severity so it matches the
+        # Threat Volume & Severity treemap palette instead of using a fixed null.
+        sev_buckets = (bucket.get("severity") or {}).get("buckets")
+        if sev_buckets:
+            sev = _highest_severity_from_buckets(sev_buckets)
+            color: Optional[str] = _severity_color(sev)
+        else:
+            color = None
         output.append(
             {
                 "key": key,
                 "label": labels.get(key, key) if labels else key,
                 "value": value,
                 "percentage": _percentage(value, effective_total or 1),
-                "color": None,
+                "color": color,
             }
         )
     return output
@@ -1786,7 +1795,10 @@ def _warehouse_dashboard_aggs(
         },
         "ioc_types": {"terms": {"field": "ioc_type", "size": 25, "missing": "unknown"}},
         "sources": {"terms": {"field": "source_name", "size": 25, "missing": "unknown"}},
-        "threat_types": {"terms": {"field": "ai_threat_types", "size": 25, "missing": "Other"}},
+        "threat_types": {
+            "terms": {"field": "ai_threat_types", "size": 25, "missing": "Other"},
+            "aggs": {"severity": {"terms": {"field": "ai_severity", "size": 5, "missing": "low"}}},
+        },
         "threat_actors": {
             "terms": {"field": "ai_threat_actors", "size": 25},
             "aggs": {
