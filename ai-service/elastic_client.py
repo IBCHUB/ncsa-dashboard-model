@@ -151,8 +151,21 @@ class ElasticClient:
             headers["Authorization"] = f"Basic {base64.b64encode(raw).decode('ascii')}"
         return headers
 
-    def _bulk_request(self, index: str, operations: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-        """Execute Elasticsearch bulk operations with the correct endpoint/auth."""
+    def _bulk_request(
+        self,
+        index: str,
+        operations: Sequence[Dict[str, Any]],
+        *,
+        refresh: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Execute Elasticsearch bulk operations with the correct endpoint/auth.
+
+        ``refresh`` accepts ES values ``"true"``, ``"false"``, or
+        ``"wait_for"`` and is appended as ``?refresh=...`` on the bulk URL.
+        Use ``"wait_for"`` when the next operation in the same iteration
+        needs to read/update the docs just written (e.g. clustering pass
+        after bulk-index) — avoids ``document_missing_exception``.
+        """
         if not operations:
             return {"success": 0, "failed": 0, "failed_ids": []}
 
@@ -167,8 +180,11 @@ class ElasticClient:
         if httpx is None:
             raise RuntimeError("httpx is required for bulk requests")
 
+        url = f"{self._get_url(index)}/_bulk"
+        if refresh:
+            url = f"{url}?refresh={refresh}"
         response = httpx.post(
-            f"{self._get_url(index)}/_bulk",
+            url,
             content=payload,
             timeout=60,
             headers={**self._get_headers(index), "Content-Type": "application/x-ndjson"},
@@ -208,6 +224,7 @@ class ElasticClient:
         operations: Sequence[Dict[str, Any]],
         *,
         chunk_size: Optional[int] = None,
+        refresh: Optional[str] = None,
     ) -> Dict[str, Any]:
         chunk_size = max(1, chunk_size or ELASTIC_BULK_CHUNK_SIZE)
         total_success = 0
@@ -215,7 +232,7 @@ class ElasticClient:
         for start in range(0, len(operations), chunk_size):
             chunk = list(operations[start:start + chunk_size])
             try:
-                result = self._bulk_request(index, chunk)
+                result = self._bulk_request(index, chunk, refresh=refresh)
                 total_success += int(result.get("success", 0) or 0)
                 failed_ids.extend(str(item) for item in result.get("failed_ids", []) or [])
             except Exception as e:
@@ -1115,8 +1132,20 @@ class ElasticClient:
         date_range = {"gte": f"now-{upper_offset}d"}
         if lower_offset > 0:
             date_range["lt"] = f"now-{lower_offset}d"
+        # Use OR clause so docs with EITHER observation_date OR @timestamp
+        # in range get matched. Cyberint docs have observation_date; news
+        # sources (BleepingComputer, The Hacker News, Zone-H, DarkReading,
+        # Sandbox) have only @timestamp. Without the OR clause, the news
+        # sources are silently filtered out and never reach the classifier
+        # → DeBERTa/BGE-M3 ML never runs.
         base_query: Dict[str, Any] = {
-            "bool": {"must": [{"range": {"observation_date": date_range}}]}
+            "bool": {
+                "should": [
+                    {"range": {"observation_date": date_range}},
+                    {"range": {"@timestamp": date_range}},
+                ],
+                "minimum_should_match": 1,
+            }
         }
 
         for _ in range(max(1, DATALAKE_SCAN_MAX_PAGES)):
@@ -1332,12 +1361,23 @@ class ElasticClient:
             logger.error(f"Failed to save to warehouse: {e}")
             return None
 
-    def bulk_save_to_warehouse(self, items: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    def bulk_save_to_warehouse(
+        self,
+        items: Sequence[Dict[str, Any]],
+        *,
+        wait_for_refresh: bool = False,
+    ) -> Dict[str, Any]:
         """Save many warehouse documents in one bulk request.
 
         Each item can provide a precomputed ``doc_id`` and ``document``.  The
         document is still passed through the same warehouse preparation path as
         single-document writes.
+
+        ``wait_for_refresh=True`` makes ES block until the new docs are
+        visible to searches before returning. Use this when the caller will
+        immediately follow up with bulk-update against the same doc_ids
+        (the clustering pass would otherwise race and hit
+        ``document_missing_exception`` on every doc).
         """
         operations: List[Dict[str, Any]] = []
         for item in items:
@@ -1348,7 +1388,11 @@ class ElasticClient:
                 "source": warehouse_doc,
             })
         try:
-            return self._bulk_request_chunked(self.warehouse_index, operations)
+            return self._bulk_request_chunked(
+                self.warehouse_index,
+                operations,
+                refresh="wait_for" if wait_for_refresh else None,
+            )
         except Exception as e:
             logger.error("Bulk warehouse write failed: %s", e)
             failed_ids = [
@@ -1485,7 +1529,16 @@ class ElasticClient:
             if not doc_id or not isinstance(fields, dict) or not fields:
                 continue
             operations.append({
-                "action": {"update": {"_index": self.warehouse_index, "_id": doc_id}},
+                "action": {
+                    "update": {
+                        "_index": self.warehouse_index,
+                        "_id": doc_id,
+                        # retry_on_conflict so concurrent updates from the
+                        # ingest pipeline + post-ingest clustering job
+                        # don't blow up on version_conflict
+                        "retry_on_conflict": 3,
+                    },
+                },
                 "source": {"doc": fields},
             })
         if not operations:

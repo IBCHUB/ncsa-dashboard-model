@@ -687,7 +687,13 @@ def _run_pipeline_once_sync(limit: int, worker_id: int = 0, worker_total: int = 
 
         failed_warehouse_doc_ids: set[str] = set()
         if warehouse_items:
-            warehouse_result = es_client.bulk_save_to_warehouse(warehouse_items)
+            # Wait for refresh so the immediately-following clustering pass
+            # can read these docs (otherwise bulk-update races against the
+            # not-yet-refreshed index and every cluster update returns
+            # document_missing_exception).
+            warehouse_result = es_client.bulk_save_to_warehouse(
+                warehouse_items, wait_for_refresh=True,
+            )
             failed_warehouse_doc_ids = set(warehouse_result.get("failed_ids") or [])
             failed += int(warehouse_result.get("failed", 0) or 0)
 
@@ -705,13 +711,12 @@ def _run_pipeline_once_sync(limit: int, worker_id: int = 0, worker_total: int = 
                     failed += 1
 
         # --- Campaign Clustering (incremental) ---
-        # Disabled during 1:1 backfill: the bulk-update call races against the
-        # bulk-index call in the same iteration (update sees the doc before the
-        # index refresh applies → document_missing_exception per doc, ~10K
-        # wasted ops per batch). Re-enable / re-cluster as a separate
-        # post-ingest job once the warehouse is hydrated.
+        # The bulk-save above runs with refresh=wait_for so the just-written
+        # docs are searchable when this clustering pass tries to update them.
+        # Without that, every cluster update returns document_missing
+        # (~10K wasted ops per batch).
         clustered_count = 0
-        if False and warehouse_items:
+        if warehouse_items:
             try:
                 batch_docs = [
                     item["document"] for item in warehouse_items
