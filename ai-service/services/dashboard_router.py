@@ -7889,12 +7889,15 @@ def _run_ioc_export_background(
         row_limit = EXPORT_ROW_LIMITS.get(export_format, 100_000)
         rows_per_file = EXPORT_ROWS_PER_FILE.get(export_format, 100_000)
 
-        # Real-time scroll progress: maps 0 → total_rows onto 5 % → 48 %
+        # Real-time scroll progress: maps 0 → total_rows onto 5 % → 95 %
+        # so each scroll batch moves the bar by a real fraction of work done.
+        # For 34 k rows / 10 k page_size the user sees ~28 % → 57 % → 85 % → 95 %
+        # rather than a cramped 5-48 % band followed by an instant jump to 100 %.
         _cap = max(total_rows, 1)
 
         def _on_batch(fetched: int) -> None:
             ratio = min(fetched / _cap, 1.0)
-            pct = 5 + int(43 * ratio)   # 5 % at start → 48 % when scroll done
+            pct = 5 + int(90 * ratio)   # 5 % at start → 95 % when scroll done
             state.update_export_job(export_id, progress=pct)
 
         docs = _scroll_all_warehouse_docs(
@@ -7909,10 +7912,8 @@ def _run_ioc_export_background(
             max_docs=row_limit,
             on_batch=_on_batch,
         )
-        state.update_export_job(export_id, progress=50)
 
         items = [_build_ioc_record(i + 1, doc) for i, doc in enumerate(docs)]
-        state.update_export_job(export_id, progress=70)
 
         ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
 
