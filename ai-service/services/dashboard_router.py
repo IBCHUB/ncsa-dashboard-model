@@ -967,7 +967,7 @@ def _scroll_warehouse_docs_batched(
     }
     try:
         for batch_hits in client.scroll_search_batched(
-            client.warehouse_index, body, page_size=20_000, max_docs=max_docs
+            client.warehouse_index, body, page_size=50_000, max_docs=max_docs
         ):
             yield [{"_id": hit.get("_id"), **(hit.get("_source") or {})} for hit in batch_hits]
     except Exception as exc:
