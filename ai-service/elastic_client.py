@@ -38,6 +38,7 @@ DATALAKE_ELASTICSEARCH_URL = os.getenv("DATALAKE_ELASTICSEARCH_URL", ELASTICSEAR
 WAREHOUSE_ELASTICSEARCH_URL = os.getenv("WAREHOUSE_ELASTICSEARCH_URL", ELASTICSEARCH_URL)
 DATALAKE_INDEX = os.getenv("DATALAKE_INDEX", "cyber-logs-datalake")
 WAREHOUSE_INDEX = os.getenv("WAREHOUSE_INDEX", "cyber-logs-datawarehouse")
+PIPELINE_WAREHOUSE_INDEX = os.getenv("PIPELINE_WAREHOUSE_INDEX", WAREHOUSE_INDEX)
 PROCESSED_INDEX = os.getenv("PROCESSED_INDEX", "cyber-logs-processed")
 QUARANTINE_INDEX = os.getenv("QUARANTINE_INDEX", "cyber-logs-quarantine")
 ML_FEEDBACK_INDEX = os.getenv("ML_FEEDBACK_INDEX", "cyber-logs-ml-feedback")
@@ -80,6 +81,7 @@ class ElasticClient:
         self.warehouse_url = WAREHOUSE_ELASTICSEARCH_URL
         self.datalake_index = DATALAKE_INDEX
         self.warehouse_index = WAREHOUSE_INDEX
+        self.pipeline_warehouse_index = PIPELINE_WAREHOUSE_INDEX
         
         self.datalake_api_key = DATALAKE_API_KEY
         self.warehouse_api_key = WAREHOUSE_API_KEY
@@ -1102,8 +1104,8 @@ class ElasticClient:
                     }
                 },
                 "sort": [
-                    {"event_time": {"order": "asc", "missing": "_last"}},
-                    {"collect_time": {"order": "asc", "missing": "_last"}}
+                    {"event_time": {"order": "desc", "missing": "_last"}},
+                    {"collect_time": {"order": "desc", "missing": "_last"}}
                 ],
                 "size": limit
             }
@@ -1136,16 +1138,21 @@ class ElasticClient:
         # Each worker takes a disjoint date slice (e.g. 730 days / 4 workers
         # = ~182 days each). Tunable via env so we can run a short window
         # first (e.g. 60d) then extend to all history once that's caught up.
-        total_days = int(os.getenv("BACKFILL_DAYS", "730"))
-        days_per_worker = max(1, total_days // worker_total)
-        # Worker i covers [now - (i+1)*days_per_worker, now - i*days_per_worker)
-        # except the last worker which extends to total_days to catch any
-        # remainder from integer division.
-        lower_offset = worker_id * days_per_worker
-        if worker_id == worker_total - 1:
-            upper_offset = total_days
+        # Custom boundaries: PIPELINE_WORKER_BOUNDARIES=0,7,16,24,... (days ago, newest to oldest)
+        # Must have worker_total+1 values. Falls back to equal time-slice split.
+        _boundaries_env = os.getenv("PIPELINE_WORKER_BOUNDARIES", "")
+        if _boundaries_env and worker_total > 1:
+            _b = [int(x.strip()) for x in _boundaries_env.split(",")]
+            lower_offset = _b[worker_id]
+            upper_offset = _b[worker_id + 1]
         else:
-            upper_offset = (worker_id + 1) * days_per_worker
+            total_days = int(os.getenv("BACKFILL_DAYS", "730"))
+            days_per_worker = max(1, total_days // worker_total)
+            lower_offset = worker_id * days_per_worker
+            if worker_id == worker_total - 1:
+                upper_offset = total_days
+            else:
+                upper_offset = (worker_id + 1) * days_per_worker
         date_range = {"gte": f"now-{upper_offset}d"}
         if lower_offset > 0:
             date_range["lt"] = f"now-{lower_offset}d"
@@ -1169,9 +1176,9 @@ class ElasticClient:
             query: Dict[str, Any] = {
                 "query": base_query,
                 "sort": [
-                    {"event_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}},
-                    {"collect_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}},
-                    {"_doc": {"order": "asc"}},
+                    {"event_time": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
+                    {"collect_time": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
+                    {"_doc": {"order": "desc"}},
                 ],
                 "size": batch_size,
             }
@@ -1268,8 +1275,8 @@ class ElasticClient:
                 }
             } if filters else {"match_all": {}},
             "sort": [
-                {"event_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}},
-                {"collect_time": {"order": "asc", "missing": "_last", "unmapped_type": "date"}}
+                {"event_time": {"order": "desc", "missing": "_last", "unmapped_type": "date"}},
+                {"collect_time": {"order": "desc", "missing": "_last", "unmapped_type": "date"}}
             ],
             "from": offset,
             "size": limit
@@ -1356,20 +1363,20 @@ class ElasticClient:
             # and undercounted attack events; per-event uniqueness uses the
             # source-fingerprinted datalake doc id instead.
             doc_id = self._build_datalake_doc_id(warehouse_doc)
-            client = self._get_client(self.warehouse_index)
+            client = self._get_client(self.pipeline_warehouse_index)
             if ES_CLIENT_AVAILABLE and client:
                 result = client.index(
-                    index=self.warehouse_index,
+                    index=self.pipeline_warehouse_index,
                     body=warehouse_doc,
                     id=doc_id
                 )
                 return result.get("_id")
             else:
                 resp = httpx.put(
-                    f"{self.warehouse_url}/{self.warehouse_index}/_doc/{quote(doc_id, safe='')}",
+                    f"{self.warehouse_url}/{self.pipeline_warehouse_index}/_doc/{quote(doc_id, safe='')}",
                     json=warehouse_doc,
                     timeout=10,
-                    headers=self._get_headers(self.warehouse_index)
+                    headers=self._get_headers(self.pipeline_warehouse_index)
                 )
                 if resp.status_code in (200, 201):
                     return resp.json().get("_id")
@@ -1401,12 +1408,12 @@ class ElasticClient:
             warehouse_doc = self._prepare_warehouse_document(dict(item["document"]))
             doc_id = str(item.get("doc_id") or self._build_datalake_doc_id(warehouse_doc))
             operations.append({
-                "action": {"index": {"_index": self.warehouse_index, "_id": doc_id}},
+                "action": {"index": {"_index": self.pipeline_warehouse_index, "_id": doc_id}},
                 "source": warehouse_doc,
             })
         try:
             return self._bulk_request_chunked(
-                self.warehouse_index,
+                self.pipeline_warehouse_index,
                 operations,
                 refresh="wait_for" if wait_for_refresh else None,
             )
@@ -1548,7 +1555,7 @@ class ElasticClient:
             operations.append({
                 "action": {
                     "update": {
-                        "_index": self.warehouse_index,
+                        "_index": self.pipeline_warehouse_index,
                         "_id": doc_id,
                         # retry_on_conflict so concurrent updates from the
                         # ingest pipeline + post-ingest clustering job
@@ -1561,7 +1568,7 @@ class ElasticClient:
         if not operations:
             return {"success": 0, "failed": 0, "failed_ids": [], "errors": False}
         try:
-            return self._bulk_request_chunked(self.warehouse_index, operations)
+            return self._bulk_request_chunked(self.pipeline_warehouse_index, operations)
         except Exception as e:
             logger.error("Bulk warehouse update failed: %s", e)
             failed_ids = [
