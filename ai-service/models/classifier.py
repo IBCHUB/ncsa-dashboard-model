@@ -10,6 +10,7 @@ Configurable via `ai-service/config.py`.
 
 from typing import List, Dict, Optional
 import logging
+import os
 import torch
 from transformers import pipeline
 from lingua import Language, LanguageDetectorBuilder
@@ -33,6 +34,8 @@ logger = logging.getLogger(__name__)
 _detector = None
 _en_classifier = None
 _multi_classifier = None
+
+FORCE_ENGLISH = os.getenv("CLASSIFIER_FORCE_ENGLISH", "false").lower() == "true"
 
 
 def models_loaded() -> bool:
@@ -117,17 +120,20 @@ def classify_threat(
     all_labels = threat_labels + SECTOR_LABELS if include_sectors else threat_labels
 
     try:
-        # 1. Language Detection
-        detector = get_detector()
-        detected_lang = detector.detect_language_of(text)
-
-        # 2. Model Selection
-        if detected_lang == Language.ENGLISH:
+        # 1. Language Detection + Model Selection
+        if FORCE_ENGLISH:
             classifier = get_en_classifier()
             lang_code = "en"
+            detected_lang = Language.ENGLISH
         else:
-            classifier = get_multi_classifier()
-            lang_code = str(detected_lang.iso_code_639_1).lower().split('.')[-1]
+            detector = get_detector()
+            detected_lang = detector.detect_language_of(text)
+            if detected_lang == Language.ENGLISH:
+                classifier = get_en_classifier()
+                lang_code = "en"
+            else:
+                classifier = get_multi_classifier()
+                lang_code = str(detected_lang.iso_code_639_1).lower().split('.')[-1]
 
         # 3. Single inference pass (threat + sector labels together)
         result = classifier(

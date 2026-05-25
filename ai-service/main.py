@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import asyncio
 import logging
 import threading
+import concurrent.futures
 
 import time
 import os
@@ -45,6 +46,7 @@ PIPELINE_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("PIPELINE_SCHEDULER_INTERVAL
 PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS = int(os.getenv("PIPELINE_SCHEDULER_INITIAL_DELAY_SECONDS", "60"))
 PIPELINE_SCHEDULER_LIMIT = int(os.getenv("PIPELINE_SCHEDULER_LIMIT", "100"))
 _pipeline_lock = threading.Lock()
+_ml_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="ml")
 _pipeline_locks: Dict[int, threading.Lock] = {}
 _pipeline_scheduler_task: Optional[asyncio.Task] = None
 
@@ -231,9 +233,9 @@ async def classify_endpoint(request: ClassifyRequest, api_key: str = Depends(ver
 
         sanitized_text = sanitize_text(request.text)["text"]
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, lambda: classify_threat(sanitized_text, threshold=request.threshold))
-        actors = await loop.run_in_executor(None, lambda: extract_threat_actors(sanitized_text))
-        mitre = await loop.run_in_executor(None, lambda: extract_mitre_techniques(sanitized_text))
+        result = await loop.run_in_executor(_ml_executor, lambda: classify_threat(sanitized_text, threshold=request.threshold))
+        actors = await loop.run_in_executor(_ml_executor, lambda: extract_threat_actors(sanitized_text))
+        mitre = await loop.run_in_executor(_ml_executor, lambda: extract_mitre_techniques(sanitized_text))
 
         
         elapsed = int((time.time() - start) * 1000)
@@ -261,7 +263,7 @@ async def score_endpoint(request: ScoreRequest, api_key: str = Depends(verify_ap
 
         sanitized_description = sanitize_text(request.description)["text"]
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, lambda: calculate_risk_score(
+        result = await loop.run_in_executor(_ml_executor, lambda: calculate_risk_score(
 
             ioc_value=request.ioc_value,
             ioc_type=request.ioc_type,
@@ -298,9 +300,9 @@ async def enrich_endpoint(request: EnrichRequest, api_key: str = Depends(verify_
         
         # 1. Classify threat
         loop = asyncio.get_running_loop()
-        classification = await loop.run_in_executor(None, lambda: classify_threat(full_text))
-        actors = await loop.run_in_executor(None, lambda: extract_threat_actors(full_text))
-        mitre = await loop.run_in_executor(None, lambda: extract_mitre_techniques(full_text))
+        classification = await loop.run_in_executor(_ml_executor, lambda: classify_threat(full_text))
+        actors = await loop.run_in_executor(_ml_executor, lambda: extract_threat_actors(full_text))
+        mitre = await loop.run_in_executor(_ml_executor, lambda: extract_mitre_techniques(full_text))
         
         # 2. Build full classification dict for scorer
         full_classification = {
