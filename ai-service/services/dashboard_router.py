@@ -715,14 +715,15 @@ def _scroll_all_documents(
     sort: Optional[List[Dict[str, Any]]] = None,
     max_docs: Optional[int] = None,
     page_size: int = 10000,
+    on_batch: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch matching documents via scroll API.
 
     Pass *max_docs* to cap the result set — the scroll context is released as
     soon as the limit is reached so the cluster is not over-burdened.
-    *page_size* defaults to 5 000 (was 2 000) to halve the number of round
-    trips for large exports — reduces a 200 K-row export from ~100 ES requests
-    to ~40, cutting wall time proportionally.
+    *page_size* defaults to 10 000 to minimise round trips for large exports.
+    *on_batch* is an optional callable(docs_fetched: int) called after each
+    scroll batch so background tasks can report real-time progress.
     """
     body: Dict[str, Any] = {
         "query": {
@@ -736,7 +737,7 @@ def _scroll_all_documents(
         body["sort"] = sort
     client = get_elastic_client()
     try:
-        raw_hits = client.scroll_search(index, body, page_size=page_size, max_docs=max_docs)
+        raw_hits = client.scroll_search(index, body, page_size=page_size, max_docs=max_docs, on_batch=on_batch)
     except Exception as exc:
         logger.error("Elasticsearch scroll failed for %s: %s", index, exc)
         return []
@@ -892,10 +893,12 @@ def _scroll_all_warehouse_docs(
     sort_by: str = "risk",
     time_mode: str = TIME_MODE_OBSERVED,
     max_docs: Optional[int] = None,
+    on_batch: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch matching warehouse documents via scroll.
 
     Pass *max_docs* to cap the result set (e.g. the row limit for an export).
+    Pass *on_batch* callable(docs_fetched: int) to receive real-time progress.
     """
     client = get_elastic_client()
     filters = _warehouse_search_filters(
@@ -917,7 +920,7 @@ def _scroll_all_warehouse_docs(
         if sort_by == "risk"
         else [{"event_time": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
     )
-    return _scroll_all_documents(client.warehouse_index, filters=filters, sort=sort, max_docs=max_docs)
+    return _scroll_all_documents(client.warehouse_index, filters=filters, sort=sort, max_docs=max_docs, on_batch=on_batch)
 
 
 def _scroll_all_datalake_docs(
@@ -7852,6 +7855,7 @@ def _run_ioc_export_background(
     ioc_types: Optional[List[str]],
     severities: Optional[List[str]],
     export_format: str,
+    total_rows: int = 0,
 ) -> None:
     """Background task: scroll warehouse docs, build export file(s), update job.
 
@@ -7859,6 +7863,9 @@ def _run_ioc_export_background(
     the job through  pending → processing → completed  (or failed).
     Multiple-file exports (CSV only, when total > EXPORT_ROWS_PER_FILE) are
     packaged into a single .zip so the download endpoint never changes.
+
+    *total_rows* is the pre-counted row count used to report real progress
+    during the scroll phase (5 % → 48 %) so the bar reflects actual work done.
     """
     state = get_dashboard_state()
     try:
@@ -7866,6 +7873,14 @@ def _run_ioc_export_background(
 
         row_limit = EXPORT_ROW_LIMITS.get(export_format, 100_000)
         rows_per_file = EXPORT_ROWS_PER_FILE.get(export_format, 100_000)
+
+        # Real-time scroll progress: maps 0 → total_rows onto 5 % → 48 %
+        _cap = max(total_rows, 1)
+
+        def _on_batch(fetched: int) -> None:
+            ratio = min(fetched / _cap, 1.0)
+            pct = 5 + int(43 * ratio)   # 5 % at start → 48 % when scroll done
+            state.update_export_job(export_id, progress=pct)
 
         docs = _scroll_all_warehouse_docs(
             start_date=start_date_str,
@@ -7877,6 +7892,7 @@ def _run_ioc_export_background(
             sort_by="risk",
             time_mode=TIME_MODE_OBSERVED,
             max_docs=row_limit,
+            on_batch=_on_batch,
         )
         state.update_export_job(export_id, progress=50)
 
@@ -8089,6 +8105,7 @@ def ioc_report_export(
     export_id = str(job["export_id"])
 
     # Schedule background task — runs after this response is sent.
+    # Pass total_rows so the task can report real-time scroll progress.
     background_tasks.add_task(
         _run_ioc_export_background,
         export_id,
@@ -8099,6 +8116,7 @@ def ioc_report_export(
         request.ioc_types or None,
         request.severities or None,
         normalized_format,
+        total_rows,
     )
 
     return _success(_public_export_job(job, http_request))

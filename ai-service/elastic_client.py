@@ -284,6 +284,7 @@ class ElasticClient:
         body: Dict[str, Any],
         page_size: int = 2000,
         max_docs: Optional[int] = None,
+        on_batch: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Fetch matching documents using scroll API. Returns list of hits.
 
@@ -291,6 +292,9 @@ class ElasticClient:
         have been collected (the scroll context is cleared before returning).
         This prevents the background export from pulling millions of docs when
         the caller has already validated an upper-bound row limit.
+
+        *on_batch* is an optional callable(docs_fetched: int) invoked after
+        every batch so callers can report real-time scroll progress.
         """
         body = {**body, "size": page_size}
         body.pop("from", None)
@@ -300,16 +304,25 @@ class ElasticClient:
         def _limit_reached() -> bool:
             return max_docs is not None and len(all_hits) >= max_docs
 
+        def _notify() -> None:
+            if on_batch is not None:
+                try:
+                    on_batch(len(all_hits))
+                except Exception:
+                    pass
+
         if ES_CLIENT_AVAILABLE and client:
             result = client.search(index=index, body=body, scroll="2m")
             scroll_id = result.get("_scroll_id")
             hits = result.get("hits", {}).get("hits", [])
             all_hits.extend(hits)
+            _notify()
             while hits and not _limit_reached():
                 result = client.scroll(scroll_id=scroll_id, scroll="2m")
                 scroll_id = result.get("_scroll_id")
                 hits = result.get("hits", {}).get("hits", [])
                 all_hits.extend(hits)
+                _notify()
             if scroll_id:
                 try:
                     client.clear_scroll(scroll_id=scroll_id)
@@ -330,6 +343,7 @@ class ElasticClient:
         scroll_id = result.get("_scroll_id")
         hits = result.get("hits", {}).get("hits", [])
         all_hits.extend(hits)
+        _notify()
         while hits and not _limit_reached():
             response = httpx.post(
                 f"{url}/_search/scroll",
@@ -342,6 +356,7 @@ class ElasticClient:
             scroll_id = result.get("_scroll_id")
             hits = result.get("hits", {}).get("hits", [])
             all_hits.extend(hits)
+            _notify()
         if scroll_id:
             try:
                 httpx.delete(
