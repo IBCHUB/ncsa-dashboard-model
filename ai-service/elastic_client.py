@@ -98,10 +98,12 @@ class ElasticClient:
             self.datalake_client = Elasticsearch(
                 self.datalake_url,
                 basic_auth=self.datalake_basic_auth,
+                request_timeout=30,
             )
             self.warehouse_client = Elasticsearch(
                 self.warehouse_url,
                 basic_auth=self.warehouse_basic_auth,
+                request_timeout=30,
             )
             self.client = self.warehouse_client
         else:
