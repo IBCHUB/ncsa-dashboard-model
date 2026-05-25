@@ -714,7 +714,7 @@ def _scroll_all_documents(
     filters: Optional[List[Dict[str, Any]]] = None,
     sort: Optional[List[Dict[str, Any]]] = None,
     max_docs: Optional[int] = None,
-    page_size: int = 5000,
+    page_size: int = 10000,
 ) -> List[Dict[str, Any]]:
     """Fetch matching documents via scroll API.
 
