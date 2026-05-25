@@ -936,15 +936,15 @@ def _scroll_warehouse_docs_batched(
     threat_types: Optional[List[str]] = None,
     severities: Optional[List[str]] = None,
     ioc_types: Optional[List[str]] = None,
-    sort_by: str = "risk",
+    sort_by: Optional[str] = "risk",
     time_mode: str = TIME_MODE_OBSERVED,
     max_docs: Optional[int] = None,
 ) -> Iterator[List[Dict[str, Any]]]:
-    """Generator: yields one scroll batch (≤ 10 000 docs) at a time.
+    """Generator: yields one scroll batch at a time (never accumulates all docs).
 
-    Unlike _scroll_all_warehouse_docs, this never accumulates all documents
-    in memory — each yielded batch can be processed and discarded before the
-    next one arrives.  Designed for large streaming CSV exports.
+    sort_by="risk"  → sort by ai_risk_score desc (good for small exports)
+    sort_by=None    → natural Lucene order, no sort cost — use for large exports
+                      (>100k rows) where ES sorting all docs would time out.
     """
     client = get_elastic_client()
     filters = _warehouse_search_filters(
@@ -956,15 +956,20 @@ def _scroll_warehouse_docs_batched(
         threat_types=threat_types,
         time_mode=time_mode,
     )
-    sort = (
-        [{"ai_risk_score": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
-        if sort_by == "risk"
-        else [{"event_time": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
-    )
     body: Dict[str, Any] = {
         "query": {"bool": {"must": [{"match_all": {}}], "filter": filters or []}},
-        "sort": sort,
     }
+    if sort_by == "risk":
+        body["sort"] = [
+            {"ai_risk_score": {"order": "desc", "missing": "_last"}},
+            {"processed_at": {"order": "desc", "missing": "_last"}},
+        ]
+    elif sort_by:
+        body["sort"] = [
+            {"event_time": {"order": "desc", "missing": "_last"}},
+            {"processed_at": {"order": "desc", "missing": "_last"}},
+        ]
+    # sort_by=None → no sort key → ES uses natural _doc order (fastest)
     try:
         for batch_hits in client.scroll_search_batched(
             client.warehouse_index, body, page_size=50_000, max_docs=max_docs
@@ -7940,6 +7945,11 @@ def _run_ioc_export_background(
 
         # ── CSV: true streaming ──────────────────────────────────────────────
         if export_format == "csv":
+            # For large exports (≥ 100k rows), skip sort so ES can open the
+            # scroll context immediately without sorting all matching docs first.
+            # Sorting 600k docs takes > 30 s and causes a timeout; users can
+            # sort the downloaded CSV in Excel/spreadsheet instead.
+            _large_export = total_rows >= 100_000
             scroll_kwargs: Dict[str, Any] = dict(
                 start_date=start_date_str,
                 end_date=end_date_str,
@@ -7947,7 +7957,7 @@ def _run_ioc_export_background(
                 sources=sources or None,
                 ioc_types=ioc_types or None,
                 severities=severities or None,
-                sort_by="risk",
+                sort_by=None if _large_export else "risk",
                 time_mode=TIME_MODE_OBSERVED,
                 max_docs=row_limit,
             )

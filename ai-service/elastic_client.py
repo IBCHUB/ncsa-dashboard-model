@@ -390,7 +390,9 @@ class ElasticClient:
         client = self._get_client(index)
 
         if ES_CLIENT_AVAILABLE and client:
-            result = client.search(index=index, body=body, scroll="2m")
+            # Use a generous timeout: large unsorted scroll can take > 30 s to
+            # open the context on the first request even when data is local.
+            result = client.search(index=index, body=body, scroll="2m", request_timeout=120)
             scroll_id = result.get("_scroll_id")
             try:
                 while True:
@@ -403,7 +405,7 @@ class ElasticClient:
                     total_fetched += len(hits)
                     if max_docs is not None and total_fetched >= max_docs:
                         break
-                    result = client.scroll(scroll_id=scroll_id, scroll="2m")
+                    result = client.scroll(scroll_id=scroll_id, scroll="2m", request_timeout=120)
                     scroll_id = result.get("_scroll_id")
             finally:
                 if scroll_id:
@@ -419,7 +421,7 @@ class ElasticClient:
         response = httpx.post(
             f"{url}/{index}/_search?scroll=2m",
             json=body,
-            timeout=60,
+            timeout=120,
             headers=headers,
         )
         response.raise_for_status()
@@ -439,7 +441,7 @@ class ElasticClient:
                 response = httpx.post(
                     f"{url}/_search/scroll",
                     json={"scroll": "2m", "scroll_id": scroll_id},
-                    timeout=60,
+                    timeout=120,
                     headers=headers,
                 )
                 response.raise_for_status()
