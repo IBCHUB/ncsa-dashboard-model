@@ -660,22 +660,24 @@ class DashboardState:
         file_content: Optional[bytes] = None,
         media_type: Optional[str] = None,
         owner_user_id: Optional[str] = None,
+        status: str = "completed",
     ) -> Dict[str, Any]:
         with self.lock:
             export_id = f"exp-{secrets.token_hex(4)}"
             created_at = _utcnow()
-            job = {
+            job: Dict[str, Any] = {
                 "export_id": export_id,
-                "status": "completed",
+                "status": status,
                 "format": export_format,
                 "export_format": export_format,
                 "file_name": f"{file_prefix}-{created_at.strftime('%Y%m%d%H%M%S')}.{export_format.lower()}",
                 "download_url": None,
                 "created_at": _isoformat(created_at),
-                "completed_at": _isoformat(created_at),
+                "completed_at": _isoformat(created_at) if status == "completed" else None,
                 "report_type": report_type or file_prefix,
                 "filters": deepcopy(filters or {}),
                 "owner_user_id": owner_user_id,
+                "progress": 100 if status == "completed" else 0,
             }
             if file_content is not None:
                 self.export_files[export_id] = {
@@ -683,6 +685,43 @@ class DashboardState:
                     "media_type": media_type or "application/octet-stream",
                 }
             self.export_jobs[export_id] = job
+            return deepcopy(job)
+
+    def update_export_job(
+        self,
+        export_id: str,
+        status: Optional[str] = None,
+        file_name: Optional[str] = None,
+        completed_at: Optional[str] = None,
+        progress: Optional[int] = None,
+        error: Optional[str] = None,
+        file_content: Optional[bytes] = None,
+        media_type: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update mutable fields on an existing export job.
+
+        Called by background export tasks to transition pending → processing →
+        completed (or failed) and attach the finished file content.
+        """
+        with self.lock:
+            job = self.export_jobs.get(export_id)
+            if not job:
+                return None
+            if status is not None:
+                job["status"] = status
+            if file_name is not None:
+                job["file_name"] = file_name
+            if completed_at is not None:
+                job["completed_at"] = completed_at
+            if progress is not None:
+                job["progress"] = progress
+            if error is not None:
+                job["error"] = error
+            if file_content is not None:
+                self.export_files[export_id] = {
+                    "content": bytes(file_content),
+                    "media_type": media_type or "application/octet-stream",
+                }
             return deepcopy(job)
 
     def get_export_job(self, export_id: str) -> Optional[Dict[str, Any]]:

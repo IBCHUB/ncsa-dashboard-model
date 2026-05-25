@@ -276,19 +276,34 @@ class ElasticClient:
         """Public wrapper for raw index searches used by dashboard-facing APIs."""
         return self._search_index(index, body)
 
-    def scroll_search(self, index: str, body: Dict[str, Any], page_size: int = 2000) -> List[Dict[str, Any]]:
-        """Fetch ALL matching documents using scroll API. Returns list of hits."""
+    def scroll_search(
+        self,
+        index: str,
+        body: Dict[str, Any],
+        page_size: int = 2000,
+        max_docs: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch matching documents using scroll API. Returns list of hits.
+
+        If *max_docs* is set, scrolling stops as soon as that many documents
+        have been collected (the scroll context is cleared before returning).
+        This prevents the background export from pulling millions of docs when
+        the caller has already validated an upper-bound row limit.
+        """
         body = {**body, "size": page_size}
         body.pop("from", None)
         all_hits: List[Dict[str, Any]] = []
         client = self._get_client(index)
+
+        def _limit_reached() -> bool:
+            return max_docs is not None and len(all_hits) >= max_docs
 
         if ES_CLIENT_AVAILABLE and client:
             result = client.search(index=index, body=body, scroll="2m")
             scroll_id = result.get("_scroll_id")
             hits = result.get("hits", {}).get("hits", [])
             all_hits.extend(hits)
-            while hits:
+            while hits and not _limit_reached():
                 result = client.scroll(scroll_id=scroll_id, scroll="2m")
                 scroll_id = result.get("_scroll_id")
                 hits = result.get("hits", {}).get("hits", [])
@@ -298,7 +313,7 @@ class ElasticClient:
                     client.clear_scroll(scroll_id=scroll_id)
                 except Exception:
                     pass
-            return all_hits
+            return all_hits[:max_docs] if max_docs is not None else all_hits
 
         url = self._get_url(index)
         headers = self._get_headers(index)
@@ -313,7 +328,7 @@ class ElasticClient:
         scroll_id = result.get("_scroll_id")
         hits = result.get("hits", {}).get("hits", [])
         all_hits.extend(hits)
-        while hits:
+        while hits and not _limit_reached():
             response = httpx.post(
                 f"{url}/_search/scroll",
                 json={"scroll": "2m", "scroll_id": scroll_id},
@@ -335,7 +350,7 @@ class ElasticClient:
                 )
             except Exception:
                 pass
-        return all_hits
+        return all_hits[:max_docs] if max_docs is not None else all_hits
 
     def _get_document(self, index: str, doc_id: str) -> Optional[Dict[str, Any]]:
         client = self._get_client(index)

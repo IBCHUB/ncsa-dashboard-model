@@ -17,7 +17,7 @@ import ipaddress
 import io
 import json
 import logging
-from math import floor
+from math import ceil, floor
 import os
 import re
 import threading
@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 import zipfile
 from xml.sax.saxutils import escape as xml_escape
 
-from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -391,6 +391,22 @@ MAX_DASHBOARD_DATE_RANGE_DAYS = int(os.getenv("DASHBOARD_MAX_RANGE_DAYS", "366")
 EXPORT_MAX_BYTES = int(os.getenv("DASHBOARD_EXPORT_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB
 EXPORT_TTL_SECONDS = int(os.getenv("DASHBOARD_EXPORT_TTL_SECONDS", str(4 * 3600)))  # 4 hours
 
+# Per-format hard row limits for the async IOC export.
+# Limits are set so the resulting files remain manageable:
+#   CSV  1 M rows → split into 250 K-row files and zipped  (~50 MB / file before zip)
+#   XLSX 100 K rows → single file (~25 MB)
+#   PDF    5 K rows → single file (a PDF of 5000 IOC rows already runs 100+ pages)
+EXPORT_ROW_LIMITS: Dict[str, int] = {
+    "csv": 1_000_000,
+    "xlsx": 100_000,
+    "pdf": 5_000,
+}
+EXPORT_ROWS_PER_FILE: Dict[str, int] = {
+    "csv": 250_000,
+    "xlsx": 100_000,
+    "pdf": 5_000,
+}
+
 
 def _validate_dashboard_date_range(start_date: Optional[str], end_date: Optional[str]) -> None:
     """Reject obviously bad date windows before they hit ES.
@@ -697,8 +713,13 @@ def _scroll_all_documents(
     index: str,
     filters: Optional[List[Dict[str, Any]]] = None,
     sort: Optional[List[Dict[str, Any]]] = None,
+    max_docs: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch ALL matching documents via scroll API (no size limit)."""
+    """Fetch matching documents via scroll API.
+
+    Pass *max_docs* to cap the result set — the scroll context is released as
+    soon as the limit is reached so the cluster is not over-burdened.
+    """
     body: Dict[str, Any] = {
         "query": {
             "bool": {
@@ -711,7 +732,7 @@ def _scroll_all_documents(
         body["sort"] = sort
     client = get_elastic_client()
     try:
-        raw_hits = client.scroll_search(index, body, page_size=2000)
+        raw_hits = client.scroll_search(index, body, page_size=2000, max_docs=max_docs)
     except Exception as exc:
         logger.error("Elasticsearch scroll failed for %s: %s", index, exc)
         return []
@@ -866,8 +887,12 @@ def _scroll_all_warehouse_docs(
     warehouse_eligible_only: Optional[bool] = True,
     sort_by: str = "risk",
     time_mode: str = TIME_MODE_OBSERVED,
+    max_docs: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch ALL matching warehouse documents via scroll (no size cap)."""
+    """Fetch matching warehouse documents via scroll.
+
+    Pass *max_docs* to cap the result set (e.g. the row limit for an export).
+    """
     client = get_elastic_client()
     filters = _warehouse_search_filters(
         ioc_types=ioc_types,
@@ -888,7 +913,7 @@ def _scroll_all_warehouse_docs(
         if sort_by == "risk"
         else [{"event_time": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
     )
-    return _scroll_all_documents(client.warehouse_index, filters=filters, sort=sort)
+    return _scroll_all_documents(client.warehouse_index, filters=filters, sort=sort, max_docs=max_docs)
 
 
 def _scroll_all_datalake_docs(
@@ -7782,6 +7807,124 @@ def ioc_analytics(
     raise HTTPException(status_code=400, detail="Unsupported analytics tab")
 
 
+def _count_warehouse_docs(
+    start_date: str,
+    end_date: str,
+    threat_types: Optional[List[str]] = None,
+    sources: Optional[List[str]] = None,
+    ioc_types: Optional[List[str]] = None,
+    severities: Optional[List[str]] = None,
+    time_mode: str = TIME_MODE_OBSERVED,
+) -> int:
+    """Fast document count via ES track_total_hits (size=0, no aggs, no docs)."""
+    client = get_elastic_client()
+    filters = _warehouse_search_filters(
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        ioc_types=ioc_types,
+        severities=severities,
+        time_mode=time_mode,
+    )
+    body = {
+        "query": {"bool": {"filter": filters}},
+        "track_total_hits": True,
+        "size": 0,
+    }
+    result = _safe_search(client.warehouse_index, body)
+    total = (result.get("hits") or {}).get("total") or {}
+    if isinstance(total, dict):
+        return int(total.get("value", 0))
+    return int(total or 0)
+
+
+def _run_ioc_export_background(
+    export_id: str,
+    start_date_str: str,
+    end_date_str: str,
+    threat_types: Optional[List[str]],
+    sources: Optional[List[str]],
+    ioc_types: Optional[List[str]],
+    severities: Optional[List[str]],
+    export_format: str,
+) -> None:
+    """Background task: scroll warehouse docs, build export file(s), update job.
+
+    Runs in a thread after the HTTP 202 response has been sent. Transitions
+    the job through  pending → processing → completed  (or failed).
+    Multiple-file exports (CSV only, when total > EXPORT_ROWS_PER_FILE) are
+    packaged into a single .zip so the download endpoint never changes.
+    """
+    state = get_dashboard_state()
+    try:
+        state.update_export_job(export_id, status="processing", progress=5)
+
+        row_limit = EXPORT_ROW_LIMITS.get(export_format, 100_000)
+        rows_per_file = EXPORT_ROWS_PER_FILE.get(export_format, 100_000)
+
+        docs = _scroll_all_warehouse_docs(
+            start_date=start_date_str,
+            end_date=end_date_str,
+            threat_types=threat_types or None,
+            sources=sources or None,
+            ioc_types=ioc_types or None,
+            severities=severities or None,
+            sort_by="risk",
+            time_mode=TIME_MODE_OBSERVED,
+            max_docs=row_limit,
+        )
+        state.update_export_job(export_id, progress=50)
+
+        items = [_build_ioc_record(i + 1, doc) for i, doc in enumerate(docs)]
+        state.update_export_job(export_id, progress=70)
+
+        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+
+        if len(items) <= rows_per_file:
+            # Single file — serve directly without zip
+            fmt, content, media_type = _build_ioc_export_artifact(items, export_format)
+            file_name = f"ioc-report-{ts}.{fmt}"
+            state.update_export_job(
+                export_id,
+                status="completed",
+                progress=100,
+                file_name=file_name,
+                completed_at=_isoformat(datetime.now(UTC)),
+                file_content=content,
+                media_type=media_type,
+            )
+        else:
+            # Multiple chunks → zip archive (CSV only in practice)
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                num_parts = ceil(len(items) / rows_per_file)
+                for part_num, start in enumerate(range(0, len(items), rows_per_file), 1):
+                    chunk = items[start : start + rows_per_file]
+                    fmt, chunk_content, _ = _build_ioc_export_artifact(chunk, export_format)
+                    zf.writestr(f"ioc-report-{ts}_part{part_num:02d}_of_{num_parts:02d}.{fmt}", chunk_content)
+                    # Update progress proportionally during zip building
+                    pct = 70 + int(25 * part_num / num_parts)
+                    state.update_export_job(export_id, progress=pct)
+            file_name = f"ioc-report-{ts}.zip"
+            state.update_export_job(
+                export_id,
+                status="completed",
+                progress=100,
+                file_name=file_name,
+                completed_at=_isoformat(datetime.now(UTC)),
+                file_content=zip_buffer.getvalue(),
+                media_type="application/zip",
+            )
+
+    except Exception as exc:
+        logger.error("IOC export background task failed for %s: %s", export_id, exc, exc_info=True)
+        try:
+            state.update_export_job(export_id, status="failed", error=str(exc))
+        except Exception:
+            pass
+
+
 @router.post("/reports/ioc/preview", tags=["Reports"])
 def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str, Any] = Depends(require_dashboard_user)):
     start_iso = request.start_date.isoformat()
@@ -7886,49 +8029,74 @@ def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str,
 def ioc_report_export(
     request: IOCExportRequest,
     http_request: Request,
+    background_tasks: BackgroundTasks,
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
-    # Exports need ALL matching docs (async job, file output) - use scroll-all
-    docs = _scroll_all_warehouse_docs(
+    """Async IOC export — returns a job ID immediately (202) and processes in background.
+
+    Row limits are validated server-side before the job is created.  The
+    client should poll GET /exports/{export_id} until status == 'completed',
+    then download via GET /exports/{export_id}/download.
+    """
+    normalized_format = str(request.export_format or "csv").strip().lower()
+    if normalized_format not in EXPORT_ROW_LIMITS:
+        raise HTTPException(status_code=400, detail=f"Unsupported export format: {normalized_format!r}")
+
+    row_limit = EXPORT_ROW_LIMITS[normalized_format]
+
+    # Fast count — avoids a full scroll just to validate the limit.
+    total_rows = _count_warehouse_docs(
         start_date=request.start_date.isoformat(),
         end_date=request.end_date.isoformat(),
         threat_types=request.threat_types or None,
         sources=request.sources or None,
-        risk_levels=request.risk_levels or None,
         ioc_types=request.ioc_types or None,
         severities=request.severities or None,
-        sort_by="risk",
         time_mode=TIME_MODE_OBSERVED,
     )
-    docs = _filter_warehouse_docs(
-        docs,
-        query=request.query,
-        threat_types=request.threat_types or None,
-        sources=request.sources or None,
-        severities=request.severities or None,
-        risk_levels=request.risk_levels or None,
-    )
-    docs = [doc for doc in docs if _ioc_doc_matches_date_range(doc, start_date=request.start_date.isoformat(), end_date=request.end_date.isoformat(), time_mode=TIME_MODE_OBSERVED)]
-    if request.high_risk_only:
-        docs = [doc for doc in docs if int(doc.get("ai_risk_score") or 0) >= 75]
-    docs = sorted(
-        docs,
-        key=lambda item: (int(item.get("ai_risk_score") or 0), _pick_event_time(item) or datetime.min.replace(tzinfo=UTC)),
-        reverse=True,
-    )
-    items = [_build_ioc_record(index + 1, doc) for index, doc in enumerate(docs)]
-    selected_format, file_content, media_type = _build_ioc_export_artifact(items, request.export_format)
+    if total_rows > row_limit:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "row_limit_exceeded",
+                "total_rows": total_rows,
+                "row_limit": row_limit,
+                "format": normalized_format,
+                "message": (
+                    f"Export would contain {total_rows:,} rows which exceeds the "
+                    f"{row_limit:,}-row limit for {normalized_format.upper()}. "
+                    "Please narrow your date range or apply more filters."
+                ),
+            },
+        )
+
+    # Create job immediately with status='pending' so the client can start polling.
     filters = request.model_dump(exclude_none=True)
-    filters["export_format"] = selected_format
-    job = _queue_export_job(
-        selected_format,
+    filters["export_format"] = normalized_format
+    state = get_dashboard_state()
+    job = state.create_export_job(
+        normalized_format,
         "ioc-report",
-        "ioc-report",
-        filters,
-        file_content=file_content,
-        media_type=media_type,
+        report_type="ioc-report",
+        filters=filters,
         owner_user_id=current_user["user_id"],
+        status="pending",
     )
+    export_id = str(job["export_id"])
+
+    # Schedule background task — runs after this response is sent.
+    background_tasks.add_task(
+        _run_ioc_export_background,
+        export_id,
+        request.start_date.isoformat(),
+        request.end_date.isoformat(),
+        request.threat_types or None,
+        request.sources or None,
+        request.ioc_types or None,
+        request.severities or None,
+        normalized_format,
+    )
+
     return _success(_public_export_job(job, http_request))
 
 
