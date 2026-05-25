@@ -25,6 +25,8 @@ ai-service/venv/
 # Data
 data_lake/
 ai-service/data/
+!ai-service/data/GeoLite2-Country.mmdb
+!ai-service/data/mitre_attack_actor_mapping.json
 .data/
 *.log
 tmp/
