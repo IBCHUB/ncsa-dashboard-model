@@ -6533,6 +6533,19 @@ def operations_dashboard(
 ):
     _validate_dashboard_date_range(start_date, end_date)
     anchor_end = _resolve_anchor_end(end_date) if end_date else None
+
+    _ops_cache_key = _cache_key(
+        "operations_dashboard",
+        start_date=start_date,
+        end_date=end_date,
+        sources=sorted(sources) if sources else None,
+        threat_types=sorted(threat_types) if threat_types else None,
+        severities=sorted(severities) if severities else None,
+    )
+    _ops_cached = _cache_get(_ops_cache_key)
+    if _ops_cached is not None:
+        return _ops_cached
+
     # Use OBSERVED so timeline reflects when IOCs were actually seen,
     # not when they were batch-imported into the warehouse.
     aggs = _warehouse_dashboard_aggs(
@@ -6569,7 +6582,7 @@ def operations_dashboard(
         "top_attack_origins": _terms_items_from_buckets((aggs.get("countries") or {}).get("buckets") or [], total=aggs.get("total"), limit=5),
         "target_sectors": _format_sector_terms(_terms_items_from_buckets((aggs.get("sectors") or {}).get("buckets") or [], total=aggs.get("total"), limit=5)),
     }
-    return _success(payload)
+    return _cache_set(_ops_cache_key, _success(payload))
 
 
 @router.get("/operations/reports/threat-types/{threat_type:path}", tags=["Operations"])
