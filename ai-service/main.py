@@ -718,7 +718,7 @@ def _run_pipeline_once_sync(limit: int, worker_id: int = 0, worker_total: int = 
         # Without that, every cluster update returns document_missing
         # (~10K wasted ops per batch).
         clustered_count = 0
-        if warehouse_items:
+        if warehouse_items and not os.getenv("PIPELINE_SKIP_CLUSTERING", "false").lower() == "true":
             try:
                 batch_docs = [
                     item["document"] for item in warehouse_items
