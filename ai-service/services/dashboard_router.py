@@ -714,11 +714,15 @@ def _scroll_all_documents(
     filters: Optional[List[Dict[str, Any]]] = None,
     sort: Optional[List[Dict[str, Any]]] = None,
     max_docs: Optional[int] = None,
+    page_size: int = 5000,
 ) -> List[Dict[str, Any]]:
     """Fetch matching documents via scroll API.
 
     Pass *max_docs* to cap the result set — the scroll context is released as
     soon as the limit is reached so the cluster is not over-burdened.
+    *page_size* defaults to 5 000 (was 2 000) to halve the number of round
+    trips for large exports — reduces a 200 K-row export from ~100 ES requests
+    to ~40, cutting wall time proportionally.
     """
     body: Dict[str, Any] = {
         "query": {
@@ -732,7 +736,7 @@ def _scroll_all_documents(
         body["sort"] = sort
     client = get_elastic_client()
     try:
-        raw_hits = client.scroll_search(index, body, page_size=2000, max_docs=max_docs)
+        raw_hits = client.scroll_search(index, body, page_size=page_size, max_docs=max_docs)
     except Exception as exc:
         logger.error("Elasticsearch scroll failed for %s: %s", index, exc)
         return []
