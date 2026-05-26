@@ -103,13 +103,30 @@ def highest_severity_from_buckets(buckets: Sequence[Dict[str, Any]]) -> str:
 def severity_filters_config(field: str = "ai_severity") -> Dict[str, Dict[str, Any]]:
     """Build the ``filters`` agg dict for splitting docs by severity.
 
-    *field* defaults to ``"severity"`` for backwards compatibility — pass
-    ``"ai_severity"`` to switch aggregations onto the AI-computed field.
+    *field* defaults to ``"ai_severity"`` — pass ``"severity"`` to aggregate
+    on the source-reported field instead.
+
+    The ``"low"`` bucket also captures documents where *field* is absent,
+    because the Python ``_ai_severity()`` helper falls back to ``"low"``
+    when the field is missing.  Without this, ES term-filter misses those
+    docs and the agg total undercount vs the Python-grouped row totals.
     """
-    return {
+    filters: Dict[str, Dict[str, Any]] = {
         severity: {"term": {field: severity}}
-        for severity in ("critical", "high", "medium", "low", "clean")
+        for severity in ("critical", "high", "medium", "clean")
     }
+    # "low" must also match docs whose ai_severity field is absent so that
+    # ES agg counts stay consistent with Python _ai_severity() fallback logic.
+    filters["low"] = {
+        "bool": {
+            "should": [
+                {"term": {field: "low"}},
+                {"bool": {"must_not": [{"exists": {"field": field}}]}},
+            ],
+            "minimum_should_match": 1,
+        }
+    }
+    return filters
 
 
 # Backwards-compatibility aliases (existing dashboard_router code uses these).
