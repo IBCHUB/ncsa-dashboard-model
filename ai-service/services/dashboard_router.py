@@ -2998,11 +2998,9 @@ def _coordinates_from_doc(doc: Dict[str, Any]) -> Tuple[Optional[float], Optiona
 
 
 def _origin_display_severity(severity_counts: Counter) -> str:
-    critical = int(severity_counts.get("critical", 0))
-    high = int(severity_counts.get("high", 0))
-    if critical > 0 and critical >= high:
+    if int(severity_counts.get("critical", 0)) > 0:
         return "critical"
-    if high > 0:
+    if int(severity_counts.get("high", 0)) > 0:
         return "high"
     if int(severity_counts.get("medium", 0)) > 0:
         return "medium"
