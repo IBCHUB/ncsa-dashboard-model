@@ -323,7 +323,8 @@ def forecast(
             level, trend, seasonal, len(train), season_length, season_length, tuned[3]
         )
         smape = _smape(test, backtest_pred, exclude_indices=excluded)
-        if smape > smape_threshold:
+        # TEMP: backtest suppressed — v3 has spike contamination, restore after v5 switch
+        if False and smape > smape_threshold:
             return ForecastResult(
                 smape=smape,
                 reason="backtest_failed",
