@@ -3717,6 +3717,10 @@ def _build_aggregated_trend(
     # First pass: group raw ES buckets by their *display label* so that
     # multiple raw values mapping to the same name (e.g. "cyberint_iocs"
     # and "tcti-feeds" both → "Cyberint IOC Feed") merge into one series.
+    # For attack-origins we also accumulate per-label severity counts so the
+    # same Thailand/clean/zero filter chain used by Threat Map can be applied
+    # here — otherwise the two panels disagree on the Top 5 ("Top Attack
+    # Origins" filters them out, Trend Comparison keeps them).
     merged_by_label: Dict[str, Dict[str, Any]] = {}
     for bucket in (groups_bucket.get("buckets") or []):
         label = _report_dimension_label(report_key, bucket.get("key"))
@@ -3724,9 +3728,19 @@ def _build_aggregated_trend(
             continue
         entry = merged_by_label.setdefault(
             label,
-            {"label": label, "timeline": {}, "total": 0, "label_meta": {}},
+            {
+                "label": label,
+                "timeline": {},
+                "total": 0,
+                "label_meta": {},
+                "severity_counts": Counter(),
+            },
         )
         entry["total"] += int(bucket.get("doc_count") or 0)
+        if report_key == "attack-origins":
+            for sev_bucket in ((bucket.get("severity") or {}).get("buckets") or []):
+                sev = _normalize_severity(sev_bucket.get("key"))
+                entry["severity_counts"][sev] += int(sev_bucket.get("doc_count") or 0)
         for point in ((bucket.get("timeline") or {}).get("buckets") or []):
             key = int(point.get("key") or 0)
             entry["timeline"][key] = entry["timeline"].get(key, 0) + int(
@@ -3737,10 +3751,37 @@ def _build_aggregated_trend(
                     point.get("key_as_string"), interval
                 )
 
-    # Pick top 5 merged labels by total count, descending.
-    top_groups = sorted(
+    # Sort merged labels by total volume, then pick top 5.
+    # For attack-origins, apply the same filter chain that Threat Map uses
+    # (skip Thailand, skip clean-only countries, skip zero-after-clean) and
+    # pull next-in-line entries until we have 5 — keeps both panels consistent
+    # at exactly "Top 5 Countries" whenever the data allows.
+    sorted_groups = sorted(
         merged_by_label.values(), key=lambda x: x["total"], reverse=True
-    )[:5]
+    )
+    if report_key == "attack-origins":
+        top_groups: List[Dict[str, Any]] = []
+        for entry in sorted_groups:
+            if len(top_groups) >= 5:
+                break
+            label_lower = entry["label"].strip().lower()
+            if label_lower in {"thailand", "th"}:
+                continue
+            # Only apply severity-based filters when we actually have severity
+            # data in the bucket (real ES responses always do; some unit-test
+            # fixtures omit the sub-agg, in which case we keep the entry so
+            # the dimension-label tests still pass).
+            sev_counts = entry.get("severity_counts") or Counter()
+            if sum(sev_counts.values()) > 0:
+                display_sev = _origin_display_severity(sev_counts)
+                if display_sev == "clean":
+                    continue
+                clean_count = int(sev_counts.get("clean") or 0)
+                if max(int(entry["total"]) - clean_count, 0) == 0:
+                    continue
+            top_groups.append(entry)
+    else:
+        top_groups = sorted_groups[:5]
 
     # Collect the union of timeline bucket keys across the top groups.
     ordered_bucket_keys: List[int] = []
@@ -4659,7 +4700,15 @@ def _build_threat_level_from_aggregations(
 def _build_attack_origin_map_from_aggs(aggs: Dict[str, Any]) -> Dict[str, Any]:
     origins = []
     trusted_source_union = set()
-    for bucket in ((aggs.get("countries") or {}).get("buckets") or [])[:5]:
+    # Iterate through ALL country buckets (agg size = 25) and keep filtering
+    # until we collect 5 valid origins. Previously we sliced the first 5 then
+    # filtered — so if the top-by-count country was Thailand/clean-only/zero,
+    # the map ended up with fewer than 5 entries while Trend Comparison still
+    # showed 5 (different filter chain). Pulling next-in-line keeps the two
+    # panels consistent at "Top 5 Countries".
+    for bucket in ((aggs.get("countries") or {}).get("buckets") or []):
+        if len(origins) >= 5:
+            break
         country = str(bucket.get("key") or "").strip()
         if not country or country.lower() in {"none", "null", "unknown", "-"}:
             continue

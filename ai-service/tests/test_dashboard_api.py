@@ -74,6 +74,129 @@ def test_attack_origin_trend_filters_missing_and_non_country_series():
     assert "not-a-country" not in labels
 
 
+def test_attack_origin_trend_skips_thailand_and_clean_only_then_fills_top_5():
+    # Mirrors the filter chain in _build_attack_origin_map_from_aggs so the
+    # Threat Map and Trend Comparison panels agree on the Top 5 countries.
+    # Top-by-volume here is Thailand → skip (self-attack), then Argentina →
+    # skip (all docs are "clean" severity), then Brazil/BD/EG/DE/AR should
+    # fill all five slots from the remaining countries.
+    def _bucket(key: str, total: int, severities: dict) -> dict:
+        return {
+            "key": key,
+            "doc_count": total,
+            "severity": {
+                "buckets": [
+                    {"key": sev, "doc_count": count}
+                    for sev, count in severities.items()
+                ]
+            },
+            "timeline": {
+                "buckets": [
+                    {"key": 1778198400000, "key_as_string": "2026-05-08T00:00:00Z", "doc_count": total}
+                ]
+            },
+        }
+
+    groups_bucket = {
+        "buckets": [
+            _bucket("TH", 100, {"high": 80, "medium": 20}),       # skipped: Thailand
+            _bucket("BR", 41, {"critical": 5, "high": 30, "low": 6}),
+            _bucket("BD", 39, {"high": 20, "medium": 15, "low": 4}),
+            _bucket("EG", 19, {"medium": 10, "low": 9}),
+            _bucket("DE", 16, {"high": 8, "medium": 8}),
+            _bucket("AR", 12, {"clean": 12}),                       # skipped: clean-only
+            _bucket("FR", 9, {"high": 4, "medium": 5}),             # pulled in to fill 5th slot
+            _bucket("JP", 7, {"medium": 7}),                        # 6th — should NOT appear
+        ]
+    }
+
+    trend = dashboard_router._build_aggregated_trend(groups_bucket, "attack-origins", "day")
+
+    labels = [item["label"] for item in trend["series"]]
+    # Exactly 5 countries, no Thailand, no Argentina, pulled France to fill.
+    assert len(labels) == 5
+    assert "Thailand" not in labels
+    assert "Argentina" not in labels
+    assert "France" in labels
+    # Order is by total volume, descending (Brazil > Bangladesh > Egypt > Germany > France).
+    assert labels == ["Brazil", "Bangladesh", "Egypt", "Germany", "France"]
+
+
+def test_attack_origin_trend_value_after_clean_zero_is_skipped():
+    # A country whose only non-clean severity counts add up to zero (i.e.,
+    # every doc is "clean") must be skipped even though doc_count > 0.
+    def _bucket(key: str, total: int, severities: dict) -> dict:
+        return {
+            "key": key,
+            "doc_count": total,
+            "severity": {
+                "buckets": [
+                    {"key": sev, "doc_count": count}
+                    for sev, count in severities.items()
+                ]
+            },
+            "timeline": {"buckets": []},
+        }
+
+    groups_bucket = {
+        "buckets": [
+            _bucket("BR", 50, {"clean": 50}),                       # skipped: all clean
+            _bucket("US", 30, {"high": 20, "clean": 10}),
+            _bucket("CA", 10, {"medium": 10}),
+        ]
+    }
+
+    trend = dashboard_router._build_aggregated_trend(groups_bucket, "attack-origins", "day")
+
+    labels = [item["label"] for item in trend["series"]]
+    assert "Brazil" not in labels
+    assert labels == ["United States", "Canada"]
+
+
+def test_attack_origin_map_pulls_next_country_when_top_filtered():
+    # _build_attack_origin_map_from_aggs must also pull next-in-line when
+    # a top bucket is filtered (Thailand / clean-only / zero-after-clean),
+    # so the map shows 5 countries when the underlying data has ≥5 valid ones.
+    def _bucket(key: str, total: int, severities: dict) -> dict:
+        return {
+            "key": key,
+            "doc_count": total,
+            "severity": {
+                "buckets": {
+                    sev: {"doc_count": count}
+                    for sev, count in severities.items()
+                }
+            },
+            "sources": {"buckets": []},
+            "high_severity_sources": {"sources": {"buckets": []}},
+            "sectors": {"buckets": []},
+        }
+
+    aggs = {
+        "countries": {
+            "buckets": [
+                _bucket("TH", 100, {"high": 80, "medium": 20}),    # skipped
+                _bucket("BR", 41, {"high": 30, "medium": 11}),
+                _bucket("BD", 39, {"high": 20, "medium": 19}),
+                _bucket("EG", 19, {"medium": 10, "low": 9}),
+                _bucket("DE", 16, {"high": 8, "medium": 8}),
+                _bucket("AR", 12, {"clean": 12}),                  # skipped
+                _bucket("FR", 9, {"high": 4, "medium": 5}),        # pulled in
+                _bucket("JP", 7, {"medium": 7}),                   # should NOT appear
+            ]
+        },
+        "high_severity_sources": {"sources": {"buckets": []}},
+    }
+
+    result = dashboard_router._build_attack_origin_map_from_aggs(aggs)
+
+    origin_names = [origin["country_name"] for origin in result["origins"]]
+    assert len(origin_names) == 5
+    assert "Thailand" not in origin_names
+    assert "Argentina" not in origin_names
+    assert "France" in origin_names
+
+
 def test_attack_time_heatmap_shape_changes_by_date_range():
     docs = [
         {
