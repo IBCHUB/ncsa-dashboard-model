@@ -714,7 +714,7 @@ def _existing_canonical_adapter(hit: Dict[str, Any], normalize_type, normalize_v
 
 def _cyberint_iocs_adapter(hit: Dict[str, Any], normalize_type, normalize_value) -> Optional[Dict[str, Any]]:
     raw = hit.get("_source", {})
-    if not (raw.get("ioc_type") and raw.get("ioc_value") and "cyberint_iocs-" in _as_text(hit.get("_index"))):
+    if not (raw.get("ioc_type") and raw.get("ioc_value") and _as_text(hit.get("_index")).lower().startswith("cyberint")):
         return None
 
     activity = _as_text(raw.get("detected_activity"))
