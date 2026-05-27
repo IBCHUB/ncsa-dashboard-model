@@ -868,11 +868,12 @@ def _search_warehouse_docs(
         min_risk_score=min_risk_score,
         time_mode=time_mode,
     )
-    sort = (
-        [{"ai_risk_score": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
-        if sort_by == "risk"
-        else [{"event_time": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
-    )
+    if sort_by == "relevance":
+        sort = [{"_score": {"order": "desc"}}, {"ai_risk_score": {"order": "desc", "missing": "_last"}}]
+    elif sort_by == "risk":
+        sort = [{"ai_risk_score": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
+    else:
+        sort = [{"event_time": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
     return _search_documents(
         client.warehouse_index,
         query_text=query_text,
@@ -921,11 +922,12 @@ def _scroll_all_warehouse_docs(
         min_risk_score=min_risk_score,
         time_mode=time_mode,
     )
-    sort = (
-        [{"ai_risk_score": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
-        if sort_by == "risk"
-        else [{"event_time": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
-    )
+    if sort_by == "relevance":
+        sort = [{"_score": {"order": "desc"}}, {"ai_risk_score": {"order": "desc", "missing": "_last"}}]
+    elif sort_by == "risk":
+        sort = [{"ai_risk_score": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
+    else:
+        sort = [{"event_time": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
     return _scroll_all_documents(client.warehouse_index, filters=filters, sort=sort, max_docs=max_docs, on_batch=on_batch)
 
 
@@ -7585,8 +7587,14 @@ def list_iocs(
         total = int(total_agg.get("total") or 0)
         search_result = {"hits": {"total": {"value": total}, "hits": []}}
     else:
+        # Normalize query to lowercase so keyword field (ioc_value) matches
+        # stored normalized values regardless of user input case
+        normalized_query = query.strip().lower() if query else "*"
+        # When user provides a specific search term, sort by relevance so
+        # exact ioc_value matches surface first
+        effective_sort_by = "relevance" if (query and query.strip() != "*") else sort_by
         search_result = _search_warehouse_docs(
-            query_text=query or "*",
+            query_text=normalized_query,
             start_date=start_date,
             end_date=end_date,
             sources=sources,
@@ -7595,7 +7603,7 @@ def list_iocs(
             ioc_types=ioc_types,
             severities=severities,
             min_risk_score=min_risk_score,
-            sort_by=sort_by,
+            sort_by=effective_sort_by,
             limit=page_size,
             offset=raw_offset,
             time_mode=TIME_MODE_OBSERVED,
