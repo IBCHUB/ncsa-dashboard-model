@@ -383,6 +383,11 @@ class DashboardState:
                     break
         if email:
             user["email"] = email
+        # Re-resolve group/role ทุกครั้งที่ login เพื่อให้การเปลี่ยน role ใน DB มีผลทันที
+        group = self._resolve_sso_group_locked(identity)
+        user["role_name"] = group["name"]
+        user["group_id"] = group["group_id"]
+        user["user_group"] = group["name"]
 
     def logout(self, token: str) -> bool:
         with self.lock:
