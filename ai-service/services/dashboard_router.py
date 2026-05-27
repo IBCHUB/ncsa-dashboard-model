@@ -7561,23 +7561,47 @@ def list_iocs(
     # captured `critical` and made the toggle behave like a hidden
     # "critical-only" filter from the user's perspective.
     min_risk_score = 50 if high_risk_only else None
-    search_result = _search_warehouse_docs(
-        query_text=query or "*",
-        start_date=start_date,
-        end_date=end_date,
-        sources=sources,
-        threat_types=threat_types,
-        risk_levels=risk_levels,
-        ioc_types=ioc_types,
-        severities=severities,
-        min_risk_score=min_risk_score,
-        sort_by=sort_by,
-        limit=page_size,
-        offset=max(page - 1, 0) * page_size,
-        time_mode=TIME_MODE_OBSERVED,
-    )
-    docs = _hits_to_docs(search_result)
-    total = _search_total(search_result)
+    # ES max_result_window guard
+    WAREHOUSE_MAX_RESULT_WINDOW = 50_000
+    raw_offset = max(page - 1, 0) * page_size
+    page_out_of_range = raw_offset > max(0, WAREHOUSE_MAX_RESULT_WINDOW - page_size)
+    accessible_pages = max(1, WAREHOUSE_MAX_RESULT_WINDOW // page_size)
+
+    if page_out_of_range:
+        docs = []
+        total = 0
+        # ต้องดึง total จาก agg แยก แต่ต้องการ total ก่อน agg ด้านล่าง → ดึงจาก agg ก่อน
+        total_agg = _warehouse_dashboard_aggs(
+            query=query,
+            start_date=start_date,
+            end_date=end_date,
+            sources=sources,
+            threat_types=threat_types,
+            risk_levels=risk_levels,
+            severities=severities,
+            min_risk_score=min_risk_score,
+            time_mode=TIME_MODE_OBSERVED,
+        )
+        total = int(total_agg.get("total") or 0)
+        search_result = {"hits": {"total": {"value": total}, "hits": []}}
+    else:
+        search_result = _search_warehouse_docs(
+            query_text=query or "*",
+            start_date=start_date,
+            end_date=end_date,
+            sources=sources,
+            threat_types=threat_types,
+            risk_levels=risk_levels,
+            ioc_types=ioc_types,
+            severities=severities,
+            min_risk_score=min_risk_score,
+            sort_by=sort_by,
+            limit=page_size,
+            offset=raw_offset,
+            time_mode=TIME_MODE_OBSERVED,
+        )
+        docs = _hits_to_docs(search_result)
+        total = _search_total(search_result)
     aggs = _warehouse_dashboard_aggs(
         query=query,
         start_date=start_date,
@@ -7603,7 +7627,7 @@ def list_iocs(
         "ioc_types": [{"value": item["value"], "label": item["label"], "count": next((facet["count"] for facet in facets["ioc_types"] if facet["value"] == item["value"]), 0)} for item in IOC_TYPE_LOOKUPS],
         "severities": [{"value": item["value"], "label": item["label"], "count": next((facet["count"] for facet in facets["severities"] if facet["value"] == item["value"]), 0)} for item in RISK_LEVELS],
     }
-    return _cache_set(cache_key, _paged({"summary": {"total_indicators": total}, "quick_filters": quick_filters, "facets": facets, "items": items}, page=page, page_size=page_size, total=total))
+    return _cache_set(cache_key, _paged({"summary": {"total_indicators": total}, "quick_filters": quick_filters, "facets": facets, "items": items}, page=page, page_size=page_size, total=total, accessible_pages=accessible_pages))
 
 
 @router.get("/iocs/relationships", tags=["IOCs"])
@@ -8152,24 +8176,34 @@ def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str,
         effective_page_size = request.limit
         effective_offset = request.offset
 
-    # Fetch only the requested page from ES
-    page_result = _search_warehouse_docs(
-        start_date=start_iso,
-        end_date=end_iso,
-        threat_types=request.threat_types or None,
-        sources=request.sources or None,
-        ioc_types=request.ioc_types or None,
-        severities=request.severities or None,
-        sort_by="risk",
-        limit=effective_page_size,
-        offset=effective_offset,
-        time_mode=TIME_MODE_OBSERVED,
-    )
-    paged_docs = _hits_to_docs(page_result)
-    items = [
-        _build_ioc_record(effective_offset + index + 1, doc)
-        for index, doc in enumerate(paged_docs)
-    ]
+    # ES max_result_window guard: from + size must not exceed the index setting (50 000)
+    WAREHOUSE_MAX_RESULT_WINDOW = 50_000
+    max_safe_offset = max(0, WAREHOUSE_MAX_RESULT_WINDOW - effective_page_size)
+    page_out_of_range = effective_offset > max_safe_offset
+    # accessible_pages = how many pages the user can actually reach given ES limit
+    accessible_pages = max(1, WAREHOUSE_MAX_RESULT_WINDOW // effective_page_size)
+
+    # Fetch only the requested page from ES (skip the query when out of range)
+    if page_out_of_range:
+        items = []
+    else:
+        page_result = _search_warehouse_docs(
+            start_date=start_iso,
+            end_date=end_iso,
+            threat_types=request.threat_types or None,
+            sources=request.sources or None,
+            ioc_types=request.ioc_types or None,
+            severities=request.severities or None,
+            sort_by="risk",
+            limit=effective_page_size,
+            offset=effective_offset,
+            time_mode=TIME_MODE_OBSERVED,
+        )
+        paged_docs = _hits_to_docs(page_result)
+        items = [
+            _build_ioc_record(effective_offset + index + 1, doc)
+            for index, doc in enumerate(paged_docs)
+        ]
 
     # Build charts from ES aggregation buckets (accurate). Use
     # _format_source_terms so multiple raw values that map to the same
@@ -8205,6 +8239,7 @@ def ioc_report_preview(request: IOCReportPreviewRequest, current_user: Dict[str,
     payload = {
         "summary": {
             "total_rows": es_total,
+            "accessible_pages": accessible_pages,
             "generated_for": f"{start_iso} to {end_iso}",
             "high_risk_count": high_risk_count,
             "sources_count": sources_count,
