@@ -60,7 +60,7 @@ def _group_permissions() -> Dict[str, List[Dict[str, Any]]]:
             {"module": "Setting", "read": True, "edit": False},
         ],
         "grp-general": [
-            {"module": "Executive Dashboard", "read": True, "edit": False},
+            {"module": "Executive Dashboard", "read": False, "edit": False},
             {"module": "Threat Intelligence", "read": True, "edit": False},
             {"module": "IOC Data Lake", "read": False, "edit": False},
             {"module": "Reports & Export", "read": False, "edit": False},
