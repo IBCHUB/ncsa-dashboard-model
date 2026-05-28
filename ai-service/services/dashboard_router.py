@@ -895,7 +895,13 @@ def _decode_cursor(cursor: Optional[str]) -> Optional[List[Any]]:
     try:
         raw = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
         decoded = json.loads(raw)
-        return decoded if isinstance(decoded, list) else None
+        if not isinstance(decoded, list):
+            return None
+        # Only allow primitive types — reject nested objects/arrays that could
+        # be forwarded as malformed search_after values to Elasticsearch.
+        if not all(isinstance(v, (str, int, float, type(None))) for v in decoded):
+            return None
+        return decoded
     except (ValueError, TypeError, binascii.Error):
         return None
 

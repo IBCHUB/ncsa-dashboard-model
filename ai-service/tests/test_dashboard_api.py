@@ -70,6 +70,13 @@ def test_cursor_decode_handles_malformed_input_gracefully():
     import base64 as _b64
     not_a_list = _b64.urlsafe_b64encode(b'{"a": 1}').decode("ascii")
     assert dashboard_router._decode_cursor(not_a_list) is None
+    # List with nested non-primitive values — must reject to prevent
+    # forwarding arbitrary structures to Elasticsearch search_after.
+    import json as _json
+    nested_obj = _b64.urlsafe_b64encode(_json.dumps([{"script": "evil"}]).encode()).decode("ascii")
+    assert dashboard_router._decode_cursor(nested_obj) is None
+    nested_list = _b64.urlsafe_b64encode(_json.dumps([[1, 2]]).encode()).decode("ascii")
+    assert dashboard_router._decode_cursor(nested_list) is None
 
 
 def test_attack_origin_trend_filters_missing_and_non_country_series():
