@@ -15,6 +15,8 @@ import hashlib
 import hmac
 import ipaddress
 import io
+import base64
+import binascii
 import json
 import logging
 from math import ceil, floor
@@ -758,11 +760,12 @@ def _search_documents(
     offset: int = 0,
     sort: Optional[List[Dict[str, Any]]] = None,
     fields: Optional[List[str]] = None,
+    search_after: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     must: List[Dict[str, Any]] = []
     if query_text and query_text != "*" and fields:
         must.append({"multi_match": {"query": query_text, "fields": fields}})
-    body = {
+    body: Dict[str, Any] = {
         "track_total_hits": True,
         "query": {
             "bool": {
@@ -771,9 +774,16 @@ def _search_documents(
             }
         },
         "sort": sort or [{"processed_at": {"order": "desc", "missing": "_last"}}],
-        "from": offset,
         "size": limit,
     }
+    # search_after is mutually exclusive with `from` — ES rejects requests that
+    # set both. Use cursor-based pagination when caller supplies it (avoids
+    # the max_result_window cap for deep pages); fall back to from/size only
+    # for the first page or legacy callers.
+    if search_after is not None:
+        body["search_after"] = search_after
+    else:
+        body["from"] = offset
     return _safe_search(index, body)
 
 
@@ -835,6 +845,61 @@ def _warehouse_search_filters(
     return filters
 
 
+def _warehouse_list_sort(sort_by: str) -> List[Dict[str, Any]]:
+    """Sort spec for the IOC list/search endpoints.
+
+    Includes ``_id`` as a final tiebreaker so the order is fully deterministic
+    — required for ``search_after`` cursor pagination (without a unique
+    tiebreaker, two cursors with the same primary/secondary sort value can
+    skip or duplicate docs across pages).
+    """
+    if sort_by == "relevance":
+        # Used by the keyword search box — let Lucene's TF/IDF score lead,
+        # break ties by risk so a high-risk hit ranks above a low-risk hit
+        # with the same score.
+        return [
+            {"_score": {"order": "desc"}},
+            {"ai_risk_score": {"order": "desc", "missing": "_last"}},
+            {"_id": {"order": "asc"}},
+        ]
+    if sort_by == "risk":
+        return [
+            {"ai_risk_score": {"order": "desc", "missing": "_last"}},
+            {"processed_at": {"order": "desc", "missing": "_last"}},
+            {"_id": {"order": "asc"}},
+        ]
+    return [
+        {"event_time": {"order": "desc", "missing": "_last"}},
+        {"processed_at": {"order": "desc", "missing": "_last"}},
+        {"_id": {"order": "asc"}},
+    ]
+
+
+def _encode_cursor(sort_values: Optional[List[Any]]) -> Optional[str]:
+    """Encode ES ``sort`` array (e.g. ``[80.5, "2026-05-21...", "abc"]``) into
+    a URL-safe base64 string the frontend can pass back as a cursor."""
+    if not sort_values:
+        return None
+    try:
+        raw = json.dumps(sort_values, default=str, separators=(",", ":"))
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
+    except (TypeError, ValueError):
+        return None
+
+
+def _decode_cursor(cursor: Optional[str]) -> Optional[List[Any]]:
+    """Reverse of :func:`_encode_cursor`. Returns ``None`` on malformed input
+    (treated as "no cursor → start from the first page")."""
+    if not cursor:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
+        decoded = json.loads(raw)
+        return decoded if isinstance(decoded, list) else None
+    except (ValueError, TypeError, binascii.Error):
+        return None
+
+
 def _search_warehouse_docs(
     query_text: str = "*",
     ioc_types: Optional[List[str]] = None,
@@ -852,6 +917,7 @@ def _search_warehouse_docs(
     limit: int = 100,
     offset: int = 0,
     time_mode: str = TIME_MODE_OBSERVED,
+    search_after: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     client = get_elastic_client()
     filters = _warehouse_search_filters(
@@ -868,20 +934,15 @@ def _search_warehouse_docs(
         min_risk_score=min_risk_score,
         time_mode=time_mode,
     )
-    if sort_by == "relevance":
-        sort = [{"_score": {"order": "desc"}}, {"ai_risk_score": {"order": "desc", "missing": "_last"}}]
-    elif sort_by == "risk":
-        sort = [{"ai_risk_score": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
-    else:
-        sort = [{"event_time": {"order": "desc", "missing": "_last"}}, {"processed_at": {"order": "desc", "missing": "_last"}}]
     return _search_documents(
         client.warehouse_index,
         query_text=query_text,
         filters=filters,
         limit=limit,
         offset=offset,
-        sort=sort,
+        sort=_warehouse_list_sort(sort_by),
         fields=["ioc_value^3", "description", "reference", "ai_threat_types", "ai_threat_actors", "source_name"],
+        search_after=search_after,
     )
 
 
@@ -7543,6 +7604,8 @@ def block_ip(action_id: str, request: BlockIpRequest, current_user: Dict[str, An
 def list_iocs(
     page: int = 1,
     page_size: int = 20,
+    cursor: Optional[str] = None,
+    cursor_offset: int = 0,
     query: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -7557,7 +7620,7 @@ def list_iocs(
     current_user: Dict[str, Any] = Depends(require_dashboard_user),
 ):
     _validate_dashboard_date_range(start_date, end_date)
-    cache_key = _cache_key("list_iocs", page=page, page_size=page_size, query=query, start_date=start_date, end_date=end_date, sources=sources, threat_types=threat_types, risk_levels=risk_levels, ioc_types=ioc_types, severities=severities, high_risk_only=high_risk_only, sort_by=sort_by, sort_order=sort_order)
+    cache_key = _cache_key("list_iocs", page=page, page_size=page_size, cursor=cursor, cursor_offset=cursor_offset, query=query, start_date=start_date, end_date=end_date, sources=sources, threat_types=threat_types, risk_levels=risk_levels, ioc_types=ioc_types, severities=severities, high_risk_only=high_risk_only, sort_by=sort_by, sort_order=sort_order)
     cached = _cache_get(cache_key)
     if cached:
         return cached
@@ -7566,49 +7629,53 @@ def list_iocs(
     # captured `critical` and made the toggle behave like a hidden
     # "critical-only" filter from the user's perspective.
     min_risk_score = 50 if high_risk_only else None
-    # ES max_result_window guard
-    WAREHOUSE_MAX_RESULT_WINDOW = 50_000
-    raw_offset = max(page - 1, 0) * page_size
-    page_out_of_range = raw_offset > max(0, WAREHOUSE_MAX_RESULT_WINDOW - page_size)
-    accessible_pages = max(1, WAREHOUSE_MAX_RESULT_WINDOW // page_size)
 
-    if page_out_of_range:
-        docs = []
-        total = 0
-        # ต้องดึง total จาก agg แยก แต่ต้องการ total ก่อน agg ด้านล่าง → ดึงจาก agg ก่อน
-        total_agg = _warehouse_dashboard_aggs(
-            query=query,
-            start_date=start_date,
-            end_date=end_date,
-            sources=sources,
-            threat_types=threat_types,
-            risk_levels=risk_levels,
-            severities=severities,
-            min_risk_score=min_risk_score,
-            time_mode=TIME_MODE_OBSERVED,
-        )
-        total = int(total_agg.get("total") or 0)
-        search_result = {"hits": {"total": {"value": total}, "hits": []}}
-    else:
-        normalized_query = query.strip().lower() if query else "*"
-        effective_sort_by = "relevance" if (query and query.strip() != "*") else sort_by
-        search_result = _search_warehouse_docs(
-            query_text=normalized_query,
-            start_date=start_date,
-            end_date=end_date,
-            sources=sources,
-            threat_types=threat_types,
-            risk_levels=risk_levels,
-            ioc_types=ioc_types,
-            severities=severities,
-            min_risk_score=min_risk_score,
-            sort_by=sort_by,
-            limit=page_size,
-            offset=raw_offset,
-            time_mode=TIME_MODE_OBSERVED,
-        )
-        docs = _hits_to_docs(search_result)
-        total = _search_total(search_result)
+    # Cursor-based pagination: clients pass an opaque `cursor` (base64 of the
+    # ES sort values from the previous page's last doc). With `cursor_offset`
+    # we can fetch up to N pages forward in a single query (window pagination
+    # in the UI lets users click ±2-3 pages from current). The first page
+    # uses `from=0`; every subsequent page uses search_after, bypassing the
+    # ES max_result_window cap entirely.
+    cursor_offset = max(0, min(int(cursor_offset or 0), 5))
+    search_after_values = _decode_cursor(cursor)
+    fetch_size = (cursor_offset + 1) * page_size
+    # Match the upstream case-insensitive search and relevance-sort switch:
+    # lower-case the query so ioc_value matches regardless of case, and let
+    # the relevance sort lead when the user is actively searching.
+    normalized_query = query.strip().lower() if query else "*"
+    effective_sort_by = "relevance" if (query and query.strip() != "*") else sort_by
+    search_result = _search_warehouse_docs(
+        query_text=normalized_query,
+        start_date=start_date,
+        end_date=end_date,
+        sources=sources,
+        threat_types=threat_types,
+        risk_levels=risk_levels,
+        ioc_types=ioc_types,
+        severities=severities,
+        min_risk_score=min_risk_score,
+        sort_by=effective_sort_by,
+        limit=fetch_size,
+        # `from` is ignored when search_after is set; we always start at 0
+        # for the first page and rely on cursor for the rest.
+        offset=0,
+        time_mode=TIME_MODE_OBSERVED,
+        search_after=search_after_values,
+    )
+    raw_hits = (search_result.get("hits") or {}).get("hits") or []
+    # The requested page is the LAST `page_size` docs from the fetched window
+    # (everything before that is "skipped over" for the forward jump).
+    page_hits = raw_hits[-page_size:] if len(raw_hits) > page_size else raw_hits
+    docs = [{"_id": hit.get("_id"), **(hit.get("_source") or {})} for hit in page_hits]
+    total = _search_total(search_result)
+    # Next-page cursor = sort values of the LAST doc on the current page.
+    # has_next is True only if ES gave us a full page (a partial page means
+    # we've reached the tail of the result set).
+    next_cursor = None
+    if page_hits and len(page_hits) >= page_size:
+        last_sort = page_hits[-1].get("sort")
+        next_cursor = _encode_cursor(last_sort)
+    has_next = next_cursor is not None
     aggs = _warehouse_dashboard_aggs(
         query=query,
         start_date=start_date,
@@ -7634,7 +7701,14 @@ def list_iocs(
         "ioc_types": [{"value": item["value"], "label": item["label"], "count": next((facet["count"] for facet in facets["ioc_types"] if facet["value"] == item["value"]), 0)} for item in IOC_TYPE_LOOKUPS],
         "severities": [{"value": item["value"], "label": item["label"], "count": next((facet["count"] for facet in facets["severities"] if facet["value"] == item["value"]), 0)} for item in RISK_LEVELS],
     }
-    return _cache_set(cache_key, _paged({"summary": {"total_indicators": total}, "quick_filters": quick_filters, "facets": facets, "items": items}, page=page, page_size=page_size, total=total, accessible_pages=accessible_pages))
+    return _cache_set(cache_key, _paged(
+        {"summary": {"total_indicators": total}, "quick_filters": quick_filters, "facets": facets, "items": items},
+        page=page,
+        page_size=page_size,
+        total=total,
+        next_cursor=next_cursor,
+        has_next=has_next,
+    ))
 
 
 @router.get("/iocs/relationships", tags=["IOCs"])

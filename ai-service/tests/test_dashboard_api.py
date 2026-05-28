@@ -40,6 +40,38 @@ def _login(test_client):
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_cursor_encode_decode_round_trip():
+    # Cursor codec must survive every sort-value shape ES returns: numbers,
+    # ISO datetime strings, _id strings, and nulls (when a sort field is
+    # missing from a doc). Stable round-trip is what makes search_after
+    # cursor pagination work — a corrupted cursor would silently skip docs
+    # or return duplicates.
+    samples = [
+        [80.5, "2026-05-21T10:00:00.000Z", "abc123"],
+        [None, "2026-05-21T10:00:00.000Z", "xyz"],
+        [42, 0, "id-with-dash_and.dot"],
+        [99.999, "2026-12-31T23:59:59Z", "unicode-ทดสอบ"],
+    ]
+    for sort_values in samples:
+        cursor = dashboard_router._encode_cursor(sort_values)
+        assert cursor is not None
+        decoded = dashboard_router._decode_cursor(cursor)
+        assert decoded == sort_values, f"round-trip failed for {sort_values}"
+
+
+def test_cursor_decode_handles_malformed_input_gracefully():
+    # Malformed cursors (legacy client, URL truncation, copy-paste error)
+    # must return None so the endpoint falls back to "start from page 1"
+    # instead of crashing with a 500.
+    assert dashboard_router._decode_cursor(None) is None
+    assert dashboard_router._decode_cursor("") is None
+    assert dashboard_router._decode_cursor("not-valid-base64!!!") is None
+    # Valid base64 but JSON is an object, not a list — should reject.
+    import base64 as _b64
+    not_a_list = _b64.urlsafe_b64encode(b'{"a": 1}').decode("ascii")
+    assert dashboard_router._decode_cursor(not_a_list) is None
+
+
 def test_attack_origin_trend_filters_missing_and_non_country_series():
     groups_bucket = {
         "buckets": [
