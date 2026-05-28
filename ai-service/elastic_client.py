@@ -1240,42 +1240,67 @@ class ElasticClient:
         search_after = self.get_datalake_scan_cursor(suffix=cursor_suffix)
 
         # Date filter — covers up to BACKFILL_DAYS days of datalake history.
-        # Each worker takes a disjoint date slice (e.g. 730 days / 4 workers
-        # = ~182 days each). Tunable via env so we can run a short window
-        # first (e.g. 60d) then extend to all history once that's caught up.
-        # Custom boundaries: PIPELINE_WORKER_BOUNDARIES=0,7,16,24,... (days ago, newest to oldest)
-        # Must have worker_total+1 values. Falls back to equal time-slice split.
-        _boundaries_env = os.getenv("PIPELINE_WORKER_BOUNDARIES", "")
-        if _boundaries_env and worker_total > 1:
-            _b = [int(x.strip()) for x in _boundaries_env.split(",")]
-            lower_offset = _b[worker_id]
-            upper_offset = _b[worker_id + 1]
-        else:
-            total_days = int(os.getenv("BACKFILL_DAYS", "730"))
-            days_per_worker = max(1, total_days // worker_total)
-            lower_offset = worker_id * days_per_worker
-            if worker_id == worker_total - 1:
-                upper_offset = total_days
+        # Whole date window is shared by ALL workers; partition is done by
+        # hash(_id) % worker_total instead of date slice. Day-based slicing
+        # produced severe imbalance when ingestion bursts concentrated 77%
+        # of all docs into a single day (see 2026-05 incident). Hash split
+        # gives each worker an even ~1/N share regardless of time skew.
+        # Legacy day-slice mode is preserved when PIPELINE_PARTITION_MODE=days
+        # for backward-compat / debugging.
+        total_days = int(os.getenv("BACKFILL_DAYS", "730"))
+        partition_mode = os.getenv("PIPELINE_PARTITION_MODE", "hash").lower()
+
+        if partition_mode == "days" and worker_total > 1:
+            _boundaries_env = os.getenv("PIPELINE_WORKER_BOUNDARIES", "")
+            if _boundaries_env:
+                _b = [int(x.strip()) for x in _boundaries_env.split(",")]
+                lower_offset = _b[worker_id]
+                upper_offset = _b[worker_id + 1]
             else:
-                upper_offset = (worker_id + 1) * days_per_worker
-        date_range = {"gte": f"now-{upper_offset}d"}
-        if lower_offset > 0:
-            date_range["lt"] = f"now-{lower_offset}d"
+                days_per_worker = max(1, total_days // worker_total)
+                lower_offset = worker_id * days_per_worker
+                if worker_id == worker_total - 1:
+                    upper_offset = total_days
+                else:
+                    upper_offset = (worker_id + 1) * days_per_worker
+            date_range = {"gte": f"now-{upper_offset}d"}
+            if lower_offset > 0:
+                date_range["lt"] = f"now-{lower_offset}d"
+        else:
+            # Hash mode: every worker scans the full BACKFILL_DAYS window
+            date_range = {"gte": f"now-{total_days}d"}
+
         # Use OR clause so docs with EITHER observation_date OR @timestamp
         # in range get matched. Cyberint docs have observation_date; news
         # sources (BleepingComputer, The Hacker News, Zone-H, DarkReading,
         # Sandbox) have only @timestamp. Without the OR clause, the news
         # sources are silently filtered out and never reach the classifier
         # → DeBERTa/BGE-M3 ML never runs.
-        base_query: Dict[str, Any] = {
-            "bool": {
-                "should": [
-                    {"range": {"observation_date": date_range}},
-                    {"range": {"@timestamp": date_range}},
-                ],
-                "minimum_should_match": 1,
-            }
+        bool_clauses: Dict[str, Any] = {
+            "should": [
+                {"range": {"observation_date": date_range}},
+                {"range": {"@timestamp": date_range}},
+            ],
+            "minimum_should_match": 1,
         }
+        if partition_mode != "days" and worker_total > 1:
+            # Hash partition: each shard scans only its own slice. Manual
+            # floor-mod (Painless does not whitelist Math.floorMod) on the
+            # doc _id hashCode — deterministic so cursor/resume still work.
+            # Requires cluster setting indices.id_field_data.enabled=true.
+            bool_clauses["filter"] = [{
+                "script": {
+                    "script": {
+                        "source": (
+                            "int h = doc['_id'].value.hashCode() % params.total; "
+                            "if (h < 0) h += params.total; "
+                            "return h == params.wid;"
+                        ),
+                        "params": {"total": worker_total, "wid": worker_id},
+                    }
+                }
+            }]
+        base_query: Dict[str, Any] = {"bool": bool_clauses}
 
         for _ in range(max(1, DATALAKE_SCAN_MAX_PAGES)):
             query: Dict[str, Any] = {
