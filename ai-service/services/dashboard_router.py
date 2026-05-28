@@ -860,18 +860,18 @@ def _warehouse_list_sort(sort_by: str) -> List[Dict[str, Any]]:
         return [
             {"_score": {"order": "desc"}},
             {"ai_risk_score": {"order": "desc", "missing": "_last"}},
-            {"_id": {"order": "asc"}},
+            {"_doc": {"order": "asc"}},
         ]
     if sort_by == "risk":
         return [
             {"ai_risk_score": {"order": "desc", "missing": "_last"}},
             {"processed_at": {"order": "desc", "missing": "_last"}},
-            {"_id": {"order": "asc"}},
+            {"_doc": {"order": "asc"}},
         ]
     return [
         {"event_time": {"order": "desc", "missing": "_last"}},
         {"processed_at": {"order": "desc", "missing": "_last"}},
-        {"_id": {"order": "asc"}},
+        {"_doc": {"order": "asc"}},
     ]
 
 
