@@ -7639,9 +7639,10 @@ def list_iocs(
     cursor_offset = max(0, min(int(cursor_offset or 0), 5))
     search_after_values = _decode_cursor(cursor)
     fetch_size = (cursor_offset + 1) * page_size
-    # Match the upstream case-insensitive search and relevance-sort switch:
-    # lower-case the query so ioc_value matches regardless of case, and let
-    # the relevance sort lead when the user is actively searching.
+    # Normalize query to lowercase so keyword field (ioc_value) matches
+    # stored normalized values regardless of user input case. When the user
+    # is actively searching, switch sort to relevance so exact matches
+    # surface first.
     normalized_query = query.strip().lower() if query else "*"
     effective_sort_by = "relevance" if (query and query.strip() != "*") else sort_by
     search_result = _search_warehouse_docs(
